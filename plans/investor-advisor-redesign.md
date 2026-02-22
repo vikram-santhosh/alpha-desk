@@ -3,7 +3,10 @@
 ## Philosophy Shift
 
 **Current system**: Scans everything, dumps data, presents options daily.
-**New system**: Thinks like YOUR portfolio manager. Has a worldview. Remembers yesterday. Only speaks up when something matters. Values consistency over novelty.
+**New system**: Same data engine underneath — Street Ear still scans Reddit, News Desk still fetches news, Portfolio Analyst still runs technicals/fundamentals. But a new **Advisor layer** sits on top that consumes all their output with persistent memory, macro thesis tracking, and a structured 5-section brief. The existing agents are the eyes and ears. The Advisor is the brain.
+
+**What stays exactly as-is**: Street Ear, News Desk, Portfolio Analyst, Alpha Scout (candidate sourcing logic), Agent Bus, Cost Tracker, all config files, all SQLite databases.
+**What's new**: An `src/advisor/` package that orchestrates the existing agents, adds memory + macro + superinvestor tracking, and formats the output as a structured daily brief instead of a data dump.
 
 Core principles:
 - You're an investor, not a trader. Hold period: 1+ year.
@@ -552,33 +555,50 @@ strategy:
 ```
 1. Load memory (advisor_memory.db)
    ├── Yesterday's brief summary
-   ├── Holdings + theses + snapshots
+   ├── Holdings + theses + snapshots (last 7 days)
    ├── Macro theses + status
    ├── Conviction list (current)
    ├── Moonshot list (current)
    ├── Active strategy flags
-   └── Superinvestor data
+   └── Superinvestor positions
 
-2. Fetch fresh data (parallel)
-   ├── Street Ear → Reddit signals
-   ├── News Desk → News signals
-   ├── Price data → All tracked tickers (holdings + conviction + moonshot)
-   ├── FRED → Rates, yields, VIX
-   └── yfinance → Insider transactions for conviction list names
+2. Run existing agents (parallel — REUSED AS-IS)
+   ├── Street Ear (reddit_fetcher → analyzer → tracker → agent bus signals)
+   ├── News Desk (news_fetcher → analyzer → agent bus signals)
+   └── These run their full pipelines and publish to agent bus
 
-3. Opus 4.6 synthesis (single comprehensive call)
-   Input: memory + fresh data + explicit instructions
+3. Fetch market data (REUSING existing portfolio_analyst modules)
+   ├── price_fetcher.fetch_current_prices(all_tracked_tickers)
+   ├── price_fetcher.fetch_all_historical(all_tracked_tickers)
+   ├── fundamental_analyzer.fetch_all_fundamentals(all_tracked_tickers)
+   ├── technical_analyzer.analyze_all(all_tracked_tickers, historical)
+   └── risk_analyzer.analyze_concentration() + analyze_sector_exposure()
+   Note: "all_tracked_tickers" = holdings + conviction list + moonshots
+
+4. Fetch NEW data (advisor-specific)
+   ├── FRED API → rates, yields, VIX (macro_analyst.py)
+   ├── SEC 13F → superinvestor positions (superinvestor_tracker.py)
+   ├── yfinance → insider transactions for conviction list names
+   └── Agent bus → consume signals from Street Ear + News Desk (mark_consumed=False)
+
+5. Source conviction candidates (REUSING Alpha Scout modules)
+   ├── candidate_sourcer.source_all_candidates() → raw candidates
+   ├── screener.screen_candidates() → scored candidates
+   └── conviction_manager merges with existing list (persistent, not replaced)
+
+6. Opus 4.6 synthesis (single comprehensive call)
+   Input: memory context + all agent data + market data + macro + superinvestor
    Output: 5-section daily brief as structured JSON
 
-4. Save memory
-   ├── Today's holding snapshots
-   ├── Updated thesis statuses
-   ├── Updated conviction list
+7. Save memory
+   ├── Today's holding snapshots (price, thesis_status, daily_narrative)
+   ├── Updated macro thesis statuses
+   ├── Updated conviction list (weeks_on_list incremented, any adds/removes)
    ├── Updated moonshot list
    ├── New/resolved strategy flags
-   └── Today's brief summary (for tomorrow)
+   └── Today's brief summary (for tomorrow's context)
 
-5. Format → Telegram HTML → Send
+8. Format → Telegram HTML → Send
 ```
 
 ### Opus 4.6 System Prompt (Core)
@@ -629,34 +649,96 @@ YOUR RULES:
 
 ---
 
-## What Changes vs Current System
+## Architecture: Existing Agents Feed the New Advisor Layer
 
-| Component | Current | After Redesign |
-|-----------|---------|---------------|
-| Morning brief orchestrator | `morning_brief.py` (4 agents) | `advisor/main.py` (memory-aware, 5-section output) |
-| Holdings | `config/portfolio.yaml` (ticker, shares, cost_basis) | `config/advisor.yaml` (ticker, thesis, category) + daily snapshots in DB |
-| Recommendations | Alpha Scout: 15 new names every run | Conviction list: 3-5 persistent names, updated not replaced |
-| Memory | None (each run starts fresh) | `advisor_memory.db`: theses, snapshots, flags, conviction history, brief history |
-| Macro awareness | None | Tracked theses with status, FRED data, regime |
-| Action bias | "Here are 15 interesting tickers" | "No action needed today" (default) |
-| Smart money | None | 13F quarterly + insider daily |
-| Moonshots | None | 1-2 persistent asymmetric ideas |
-| Output tone | Data dump | Opinionated advisor with worldview |
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        ADVISOR LAYER (NEW)                          │
+│                        src/advisor/main.py                          │
+│                                                                     │
+│   ┌──────────┐  ┌──────────┐  ┌───────────┐  ┌──────────────────┐  │
+│   │  Memory   │  │  Macro   │  │ Strategy  │  │  Conviction +    │  │
+│   │  Layer    │  │  Analyst │  │  Engine   │  │  Moonshot Mgr    │  │
+│   │ (DB)      │  │ (FRED)   │  │ (low churn│  │  (persistent)    │  │
+│   └─────┬────┘  └────┬─────┘  │  bias)    │  └────────┬─────────┘  │
+│         │            │        └─────┬─────┘           │             │
+│         └────────────┴──────────────┴─────────────────┘             │
+│                              │                                      │
+│                     Opus 4.6 Synthesis                               │
+│               (memory-aware 5-section brief)                        │
+│                              │                                      │
+│                     5-Section Telegram Output                        │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │
+                    ╔══════════╧══════════╗
+                    ║    AGENT BUS        ║  (existing, unchanged)
+                    ╚══════════╤══════════╝
+                               │
+          ┌────────────────────┼────────────────────┐
+          │                    │                     │
+  ┌───────▼───────┐   ┌───────▼───────┐   ┌────────▼────────┐
+  │  STREET EAR   │   │   NEWS DESK   │   │ PORTFOLIO       │
+  │  (existing)   │   │   (existing)  │   │ ANALYST         │
+  │               │   │               │   │ (existing)      │
+  │ Reddit scan   │   │ Finnhub +     │   │ Prices +        │
+  │ Sentiment     │   │ NewsAPI       │   │ Technicals +    │
+  │ Mentions      │   │ Analysis      │   │ Fundamentals +  │
+  │ Anomalies     │   │ Urgency       │   │ Risk            │
+  └───────────────┘   └───────────────┘   └─────────────────┘
+                               │
+                      ┌────────▼────────┐
+                      │  ALPHA SCOUT    │
+                      │  (existing)     │  ← candidate sourcing
+                      │  Reused by      │    logic reused by
+                      │  conviction_mgr │    conviction_manager
+                      └─────────────────┘
 
-### What We Keep
+  + NEW: superinvestor_tracker.py (13F + insider data)
+```
 
-- **Street Ear** — still scans Reddit, still publishes signals to agent bus
-- **News Desk** — still fetches news, still publishes signals
-- **Agent Bus** — still the communication backbone
-- **Portfolio Analyst modules** — price_fetcher, technical_analyzer, fundamental_analyzer reused
-- **Telegram Bot** — extended with new commands
-- **Cost Tracker** — unchanged
-- **Config/security/logging** — unchanged
+### Every existing module and its role in the new system
 
-### What We Retire
+| Existing Module | Still Runs? | How the Advisor Uses It |
+|----------------|-------------|------------------------|
+| **Street Ear** (reddit_fetcher, analyzer, tracker) | Yes, unchanged | Advisor reads its agent bus signals for Reddit buzz on holdings + conviction list names |
+| **News Desk** (news_fetcher, analyzer) | Yes, unchanged | Advisor reads its signals for breaking news, earnings, sector news affecting holdings |
+| **Portfolio Analyst** (price_fetcher) | Yes, reused directly | Advisor calls `fetch_current_prices()` and `fetch_all_historical()` for all tracked tickers |
+| **Portfolio Analyst** (technical_analyzer) | Yes, reused directly | Advisor calls `analyze_ticker()` for technicals on holdings + conviction list |
+| **Portfolio Analyst** (fundamental_analyzer) | Yes, reused directly | Advisor calls `fetch_fundamentals()` for P/E, margins, growth, 52wk data |
+| **Portfolio Analyst** (risk_analyzer) | Yes, reused directly | Advisor calls `analyze_concentration()` and `analyze_sector_exposure()` |
+| **Alpha Scout** (candidate_sourcer) | Yes, reused by conviction_manager | Sources new candidates from agent bus, sector peers, screeners — fed into conviction pipeline |
+| **Alpha Scout** (screener) | Yes, reused by conviction_manager | Scores candidates on tech/fund/sentiment/diversification before Opus evaluation |
+| **Agent Bus** | Yes, unchanged | All inter-agent communication. Advisor reads signals with `mark_consumed=False` |
+| **Cost Tracker** | Yes, unchanged | Tracks all Opus API spend |
+| **Config Loader** | Yes, extended | Adds `load_advisor_config()` |
+| **Telegram Bot** | Yes, extended | New commands added (`/holdings`, `/macro`, `/conviction`, `/thesis`, etc.) |
+| **Security** | Yes, unchanged | Env validation, HTML sanitization |
+| **Logger** | Yes, unchanged | Structured logging |
 
-- **Alpha Scout** as a standalone agent — its candidate sourcing logic gets absorbed into conviction_manager.py, but the "15 random names daily" behavior is replaced by persistent conviction list management
-- **Morning Brief** as the primary entry point — replaced by `advisor/main.py` which produces the 5-section brief. Morning Brief can still exist as a legacy/alternative mode.
+### What's genuinely new (not a reuse)
+
+| New Component | Purpose | Why it can't reuse existing code |
+|--------------|---------|--------------------------------|
+| `advisor/memory.py` | Persistent memory DB (theses, snapshots, conviction history) | Nothing like this exists — current system is stateless between runs |
+| `advisor/macro_analyst.py` | FRED data + macro thesis tracking with status evolution | No macro awareness exists at all |
+| `advisor/superinvestor_tracker.py` | SEC 13F parsing + insider transaction tracking | No smart money tracking exists |
+| `advisor/holdings_monitor.py` | Daily narrative per holding with memory of past days | Current portfolio_analyst has no memory |
+| `advisor/strategy_engine.py` | Low-churn add/trim/hold logic with flag persistence | Current system has no strategy layer |
+| `advisor/conviction_manager.py` | Persistent conviction list that evolves over weeks | Alpha Scout generates fresh lists each run — no persistence |
+| `advisor/moonshot_manager.py` | Long-lived moonshot idea tracking | Doesn't exist |
+| `advisor/formatter.py` | 5-section brief format | Different output structure from current |
+| `advisor/main.py` | Orchestrates existing agents + new advisor modules | New orchestration flow |
+| `data/advisor_memory.db` | SQLite database for all memory | New database |
+| `config/advisor.yaml` | Holdings with theses, macro theses, superinvestor list | New config format |
+
+### What we DON'T change
+
+- Zero modifications to Street Ear, News Desk, or their sub-modules
+- Zero modifications to Portfolio Analyst sub-modules (price_fetcher, technical_analyzer, fundamental_analyzer, risk_analyzer)
+- Alpha Scout's candidate_sourcer.py and screener.py stay as-is — imported by conviction_manager
+- Agent bus schema unchanged (just add a couple signal types)
+- All existing SQLite databases unchanged
+- Morning Brief (`morning_brief.py`) stays as a legacy option — can still run via `/brief_legacy`
 
 ---
 
