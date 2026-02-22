@@ -14,7 +14,11 @@ Core principles:
 - Macro thesis drives stock-level decisions (top-down → bottom-up).
 - Recommendations persist across days — don't churn names.
 - Prefer undervalued stocks. Open to momentum when evidence is strong.
-- Track what smart money is doing.
+- **25% CAGR minimum** — don't recommend portfolio changes unless the thesis supports it.
+- **Margin of safety matters** — valuation must justify entry, not just narrative.
+- **Crowd > analysts** — weight actual investor behavior (Reddit, prediction markets, insider buys) over Wall Street price targets.
+- **Earnings calls are primary source** — actual company guidance and cross-company mentions, not analyst summaries.
+- Track what smart money is doing (hedge funds, superinvestors, prediction markets).
 
 ---
 
@@ -366,6 +370,56 @@ CREATE TABLE superinvestor_positions (
     UNIQUE(investor_name, ticker, quarter)
 );
 
+-- Earnings call intelligence
+CREATE TABLE earnings_calls (
+    id INTEGER PRIMARY KEY,
+    ticker TEXT NOT NULL,
+    quarter TEXT NOT NULL,                  -- "2025Q4"
+    call_date TEXT NOT NULL,
+    revenue_actual REAL,
+    revenue_estimate REAL,
+    eps_actual REAL,
+    eps_estimate REAL,
+    guidance_revenue_low REAL,              -- forward guidance range
+    guidance_revenue_high REAL,
+    guidance_eps_low REAL,
+    guidance_eps_high REAL,
+    guidance_sentiment TEXT,                -- 'raised', 'maintained', 'lowered', 'withdrawn'
+    key_quotes TEXT,                        -- JSON: most important management quotes
+    capex_guidance REAL,                    -- important for infra/AI thesis
+    mentioned_companies TEXT,               -- JSON: companies mentioned in the call
+    management_tone TEXT,                   -- 'confident', 'cautious', 'defensive'
+    transcript_summary TEXT,               -- Opus-generated summary of the call
+    UNIQUE(ticker, quarter)
+);
+
+-- Cross-company mentions (when MSFT mentions NVDA in their call, that's a signal)
+CREATE TABLE cross_mentions (
+    id INTEGER PRIMARY KEY,
+    source_ticker TEXT NOT NULL,            -- who said it (e.g. MSFT)
+    mentioned_ticker TEXT NOT NULL,         -- who was mentioned (e.g. NVDA)
+    quarter TEXT NOT NULL,
+    context TEXT NOT NULL,                  -- the relevant quote/context
+    sentiment TEXT,                         -- 'positive', 'neutral', 'negative'
+    category TEXT,                          -- 'supplier', 'competitor', 'partner', 'customer'
+    UNIQUE(source_ticker, mentioned_ticker, quarter)
+);
+
+-- Prediction market data (Polymarket, Kalshi)
+CREATE TABLE prediction_markets (
+    id INTEGER PRIMARY KEY,
+    date TEXT NOT NULL,
+    platform TEXT NOT NULL,                 -- 'polymarket', 'kalshi'
+    market_title TEXT NOT NULL,             -- "Fed rate cut by June 2026"
+    category TEXT,                          -- 'fed_policy', 'recession', 'election', 'regulation', 'earnings'
+    probability REAL NOT NULL,              -- 0.0 to 1.0 (crowd's implied probability)
+    prev_probability REAL,                 -- yesterday's value (for delta tracking)
+    volume_usd REAL,                       -- market volume (conviction proxy)
+    affected_tickers TEXT,                  -- JSON: tickers this market affects
+    url TEXT,                               -- link to the market
+    UNIQUE(date, platform, market_title)
+);
+
 -- Run history (so Opus knows what it said yesterday)
 CREATE TABLE daily_briefs (
     id INTEGER PRIMARY KEY,
@@ -448,24 +502,300 @@ Not as a standalone section. Woven into the conviction list:
 
 ---
 
-## Technical Architecture
+## Earnings Call Intelligence
+
+The most underrated data source. When a CEO says "we're accelerating AI infrastructure spend," that's not an analyst opinion — that's the company telling you where the money is going.
+
+### What We Extract
+
+**From each earnings call transcript:**
+
+```
+1. GUIDANCE (the most important thing)
+   - Revenue guidance: raised / maintained / lowered / withdrawn
+   - EPS guidance: raised / maintained / lowered
+   - CapEx guidance (critical for AI infra thesis)
+   - Specific numbers: "We expect Q2 revenue of $38-40B"
+   - Tone: confident / cautious / defensive
+
+2. KEY MANAGEMENT QUOTES
+   - Opus 4.6 extracts the 3-5 most forward-looking statements
+   - Focus on: demand signals, pricing, new products, market share
+   - "We're seeing unprecedented demand for H200" (NVDA CEO)
+   - "We plan to invest $80B in AI infrastructure in 2026" (META CEO)
+
+3. CROSS-COMPANY MENTIONS (gold mine for thesis validation)
+   - When MSFT mentions "our NVIDIA partnership" → signal for NVDA
+   - When AMZN says "Graviton is replacing x86" → headwind for INTC
+   - When 3+ hyperscalers mention increased AI CapEx → thesis: STRENGTHENING
+   - Tracked in cross_mentions table with sentiment + relationship type
+
+4. BEAT/MISS + REACTION
+   - Revenue: beat by X% / missed by X%
+   - EPS: beat by X% / missed by X%
+   - Stock reaction: how did it trade post-earnings?
+   - "Beat and raise" = strongest signal. "Beat but guide down" = caution.
+```
+
+### Data Sources
+
+**Earnings Transcripts** (multiple options):
+
+```
+Option A: Financial Modeling Prep API (free tier: 250 calls/day)
+  - Full earnings transcripts
+  - Endpoint: /api/v3/earning_call_transcript/{symbol}?quarter=Q4&year=2025
+  - Also has: earnings surprises, guidance history
+
+Option B: SEC EDGAR (free, no key)
+  - 8-K filings contain earnings press releases
+  - Not full transcripts but has guidance numbers
+
+Option C: Seeking Alpha / Motley Fool RSS (free, scraping)
+  - Earnings call summaries
+  - Less structured but widely available
+
+Recommended: Option A (FMP) for transcripts, yfinance for beat/miss data
+```
+
+**yfinance** (already available):
+- `Ticker.earnings_dates` — upcoming and past earnings dates
+- `Ticker.earnings_history` — actual vs estimate (EPS)
+- `Ticker.revenue_forecasts` — analyst revenue estimates
+
+### How It's Used in the Brief
+
+**In §1 Macro (when earnings season is active):**
+```
+  Earnings signal: 4/5 hyperscalers have now guided CapEx higher.
+  Combined 2026 CapEx: $240B (+35% YoY). MSFT: $80B, META: $65B,
+  GOOG: $50B, AMZN: $45B.
+  Cross-mentions: NVDA mentioned in all 4 calls. AVGO in 3. VRT in 2.
+  → Thesis "Hyperscaler CapEx Boom": STRENGTHENING (was: INTACT)
+```
+
+**In §2 Holdings (per ticker):**
+```
+  NVDA    $142.30  +2.1%
+          Last earnings (Q4): Beat revenue by 8%, EPS by 12%.
+          Guidance: RAISED — Q1 revenue $44B vs $40B consensus.
+          CEO quote: "Blackwell demand is incredible, supply-constrained into H2."
+          Cross-mentions: Named in MSFT, META, GOOG, AMZN earnings calls.
+```
+
+**In §4 Conviction List:**
+```
+  VRT — Mentioned by MSFT ("our data center cooling partner Vertiv")
+        and EQIX ("Vertiv infrastructure is critical to our expansion").
+        Cross-mention count: 4 companies this quarter. Rising.
+```
+
+---
+
+## Prediction Markets (Crowd Intelligence)
+
+Wall Street analysts have conflicts of interest. Prediction market bettors have money on the line. When Polymarket says there's an 85% chance the Fed cuts in June and that was 60% last week, that's real crowd conviction shifting.
+
+### Markets to Track
+
+**Macro / Policy (affects entire portfolio):**
+- Fed rate cuts: timing, number, magnitude
+- Recession probability
+- Inflation trajectory
+- Government shutdown / debt ceiling
+- Trade war / tariff escalation
+- "Big Beautiful Bill" passage odds
+
+**Sector / Company-specific (when available):**
+- Tech regulation outcomes
+- Antitrust (GOOG, META, AAPL)
+- AI regulation sentiment
+- Earnings beat/miss (some platforms offer these)
+
+### Data Sources
+
+**Polymarket** (free API):
+```
+GET https://clob.polymarket.com/markets
+GET https://gamma-api.polymarket.com/events?closed=false&tag=politics,economics
+```
+- Returns: market title, current price (= probability), volume, outcomes
+- Filter for markets with >$100K volume (high-signal markets)
+
+**Kalshi** (free API with key):
+```
+GET https://trading-api.kalshi.com/trade-api/v2/markets
+```
+- Returns: market title, yes_price, volume, category
+- Strong on: economic indicators, Fed policy, government action
+
+### How It's Used
+
+Not as a standalone section. Woven into §1 Macro:
+
+```
+🌍 MACRO & MARKET CONTEXT
+
+  3. Fed Rate Path → Easing Cycle [EVOLVING]
+     Fed held at 4.25%. Dot plot: 2 cuts in 2026.
+     Polymarket: 85% chance of cut by June (was 60% last week, +25pp)
+     Kalshi: 72% chance of 2+ cuts this year (was 65%, +7pp)
+     Crowd is pricing in faster easing than the Fed projects.
+     → Tailwind for growth/tech. Your portfolio benefits.
+```
+
+And into strategy flags:
+
+```
+  Prediction market shift: "US recession in 2026" went from 15% → 28%
+  in 2 weeks on Polymarket ($4M volume). Not actionable yet but
+  MONITORING. If >40%, consider defensive tilt.
+```
+
+### Delta Tracking (What Changed)
+
+The absolute probability is less useful than the **change**. System tracks:
+- Today's probability vs yesterday (daily delta)
+- Today vs 7 days ago (weekly delta)
+- Today vs 30 days ago (monthly delta)
+- Volume (higher volume = more conviction behind the number)
+
+Only surface prediction market data when there's a **meaningful shift** (>10pp weekly move or >$500K new volume). Don't noise up the brief with "Fed cut probability is 73% (was 72%)."
+
+---
+
+## The 25% CAGR Gate
+
+This is the most important filter. It prevents the system from recommending portfolio changes for mediocre opportunities.
+
+### How It Works
+
+Before any "CONSIDER ADDING" recommendation in §3, the system must answer:
+
+```
+CAGR TEST:
+  Current price: $X
+  Intrinsic value (3yr target): $Y
+  Implied 3yr CAGR: ((Y/X)^(1/3) - 1) × 100
+
+  If CAGR < 25%: DO NOT RECOMMEND for portfolio addition.
+  May still sit on conviction list as a "monitor."
+
+  If CAGR ≥ 25% AND margin of safety ≥ 15%: eligible for portfolio.
+```
+
+### What Feeds the Target Price
+
+Not analyst price targets. The system computes its own target using:
+
+```
+1. Revenue trajectory:
+   - Current revenue × (1 + revenue_CAGR)^3
+   - revenue_CAGR from: company guidance, historical trend, industry growth
+
+2. Margin assumption:
+   - Will margins expand, hold, or compress?
+   - Use: guidance, margin trend, industry comps
+
+3. Multiple assumption:
+   - What P/E or EV/Revenue will the market pay in 3 years?
+   - Use: historical average, sector average, growth-adjusted
+
+4. Scenario weighting:
+   - Bull case (25% weight): everything goes right
+   - Base case (50% weight): guidance is roughly met
+   - Bear case (25% weight): growth disappoints, margins compress
+
+5. Target = weighted average of 3 scenarios
+   Margin of Safety = (Target - Current) / Target
+```
+
+### In the Brief
+
+Every conviction list entry shows the CAGR math:
+
+```
+  1. LLY  $705 — 3yr target: $1,180 (base case)
+     Implied CAGR: 18.8% ❌ BELOW 25% THRESHOLD
+     → Stays on conviction list but NOT eligible for portfolio add.
+     Would need to drop to $580 for 25% CAGR. WAITING.
+
+  2. AVGO  $191 — 3yr target: $380 (base case)
+     Implied CAGR: 25.7% ✅ ABOVE THRESHOLD
+     Margin of safety: 21% at current price.
+     → ELIGIBLE for portfolio add if fundamentals confirm.
+```
+
+### The Conviction Hierarchy (Updated)
+
+```
+Signal source                              Weight in conviction
+─────────────────────────────────────────────────────────────────
+Company guidance (earnings calls)           30%  ← primary
+Crowd sentiment (Reddit + prediction mkts)  25%  ← real money/attention
+Superinvestor/hedge fund activity           20%  ← smart money
+Fundamentals (ROIC, FCF, margins)           15%  ← quality check
+Analyst consensus                           10%  ← least weight
+```
+
+Analysts are informational but not trusted for conviction. Real investors putting real money — whether on Reddit, prediction markets, or via insider buys — carry more weight.
+
+---
+
+## Evidence Backing a Thesis
+
+Every conviction list name must have evidence from at least 3 of these 5 sources:
+
+```
+✅ Required: at least 3 of 5 must be present
+
+1. COMPANY SAYS SO — guidance raised, management confident on call
+2. CROWD AGREES — Reddit buzz positive, prediction markets favorable
+3. SMART MONEY AGREES — superinvestors holding/adding, insiders buying
+4. NUMBERS CONFIRM — revenue growing, margins expanding, ROIC >15%
+5. VALUATION ALLOWS — 25% CAGR achievable, margin of safety exists
+
+If only 1-2 sources agree: WATCHLIST (monitor, don't act)
+If 3-4 sources agree: CONVICTION LIST (high confidence)
+If all 5 agree: STRONG BUY candidate (rare — maybe 1-2 per quarter)
+```
+
+Shown in the brief:
+
+```
+  AVGO  $191 — CONVICTION: HIGH (4/5 evidence sources)
+    ✅ Company: Raised guidance Q4, CEO "AI ASIC pipeline strongest ever"
+    ✅ Crowd: Reddit sentiment +1.4, 5 subreddits discussing. Polymarket
+       "AVGO beats Q1" at 78%.
+    ✅ Smart money: Berkshire added. 3 superinvestors hold.
+    ✅ Numbers: Rev growth 24%, ROIC 31%, gross margin 74% (expanding).
+    ⚠️ Valuation: 25.7% CAGR — passes, but barely. Want more margin of safety.
+       Would prefer entry at $180 for 29% CAGR.
+```
+
+---
+
+## Technical Architecture (Updated)
 
 ### New Files
 
 ```
 src/advisor/
 ├── __init__.py
-├── main.py                      # Master orchestrator (replaces morning_brief as primary)
+├── main.py                      # Master orchestrator
 ├── macro_analyst.py             # Macro thesis tracking, FRED data, regime
 ├── holdings_monitor.py          # Daily holdings check-in with memory
-├── strategy_engine.py           # Add/trim/hold logic with low-churn bias
-├── conviction_manager.py        # Persistent conviction list management
+├── strategy_engine.py           # Add/trim/hold logic with 25% CAGR gate
+├── conviction_manager.py        # Persistent conviction list, evidence scoring
 ├── moonshot_manager.py          # Moonshot idea tracking
 ├── superinvestor_tracker.py     # 13F parsing, whale tracking
+├── earnings_analyzer.py         # NEW: Earnings call transcripts, guidance, cross-mentions
+├── prediction_market.py         # NEW: Polymarket + Kalshi crowd sentiment
+├── valuation_engine.py          # NEW: 3yr target, CAGR calc, margin of safety
 ├── memory.py                    # All advisor_memory.db operations
 └── formatter.py                 # 5-section brief formatter
 
-config/advisor.yaml              # Holdings, theses, tracked superinvestors
+config/advisor.yaml              # Holdings, theses, tracked superinvestors, prediction markets
 data/advisor_memory.db           # Persistent memory (created at runtime)
 ```
 
@@ -548,6 +878,36 @@ strategy:
   trim_trigger_pct: 30               # Consider trim if up >30% AND valuation stretched
   conviction_promotion_weeks: 3      # Min weeks before conviction list → portfolio
   moonshot_max_pct: 3                # Max portfolio % per moonshot
+  min_cagr_pct: 25                   # Don't recommend add unless 25% 3yr CAGR
+  min_margin_of_safety_pct: 15       # Intrinsic value must be 15%+ above current price
+  min_evidence_sources: 3            # Need 3/5 evidence sources for conviction
+
+# Earnings intelligence
+earnings:
+  transcript_source: fmp             # 'fmp' (Financial Modeling Prep) or 'sec_edgar'
+  lookback_quarters: 4               # How many past quarters to keep
+  cross_mention_tracking: true       # Track when companies mention each other
+
+# Prediction markets
+prediction_markets:
+  polymarket: true
+  kalshi: true
+  min_volume_usd: 100000             # Only track markets with >$100K volume
+  alert_delta_pct: 10                # Alert on >10pp weekly probability shift
+  tracked_categories:
+    - fed_policy
+    - recession
+    - regulation
+    - trade_war
+    - fiscal_policy
+
+# Conviction hierarchy weights (must sum to 1.0)
+conviction_weights:
+  company_guidance: 0.30             # Earnings calls, management quotes
+  crowd_sentiment: 0.25              # Reddit + prediction markets
+  smart_money: 0.20                  # Superinvestors, insiders
+  fundamentals: 0.15                 # ROIC, FCF, margins
+  analyst_consensus: 0.10            # Least weight — informational only
 ```
 
 ### Pipeline Flow
@@ -579,15 +939,21 @@ strategy:
    ├── FRED API → rates, yields, VIX (macro_analyst.py)
    ├── SEC 13F → superinvestor positions (superinvestor_tracker.py)
    ├── yfinance → insider transactions for conviction list names
+   ├── Earnings transcripts → guidance, key quotes, cross-mentions (earnings_analyzer.py)
+   ├── Polymarket + Kalshi → crowd probabilities for tracked macro events (prediction_market.py)
    └── Agent bus → consume signals from Street Ear + News Desk (mark_consumed=False)
 
 5. Source conviction candidates (REUSING Alpha Scout modules)
    ├── candidate_sourcer.source_all_candidates() → raw candidates
    ├── screener.screen_candidates() → scored candidates
+   ├── valuation_engine: compute 3yr target, CAGR, margin of safety per candidate
+   ├── Apply 25% CAGR gate — filter out sub-threshold names
+   ├── Apply evidence test — need 3/5 sources (guidance, crowd, smart money, numbers, valuation)
    └── conviction_manager merges with existing list (persistent, not replaced)
 
 6. Opus 4.6 synthesis (single comprehensive call)
    Input: memory context + all agent data + market data + macro + superinvestor
+          + earnings intelligence + prediction market shifts + CAGR math
    Output: 5-section daily brief as structured JSON
 
 7. Save memory
@@ -745,51 +1111,73 @@ YOUR RULES:
 ## Build Order
 
 ```
-Step 1: Memory layer (advisor/memory.py + DB schema)
+Step 1: Memory layer (advisor/memory.py + DB schema — all 11 tables)
         Config file (config/advisor.yaml)
         No external dependencies. Foundation for everything else.
 
 Step 2: Holdings monitor (advisor/holdings_monitor.py)
         Daily snapshots, thesis tracking, narrative generation.
-        Depends on: memory.py + existing price_fetcher.
+        Depends on: memory.py + existing price_fetcher + fundamental_analyzer.
 
-Step 3: Macro analyst (advisor/macro_analyst.py)
-        FRED data, thesis status tracking, regime.
-        Depends on: memory.py. New dep: fredapi.
-
-Step 4: Superinvestor tracker (advisor/superinvestor_tracker.py)
-        SEC 13F parsing, insider transactions.
+Step 3: Macro analyst (advisor/macro_analyst.py)    ┐
+        FRED data, thesis status tracking, regime.   │
+        Depends on: memory.py. New dep: fredapi.     │
+                                                     │ Can build
+Step 4: Earnings analyzer (advisor/earnings_analyzer.py)  │ in parallel
+        Transcript fetching, guidance extraction,    │
+        cross-mention detection.                     │
+        Depends on: memory.py. New dep: FMP API.     │
+                                                     │
+Step 5: Prediction markets (advisor/prediction_market.py) │
+        Polymarket + Kalshi API integration.         │
+        Depends on: memory.py.                       │
+                                                     │
+Step 6: Superinvestor tracker (advisor/superinvestor_tracker.py)
+        SEC 13F parsing, insider transactions.       ┘
         Depends on: memory.py + yfinance.
 
-Step 5: Conviction + moonshot managers
-        Persistent list logic with promotion/removal.
-        Depends on: memory.py + superinvestor data.
+Step 7: Valuation engine (advisor/valuation_engine.py)
+        3yr target calc, CAGR, margin of safety.
+        Depends on: earnings_analyzer (for guidance) + fundamental_analyzer.
 
-Step 6: Strategy engine (advisor/strategy_engine.py)
+Step 8: Conviction + moonshot managers
+        Persistent list logic with evidence scoring (3/5 test).
+        25% CAGR gate via valuation_engine.
+        Depends on: memory.py + valuation_engine + superinvestor + earnings + prediction_market.
+
+Step 9: Strategy engine (advisor/strategy_engine.py)
         Add/trim/hold logic with low-churn bias.
         Depends on: all of the above.
 
-Step 7: Formatter + main orchestrator
-        Wire everything into the 5-section brief.
-        Depends on: all of the above.
+Step 10: Formatter + main orchestrator
+         Wire everything into the 5-section brief.
+         Depends on: all of the above.
 
-Step 8: Telegram integration
-        New commands, update bot.
+Step 11: Telegram integration
+         New commands, update bot.
 ```
 
-Steps 1-4 can be partially parallelized. Steps 5-8 are sequential.
+Steps 1-2 are sequential (memory first, then holdings). Steps 3-6 can all be built in parallel. Steps 7-11 are sequential.
 
 ---
 
 ## New Dependencies
 
 ```
-fredapi    # FRED economic data (rates, yields, CPI)
+fredapi            # FRED economic data (rates, yields, CPI)
 ```
+
+All other data fetched via `requests` (Polymarket, Kalshi, SEC EDGAR) or `yfinance` (already installed).
+
+### New Environment Variables
 
 ```env
 # Add to .env
-FRED_API_KEY=your_key   # Free at https://fred.stlouisfed.org/docs/api/api_key.html
+FRED_API_KEY=your_key          # Free at https://fred.stlouisfed.org/docs/api/api_key.html
+FMP_API_KEY=your_key           # Free at https://financialmodelingprep.com/ (250 calls/day)
+                               # For earnings transcripts. Optional — falls back to yfinance earnings data.
+KALSHI_API_KEY=your_key        # Optional — for Kalshi prediction markets
+                               # Polymarket API is public (no key needed)
 ```
 
 ---
