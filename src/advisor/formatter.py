@@ -46,12 +46,24 @@ def format_macro_section(macro_data: dict[str, Any], theses: list[dict[str, Any]
     """Format §1 Macro & Market Context."""
     lines = ["\U0001f30d <b>MACRO &amp; MARKET CONTEXT</b>", ""]
 
-    # Market snapshot
-    sp500 = macro_data.get("sp500_price")
-    sp500_chg = macro_data.get("sp500_change_pct")
-    vix = macro_data.get("vix")
-    ten_yr = macro_data.get("dgs10")
-    fed_rate = macro_data.get("fed_funds")
+    # Market snapshot — macro_data values may be dicts with "value" key or raw floats
+    def _val(key: str) -> float | None:
+        v = macro_data.get(key)
+        if isinstance(v, dict):
+            return v.get("value")
+        return v
+
+    def _chg(key: str) -> float | None:
+        v = macro_data.get(key)
+        if isinstance(v, dict):
+            return v.get("change_pct")
+        return None
+
+    sp500 = _val("sp500")
+    sp500_chg = _chg("sp500")
+    vix = _val("vix")
+    ten_yr = _val("treasury_10y")
+    fed_rate = _val("fed_funds_rate")
 
     market_parts = []
     if sp500 is not None:
