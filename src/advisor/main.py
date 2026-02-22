@@ -13,6 +13,8 @@ from typing import Any
 import anthropic
 
 from src.shared.agent_bus import consume
+from pathlib import Path
+
 from src.shared.config_loader import load_config
 from src.shared.cost_tracker import check_budget, get_daily_cost, record_usage
 from src.utils.logger import get_logger
@@ -24,14 +26,37 @@ MODEL = "claude-opus-4-6"
 
 
 def _load_advisor_config() -> dict[str, Any]:
-    """Load advisor config, with defaults for missing keys."""
+    """Load advisor config, with defaults for missing keys.
+
+    If private/portfolio.yaml exists, merges holdings (and any other keys)
+    from there — keeping private data out of the committed config.
+    """
     try:
-        return load_config("advisor")
+        config = load_config("advisor")
     except Exception:
         log.exception("Failed to load advisor config — using minimal defaults")
-        return {"holdings": [], "macro_theses": [], "superinvestors": [],
-                "strategy": {}, "prediction_markets": {}, "screening": {},
-                "output": {}, "conviction_weights": {}}
+        config = {"holdings": [], "macro_theses": [], "superinvestors": [],
+                  "strategy": {}, "prediction_markets": {}, "screening": {},
+                  "output": {}, "conviction_weights": {}}
+
+    # Merge private portfolio if it exists
+    private_path = Path("private/portfolio.yaml")
+    if private_path.exists():
+        try:
+            import yaml
+            with open(private_path) as f:
+                private = yaml.safe_load(f) or {}
+            if "holdings" in private:
+                config["holdings"] = private["holdings"]
+                log.info("Loaded %d holdings from private/portfolio.yaml", len(private["holdings"]))
+            # Merge any other private overrides
+            for key in ("macro_theses", "superinvestors"):
+                if key in private:
+                    config[key] = private[key]
+        except Exception:
+            log.exception("Failed to load private portfolio — using config defaults")
+
+    return config
 
 
 async def _run_agent(name: str, run_fn) -> dict[str, Any]:
@@ -81,11 +106,35 @@ async def run() -> dict[str, Any]:
     seed_holdings(config.get("holdings", []))
     seed_macro_theses(config.get("macro_theses", []))
 
+    # Sync entry_price from config into DB (config is source of truth)
+    from src.advisor.memory import update_holding
+    for h in config.get("holdings", []):
+        if h.get("entry_price"):
+            try:
+                update_holding(h["ticker"], entry_price=h["entry_price"])
+            except Exception:
+                pass
+
     # Increment conviction weeks on Mondays
     if date.today().weekday() == 0:
         increment_conviction_weeks()
 
     memory = build_memory_context()
+
+    # Enrich memory holdings with config data (shares, entry_price, portfolio_pct)
+    # that isn't stored in the DB schema
+    config_holdings_map = {
+        h["ticker"]: h for h in config.get("holdings", [])
+    }
+    for h in memory["holdings"]:
+        cfg = config_holdings_map.get(h["ticker"], {})
+        if cfg.get("shares"):
+            h["shares"] = cfg["shares"]
+        if cfg.get("entry_price") and not h.get("entry_price"):
+            h["entry_price"] = cfg["entry_price"]
+        if cfg.get("portfolio_pct"):
+            h["portfolio_pct"] = cfg["portfolio_pct"]
+
     log.info("Memory loaded: %d holdings, %d macro theses, %d conviction, %d moonshots",
              len(memory["holdings"]), len(memory["macro_theses"]),
              len(memory["conviction_list"]), len(memory["moonshot_list"]))
@@ -299,7 +348,13 @@ async def run() -> dict[str, Any]:
 
     # Update moonshot list
     try:
-        moonshot_result = update_moonshot_list(candidates=discovery_candidates, config=config)
+        moonshot_result = update_moonshot_list(
+            candidates=discovery_candidates,
+            config=config,
+            prediction_data=prediction_data,
+            earnings_data=earnings_data if isinstance(earnings_data, dict) else {},
+            valuation_data=valuation_data,
+        )
     except Exception:
         log.exception("Failed to update moonshot list")
         moonshot_result = {"current_list": memory["moonshot_list"], "added": [], "removed": []}
@@ -330,6 +385,7 @@ async def run() -> dict[str, Any]:
         conviction_list=conviction_result.get("current_list", []),
         moonshot_list=moonshot_result.get("current_list", []),
         earnings_data=earnings_data,
+        superinvestor_data=superinvestor_data,
     )
 
     # ── Step 8: Save memory state ──────────────────────────────────────
@@ -374,6 +430,7 @@ async def run() -> dict[str, Any]:
                 conviction_section=conviction_section,
                 moonshot_section=moonshot_section,
                 daily_cost=daily_cost,
+                macro_summary=synthesis.get("macro_summary"),
             )
     except Exception:
         log.exception("Failed to format brief")
@@ -426,6 +483,48 @@ def _macro_chg(macro_data: dict, key: str) -> str:
     return "N/A"
 
 
+def _build_earnings_ctx(earnings_data: dict[str, Any]) -> str:
+    """Build earnings context string for the Opus prompt."""
+    if not earnings_data:
+        return "No earnings data available."
+    per_ticker = earnings_data.get("per_ticker", {}) if isinstance(earnings_data, dict) else {}
+    if not per_ticker:
+        return "No per-ticker earnings data."
+    lines = []
+    for ticker, data in per_ticker.items():
+        if not isinstance(data, dict):
+            continue
+        sentiment = data.get("guidance_sentiment", "N/A")
+        tone = data.get("management_tone", "N/A")
+        surprise = data.get("eps_surprise_pct")
+        surprise_str = f", EPS surprise {surprise:+.1f}%" if surprise is not None else ""
+        rev_growth = data.get("revenue_growth_yoy")
+        rev_str = f", rev growth {rev_growth:+.1f}%" if rev_growth is not None else ""
+        guidance = ""
+        if data.get("guidance_revenue_low") and data.get("guidance_revenue_high"):
+            guidance = f", guidance ${data['guidance_revenue_low']/1e9:.1f}B-${data['guidance_revenue_high']/1e9:.1f}B"
+        lines.append(f"- {ticker}: guidance={sentiment}, tone={tone}{surprise_str}{rev_str}{guidance}")
+    return "\n".join(lines) if lines else "No recent earnings calls."
+
+
+def _build_superinvestor_ctx(superinvestor_data: dict[str, Any] | None) -> str:
+    """Build superinvestor context string for the Opus prompt."""
+    if not superinvestor_data:
+        return "No superinvestor data available."
+    lines = []
+    for ticker, data in superinvestor_data.items():
+        if not isinstance(data, dict):
+            continue
+        count = data.get("superinvestor_count", 0)
+        insider = data.get("insider_buying", False)
+        holders = data.get("holders", [])
+        holder_names = ", ".join(h.get("name", "?") for h in holders[:3]) if holders else "N/A"
+        insider_str = " + insider buying" if insider else ""
+        if count > 0 or insider:
+            lines.append(f"- {ticker}: {count} superinvestors ({holder_names}){insider_str}")
+    return "\n".join(lines) if lines else "No notable superinvestor activity."
+
+
 def _synthesize_brief(
     memory: dict[str, Any],
     macro_data: dict[str, Any],
@@ -436,6 +535,7 @@ def _synthesize_brief(
     conviction_list: list[dict[str, Any]],
     moonshot_list: list[dict[str, Any]],
     earnings_data: dict[str, Any],
+    superinvestor_data: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Use Opus 4.6 to enhance the daily brief with narrative and judgment."""
     within_budget, spent, cap = check_budget()
@@ -455,11 +555,20 @@ Conviction changes: {len(yesterday.get('conviction_changes', []))}
 """
 
     # Build holdings context
+    def _fmt_holding(h: dict) -> str:
+        t = h.get("ticker", "???")
+        price = h.get("price")
+        chg = h.get("change_pct")
+        cum = h.get("cumulative_return_pct")
+        price_s = f"${price:,.2f}" if price is not None else "N/A"
+        chg_s = f"{chg:+.1f}% today" if chg is not None else "N/A"
+        cum_s = f"{cum:+.1f}% total" if cum is not None else "N/A"
+        status = h.get("thesis_status", "intact")
+        trend = h.get("recent_trend", "")
+        return f"- {t}: {price_s} ({chg_s}, {cum_s}) — thesis: {status}. {trend}"
+
     holdings_ctx = "\n".join(
-        f"- {h.get('ticker')}: ${h.get('price', 0):,.2f} ({h.get('change_pct', 0):+.1f}% today, "
-        f"{h.get('cumulative_return_pct', 0):+.1f}% total) — thesis: {h.get('thesis_status', 'intact')}. "
-        f"{h.get('recent_trend', '')}"
-        for h in holdings_reports
+        _fmt_holding(h) for h in holdings_reports
     ) if holdings_reports else "No holdings data."
 
     # Build conviction context
@@ -504,6 +613,12 @@ Yield Curve: {macro_data.get('yield_curve_spread_calculated', 'N/A')}
 ### HOLDINGS
 {holdings_ctx}
 
+### EARNINGS & GUIDANCE
+{_build_earnings_ctx(earnings_data)}
+
+### SUPERINVESTOR ACTIVITY
+{_build_superinvestor_ctx(superinvestor_data)}
+
 ### STRATEGY ENGINE OUTPUT
 Actions: {len(strategy.get('actions', []))}
 {chr(10).join(f"- {a.get('action').upper()} {a.get('ticker')}: {a.get('reason', '')}" for a in strategy.get('actions', [])) if strategy.get('actions') else "No action recommended."}
@@ -526,6 +641,8 @@ Respond with ONLY the macro summary text. No headers."""
             messages=[{"role": "user", "content": prompt}],
         )
 
+        if not response.content:
+            return {"macro_summary": "Synthesis unavailable — empty response."}
         usage = response.usage
         record_usage(AGENT_NAME, usage.input_tokens, usage.output_tokens)
         macro_summary = response.content[0].text

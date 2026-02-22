@@ -5,11 +5,17 @@ Names are added based on multi-source evidence scoring and the 25% CAGR gate.
 Names persist until evidence weakens, not because something new appeared.
 """
 
+import anthropic
+
 from src.advisor import memory
 from src.advisor.valuation_engine import compute_target_price, passes_investment_gate
+from src.shared.cost_tracker import check_budget, record_usage
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
+
+_THESIS_AGENT = "advisor_conviction"
+_MODEL = "claude-opus-4-6"
 
 
 def evidence_test(
@@ -203,7 +209,7 @@ def update_conviction_list(
         Dict with current_list, added, removed, upgraded lists.
     """
     strategy = config.get("strategy", {})
-    min_evidence = strategy.get("min_evidence_sources", 3)
+    min_evidence = strategy.get("min_evidence_sources", 2)
     output_config = config.get("output", {})
     max_entries = output_config.get("max_conviction_list", 5)
 
@@ -315,7 +321,9 @@ def update_conviction_list(
                 continue
 
             conviction = _determine_conviction(sources_passing)
-            thesis = _build_thesis(ticker, candidate, descriptions)
+            thesis = _generate_thesis_via_opus(
+                ticker, candidate, descriptions, valuation=valuation_data.get(ticker),
+            )
 
             memory.upsert_conviction(
                 ticker=ticker,
@@ -391,21 +399,97 @@ def _build_crowd_data(
     if pred:
         crowd["prediction_market_probability"] = pred.get("probability")
 
-    return crowd if crowd else None
+    return crowd if crowd else {}
 
 
-def _build_thesis(ticker: str, candidate: dict, descriptions: list[str]) -> str:
-    """Build a thesis string from candidate data and evidence."""
+def _generate_thesis_via_opus(
+    ticker: str,
+    candidate: dict,
+    descriptions: list[str],
+    valuation: dict | None = None,
+) -> str:
+    """Generate an investment thesis for a conviction list entry via Opus.
+
+    Falls back to template-based thesis if budget is exceeded or API fails.
+    """
+    within_budget, spent, cap = check_budget()
+    if not within_budget:
+        log.warning("Budget exceeded ($%.2f/$%.2f) — fallback thesis for %s", spent, cap, ticker)
+        return _build_thesis_fallback(ticker, candidate, descriptions)
+
+    scores = candidate.get("scores", {})
+    fund = candidate.get("fundamentals_summary", {})
+
+    evidence_passing = [d for d in descriptions if d.startswith("PASS")]
+    evidence_failing = [d for d in descriptions if d.startswith("FAIL")]
+
+    valuation_ctx = ""
+    if valuation and not valuation.get("insufficient_data"):
+        valuation_ctx = (
+            f"Target price: ${valuation.get('target_price', 0):.2f}, "
+            f"implied CAGR: {valuation.get('implied_cagr', 0):.1f}%, "
+            f"margin of safety: {valuation.get('margin_of_safety', 0):.1f}%"
+        )
+
+    mcap = fund.get("market_cap")
+    mcap_str = f"${mcap / 1e9:.1f}B" if mcap else "N/A"
+
+    prompt = f"""Write a concise 2-3 sentence investment thesis for {ticker} as a conviction watchlist candidate.
+
+DATA:
+- Composite score: {scores.get('composite', 'N/A')}/100
+- Market cap: {mcap_str}
+- Revenue growth: {_fmt_pct(fund.get('revenue_growth'))}
+- Net margin: {_fmt_pct(fund.get('net_margin'))}
+- P/E trailing: {fund.get('pe_trailing', 'N/A')}
+- Sector: {fund.get('sector', 'N/A')}
+- Source: {candidate.get('source', 'N/A')}
+- Valuation: {valuation_ctx or 'N/A'}
+
+EVIDENCE PASSING:
+{chr(10).join(evidence_passing) if evidence_passing else 'None'}
+
+EVIDENCE FAILING:
+{chr(10).join(evidence_failing) if evidence_failing else 'None'}
+
+RULES:
+- Be specific: cite numbers (growth rate, P/E, CAGR).
+- State the core WHY: what catalyst or structural advantage makes this interesting.
+- Mention the key risk in one clause.
+- Do NOT use bullet points. Write prose. 2-3 sentences max.
+- Respond with ONLY the thesis text, no headers or labels."""
+
+    try:
+        client = anthropic.Anthropic()
+        response = client.messages.create(
+            model=_MODEL,
+            max_tokens=300,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        if not response.content:
+            log.warning("Empty Opus response for %s", ticker)
+            return _build_thesis_fallback(ticker, candidate, descriptions)
+        usage = response.usage
+        record_usage(_THESIS_AGENT, usage.input_tokens, usage.output_tokens)
+        thesis = response.content[0].text.strip()
+        log.info("Opus thesis for %s (%d in, %d out)", ticker, usage.input_tokens, usage.output_tokens)
+        return thesis
+    except Exception:
+        log.exception("Opus thesis failed for %s — using fallback", ticker)
+        return _build_thesis_fallback(ticker, candidate, descriptions)
+
+
+def _build_thesis_fallback(ticker: str, candidate: dict, descriptions: list[str]) -> str:
+    """Fallback: build a template thesis from candidate data and evidence."""
+    fund = candidate.get("fundamentals_summary", {})
+    sector = fund.get("sector", "")
+    rev_growth = fund.get("revenue_growth")
     parts = []
-
-    # Source info
-    source = candidate.get("source", "")
-    if source:
-        parts.append(f"Source: {source}")
-
-    # Passing evidence items
+    if sector:
+        parts.append(sector)
+    if rev_growth is not None:
+        parts.append(f"{rev_growth * 100:.0f}% revenue growth")
     passing = [d.replace("PASS ", "") for d in descriptions if d.startswith("PASS")]
     if passing:
-        parts.append("Evidence: " + "; ".join(passing))
-
-    return f"{ticker} — " + ". ".join(parts) if parts else f"{ticker} — conviction list candidate"
+        parts.append("; ".join(p.split(":")[0] for p in passing))
+    return f"{ticker} — " + ", ".join(parts) if parts else f"{ticker} — conviction list candidate"

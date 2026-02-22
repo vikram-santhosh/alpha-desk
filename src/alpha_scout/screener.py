@@ -320,9 +320,12 @@ def screen_candidates(
             "fundamentals_summary": {
                 "pe_trailing": fund_data.get("pe_trailing"),
                 "revenue_growth": fund_data.get("revenue_growth"),
+                "net_margin": fund_data.get("net_margin"),
+                "gross_margin": fund_data.get("gross_margin"),
                 "market_cap": fund_data.get("market_cap"),
                 "sector": candidate_sector,
                 "pct_from_52w_high": fund_data.get("pct_from_52w_high"),
+                "next_earnings_date": fund_data.get("next_earnings_date"),
             },
             "technical_summary": tech_data.get("signals_summary", []),
         })

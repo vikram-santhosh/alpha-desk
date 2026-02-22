@@ -215,6 +215,24 @@ def generate_strategy(
                     })
                     existing_flag_keys.add(flag_key)
 
+        # Drawdown-based thesis review: flag if down >20% from recent peak
+        drawdown = holding.get("drawdown_from_peak_pct")
+        if drawdown is not None and drawdown <= -20:
+            flag_key = (ticker, "drawdown_review")
+            if flag_key not in existing_flag_keys:
+                desc = (
+                    f"{ticker}: down {abs(drawdown):.1f}% from recent peak — "
+                    f"thesis review required"
+                )
+                memory.add_flag(ticker, "drawdown_review", desc)
+                new_flags.append({
+                    "ticker": ticker,
+                    "flag_type": "drawdown_review",
+                    "description": desc,
+                })
+                existing_flag_keys.add(flag_key)
+                log.warning("Drawdown review triggered for %s: %.1f%%", ticker, drawdown)
+
     # --- Check conviction list for add signals ---
     conviction_list = memory.get_conviction_list(active_only=True)
     for entry in conviction_list:
@@ -304,6 +322,10 @@ def _assess_urgency(holding: dict, valuation: dict) -> str:
 
     cagr = valuation.get("implied_cagr", 0) if valuation else 0
     if cagr < -10:
+        return "high"
+
+    drawdown = holding.get("drawdown_from_peak_pct")
+    if drawdown is not None and drawdown <= -20:
         return "high"
 
     return "low"

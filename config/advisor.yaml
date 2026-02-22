@@ -36,16 +36,22 @@ holdings:
 macro_theses:
   - title: "Hyperscaler CapEx Boom"
     description: "MSFT, GOOG, META, AMZN guiding CapEx higher → chip/infra revenue tailwind"
-    affected_tickers: [NVDA, AVGO, VRT, MRVL]
-  - title: "SaaS Rotation / Multiple Compression"
-    description: "Enterprise software de-rating, rotation out of high-multiple names"
-    affected_tickers: [MSFT]
+    affected_tickers: [NVDA, AVGO, VRT, MRVL, AMD, TSM]
+  - title: "AI Infrastructure Build-Out"
+    description: "GPU, networking, power, and foundry demand accelerating through 2027"
+    affected_tickers: [NVDA, AMD, AVGO, MRVL, TSM, VRT]
+  - title: "Cybersecurity / Zero Trust Adoption"
+    description: "Ransomware threat + regulatory mandates driving enterprise security spend"
+    affected_tickers: [RBRK]
   - title: "Fed Easing Cycle"
     description: "Rate cuts expected in 2026, dollar weakening, growth tailwind"
-    affected_tickers: [NVDA, AMZN, GOOG, META, NFLX]
+    affected_tickers: [AMZN, GOOG, META, NFLX, UBER]
   - title: "Big Beautiful Bill / Fiscal Stimulus"
     description: "Tax cuts + infrastructure + defense spending"
-    affected_tickers: []
+    affected_tickers: [MA, BRK.B]
+  - title: "Digital Payments Secular Growth"
+    description: "Cross-border recovery, contactless adoption, value-added services"
+    affected_tickers: [MA]
 
 # Superinvestors to track (CIK = SEC Central Index Key)
 superinvestors:
@@ -80,7 +86,7 @@ strategy:
   moonshot_max_pct: 3
   min_cagr_pct: 25
   min_margin_of_safety_pct: 15
-  min_evidence_sources: 3
+  min_evidence_sources: 2
 
 # Earnings intelligence
 earnings:
@@ -113,6 +119,45 @@ conviction_weights:
 screening:
   max_candidates: 50
   top_n_for_synthesis: 20
+
+# Moonshot archetype thresholds and seed candidates
+moonshot:
+  # Small-cap disruptor
+  disruptor_max_market_cap: 30000000000
+  disruptor_min_rev_growth: 0.30
+  disruptor_min_sentiment: 40
+  # Catalyst-driven
+  catalyst_min_composite: 45
+  # Contrarian turnaround
+  turnaround_max_pct_from_high: -30
+  turnaround_min_sentiment: 50
+
+  # Pre-IPO proxy plays (unlisted company exposure via public equities)
+  pre_ipo_proxies:
+    - ticker: MSFT
+      exposure: "OpenAI (49% stake, exclusive cloud+API partner)"
+    - ticker: GOOG
+      exposure: "Anthropic (major cloud deal, $2B+ investment)"
+    - ticker: AMZN
+      exposure: "Anthropic (up to $4B investment, AWS partnership)"
+    - ticker: RKLB
+      exposure: "SpaceX adjacent — only pure-play orbital launch competitor"
+
+  # Commodity / collectible plays
+  commodity_tickers:
+    - ticker: GLD
+      exposure: "Gold ETF — inflation hedge, central bank accumulation"
+    - ticker: SLV
+      exposure: "Silver ETF — industrial + monetary demand"
+    - ticker: BITO
+      exposure: "Bitcoin futures ETF — crypto exposure"
+
+  # Thematic sector plays
+  thematic_sectors:
+    space_tech: [RKLB, ASTS, LUNR, RDW, MNTS]
+    quantum_computing: [IONQ, RGTI, QBTS]
+    nuclear_energy: [SMR, OKLO, NNE, LEU]
+    robotics_ai: [PLTR, PATH, SERV]
 
 # Output limits
 output:

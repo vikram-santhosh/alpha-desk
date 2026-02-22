@@ -136,7 +136,7 @@ def compute_target_price(
         return {"insufficient_data": True, "reason": f"{ticker}: computed target is non-positive"}
 
     implied_cagr = compute_cagr(current_price, target_price, years=3)
-    margin_of_safety = (target_price - current_price) / target_price * 100 if target_price > 0 else 0.0
+    margin_of_safety = (target_price - current_price) / current_price * 100 if current_price > 0 else 0.0
 
     result = {
         "ticker": ticker,

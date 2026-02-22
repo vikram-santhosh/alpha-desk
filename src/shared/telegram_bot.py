@@ -238,18 +238,20 @@ async def handle_command(command: str, chat_id: str) -> None:
 
 
 def _run_scheduled_brief() -> None:
-    """Run the scheduled morning brief (called from scheduler thread)."""
-    log.info("Running scheduled morning brief")
+    """Run the scheduled daily advisor brief (called from scheduler thread)."""
+    log.info("Running scheduled advisor brief")
     try:
+        from src.advisor.main import run as run_advisor
         loop = asyncio.new_event_loop()
-        result = loop.run_until_complete(run_morning_brief())
+        result = loop.run_until_complete(run_advisor())
         loop.close()
         if CHAT_ID:
             send_message(CHAT_ID, result["formatted"])
+            log.info("Scheduled advisor brief sent successfully")
     except Exception as e:
-        log.error("Scheduled brief failed: %s", e, exc_info=True)
+        log.error("Scheduled advisor brief failed: %s", e, exc_info=True)
         if CHAT_ID:
-            send_message(CHAT_ID, f"<b>Scheduled brief failed</b>\n{e}")
+            send_message(CHAT_ID, f"<b>Scheduled advisor brief failed</b>\n{e}")
 
 
 def start_scheduler() -> threading.Thread:

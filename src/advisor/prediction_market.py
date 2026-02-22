@@ -5,10 +5,15 @@ and Kalshi (optional API key), filters for finance/macro-relevant markets,
 stores data via memory layer, and detects significant probability shifts.
 """
 
+import json
 import os
 import re
+import urllib3
 
 import requests
+
+# Suppress only the specific InsecureRequestWarning from urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from src.advisor.memory import (
     get_prediction_market_deltas,
@@ -98,12 +103,22 @@ def _fetch_polymarket() -> list[dict]:
     """Fetch relevant markets from Polymarket (public, no key needed)."""
     markets = []
     try:
-        resp = requests.get(
-            POLYMARKET_URL,
-            params={"closed": "false", "limit": 50},
-            timeout=15,
-        )
-        resp.raise_for_status()
+        try:
+            resp = requests.get(
+                POLYMARKET_URL,
+                params={"closed": "false", "limit": 50},
+                timeout=15,
+            )
+            resp.raise_for_status()
+        except requests.exceptions.SSLError:
+            log.warning("Polymarket SSL error — retrying with verify=False")
+            resp = requests.get(
+                POLYMARKET_URL,
+                params={"closed": "false", "limit": 50},
+                timeout=15,
+                verify=False,
+            )
+            resp.raise_for_status()
         events = resp.json()
 
         for event in events:
@@ -202,13 +217,24 @@ def _fetch_kalshi() -> list[dict]:
         headers["Authorization"] = f"Bearer {api_key}"
 
     try:
-        resp = requests.get(
-            KALSHI_URL,
-            params={"status": "open", "limit": 50},
-            headers=headers,
-            timeout=15,
-        )
-        resp.raise_for_status()
+        try:
+            resp = requests.get(
+                KALSHI_URL,
+                params={"status": "open", "limit": 50},
+                headers=headers,
+                timeout=15,
+            )
+            resp.raise_for_status()
+        except requests.exceptions.SSLError:
+            log.warning("Kalshi SSL error — retrying with verify=False")
+            resp = requests.get(
+                KALSHI_URL,
+                params={"status": "open", "limit": 50},
+                headers=headers,
+                timeout=15,
+                verify=False,
+            )
+            resp.raise_for_status()
         data = resp.json()
 
         for mkt in data.get("markets", []):

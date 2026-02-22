@@ -72,6 +72,40 @@ def monitor_holdings(
         except Exception:
             log.exception("Error building report for %s", ticker)
 
+    # Compute position weights from shares * current price
+    total_value = 0.0
+    for r in reports:
+        p = r.get("price")
+        shares = r.get("shares") or 1
+        if p is not None and p > 0:
+            r["_market_value"] = p * shares
+            total_value += r["_market_value"]
+
+    if total_value > 0:
+        for r in reports:
+            mv = r.pop("_market_value", None)
+            if mv is not None and mv > 0:
+                r["position_pct"] = round(mv / total_value * 100, 1)
+            else:
+                r["position_pct"] = None
+
+    # Sector concentration check
+    sector_weight: dict[str, float] = {}
+    for r in reports:
+        sector = r.get("sector") or "Unknown"
+        pct = r.get("position_pct") or 0
+        sector_weight[sector] = sector_weight.get(sector, 0) + pct
+
+    for sector, weight in sector_weight.items():
+        if weight >= 80:
+            for r in reports:
+                r_sector = r.get("sector") or "Unknown"
+                if r_sector == sector:
+                    r.setdefault("key_events", []).append(
+                        f"WARNING: {sector} sector concentration {weight:.0f}% of portfolio"
+                    )
+            log.warning("Sector concentration: %s = %.0f%%", sector, weight)
+
     log.info("Built %d holding reports", len(reports))
     return reports
 
@@ -162,6 +196,9 @@ def _build_holding_report(
     """Build a single holding report dict."""
     ticker = holding["ticker"]
     entry_price = holding.get("entry_price")
+    shares = holding.get("shares")
+    if shares is None:
+        shares = 1
     tracking_since = holding.get("tracking_since", "")
     thesis = holding.get("thesis", "")
     thesis_status = holding.get("thesis_status", "intact")
@@ -182,6 +219,18 @@ def _build_holding_report(
     # Recent snapshots for trend narrative (last 7 days)
     recent = get_recent_snapshots(ticker, days=7)
     recent_trend = _compute_trend_narrative(ticker, recent)
+
+    # Drawdown from recent peak (last 7 snapshots)
+    drawdown_from_peak_pct = None
+    if price is not None and recent:
+        peak_price = max(
+            (s.get("price") or 0 for s in recent),
+            default=0,
+        )
+        if peak_price > 0 and price < peak_price:
+            drawdown_from_peak_pct = round(
+                (price - peak_price) / peak_price * 100, 2
+            )
 
     # Count positive/negative days in last 7
     positive_days = sum(
@@ -291,8 +340,10 @@ def _build_holding_report(
         "earnings_approaching": earnings_approaching,
         "earnings_date": str(earnings_date) if earnings_date else None,
         "earnings_days_out": earnings_days_out,
+        "shares": shares,
         "sector": fund_data.get("sector"),
         "industry": fund_data.get("industry"),
+        "drawdown_from_peak_pct": drawdown_from_peak_pct,
     }
 
 
@@ -309,12 +360,16 @@ def _compute_trend_narrative(
         A string like "Up 5 of last 7 sessions. Momentum strong."
     """
     if not snapshots:
-        return "No prior data (first day of tracking)."
+        return ""
 
     n = len(snapshots)
+
+    # Need at least 3 data points for a meaningful trend narrative
+    if n < 3:
+        return ""
+
     up_days = sum(1 for s in snapshots if (s.get("change_pct") or 0) > 0)
     down_days = sum(1 for s in snapshots if (s.get("change_pct") or 0) < 0)
-    flat_days = n - up_days - down_days
 
     # Streak detection (snapshots are newest-first)
     streak_type = None
@@ -333,16 +388,15 @@ def _compute_trend_narrative(
 
     parts: list[str] = []
 
-    # Main trend summary
-    parts.append(f"Up {up_days} of last {n} sessions.")
-
-    # Momentum qualifier
+    # Momentum qualifier (only with enough data)
     if up_days >= n * 0.7:
-        parts.append("Momentum strong.")
+        parts.append(f"Strong: up {up_days}/{n} sessions.")
     elif down_days >= n * 0.7:
-        parts.append("Under pressure.")
+        parts.append(f"Weak: down {down_days}/{n} sessions.")
     elif abs(up_days - down_days) <= 1:
-        parts.append("Trading sideways.")
+        parts.append(f"Sideways ({up_days} up, {down_days} down of {n}).")
+    else:
+        parts.append(f"Up {up_days}/{n} sessions.")
 
     # Notable streak
     if streak_count >= 3:
