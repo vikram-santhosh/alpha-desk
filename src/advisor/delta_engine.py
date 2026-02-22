@@ -139,7 +139,8 @@ def build_snapshot(
         if not isinstance(tech, dict):
             continue
         tickers_data.setdefault(ticker, {})
-        tickers_data[ticker]["rsi"] = tech.get("rsi")
+        rsi_data = tech.get("rsi")
+        tickers_data[ticker]["rsi"] = rsi_data.get("rsi") if isinstance(rsi_data, dict) else rsi_data
         tickers_data[ticker]["macd_signal"] = tech.get("macd_signal")
         signals = tech.get("signals", [])
         tickers_data[ticker]["technical_signals"] = signals if isinstance(signals, list) else []

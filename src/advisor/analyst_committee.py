@@ -75,7 +75,7 @@ RULES:
         try:
             client = anthropic.Anthropic()
             response = client.messages.create(
-                model=MODEL, max_tokens=2000,
+                model=MODEL, max_tokens=3500,
                 messages=[{"role": "user", "content": prompt}],
             )
             usage = response.usage
@@ -89,6 +89,9 @@ RULES:
                 text = text.split("```")[1].split("```")[0].strip()
             return json.loads(text)
 
+        except json.JSONDecodeError:
+            log.warning("Growth analyst returned truncated JSON — returning partial result")
+            return {"error": "analysis_failed", "analyses": {}, "reason": "json_truncated"}
         except Exception:
             log.exception("Growth analyst failed")
             return {"error": "analysis_failed", "analyses": {}}
@@ -165,7 +168,7 @@ RULES:
         try:
             client = anthropic.Anthropic()
             response = client.messages.create(
-                model=MODEL, max_tokens=2000,
+                model=MODEL, max_tokens=3500,
                 messages=[{"role": "user", "content": prompt}],
             )
             usage = response.usage
@@ -179,6 +182,9 @@ RULES:
                 text = text.split("```")[1].split("```")[0].strip()
             return json.loads(text)
 
+        except json.JSONDecodeError:
+            log.warning("Value analyst returned truncated JSON — returning partial result")
+            return {"error": "analysis_failed", "analyses": {}, "reason": "json_truncated"}
         except Exception:
             log.exception("Value analyst failed")
             return {"error": "analysis_failed", "analyses": {}}
@@ -261,7 +267,7 @@ RULES:
         try:
             client = anthropic.Anthropic()
             response = client.messages.create(
-                model=MODEL, max_tokens=2000,
+                model=MODEL, max_tokens=3500,
                 messages=[{"role": "user", "content": prompt}],
             )
             usage = response.usage
@@ -275,6 +281,9 @@ RULES:
                 text = text.split("```")[1].split("```")[0].strip()
             return json.loads(text)
 
+        except json.JSONDecodeError:
+            log.warning("Risk officer returned truncated JSON — returning partial result")
+            return {"error": "analysis_failed", "reason": "json_truncated"}
         except Exception:
             log.exception("Risk officer failed")
             return {"error": "analysis_failed"}
