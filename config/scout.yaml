@@ -3,6 +3,9 @@ sources:
   sector_peers: true
   sp500_index: true
   yfinance_screener: true
+  supply_chain: true
+  thematic_scanner: true
+  superinvestor_13f: true
 
 yfinance_screeners: [undervalued_growth_stocks, most_actives]
 
@@ -11,11 +14,15 @@ screening:
   batch_size: 10
   top_n_for_synthesis: 20
 
+# v2 scoring weights (6 dimensions)
 weights:
-  technical: 0.30
-  fundamental: 0.30
-  sentiment: 0.20
-  diversification: 0.20
+  technical: 0.20
+  fundamental: 0.25
+  sentiment: 0.10
+  diversification: 0.15
+  novelty: 0.10
+  catalyst_proximity: 0.10
+  evidence_quality: 0.10
 
 output:
   max_portfolio_recommendations: 5

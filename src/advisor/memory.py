@@ -177,7 +177,49 @@ def _get_db() -> sqlite3.Connection:
             full_brief_hash TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS daily_snapshots (
+            id INTEGER PRIMARY KEY,
+            date TEXT NOT NULL UNIQUE,
+            snapshot_data TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS recommendation_outcomes (
+            id INTEGER PRIMARY KEY,
+            ticker TEXT NOT NULL,
+            recommendation_date TEXT NOT NULL,
+            action TEXT NOT NULL,
+            conviction TEXT NOT NULL,
+            entry_price REAL NOT NULL,
+            target_price REAL,
+            thesis_summary TEXT,
+            bear_case_summary TEXT,
+            invalidation_conditions TEXT,
+            evidence_quality_score REAL,
+            composite_score REAL,
+            source TEXT,
+            category TEXT,
+            price_1d REAL, return_1d_pct REAL,
+            price_1w REAL, return_1w_pct REAL,
+            price_1m REAL, return_1m_pct REAL,
+            price_3m REAL, return_3m_pct REAL,
+            spy_return_1m_pct REAL,
+            alpha_1m_pct REAL,
+            thesis_played_out INTEGER,
+            invalidation_triggered INTEGER DEFAULT 0,
+            invalidation_detail TEXT,
+            user_rating INTEGER,
+            status TEXT DEFAULT 'open',
+            closed_date TEXT,
+            closed_reason TEXT,
+            updated_at TEXT NOT NULL,
+            UNIQUE(ticker, recommendation_date, action)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_snapshots_ticker_date ON holding_snapshots(ticker, date);
+        CREATE INDEX IF NOT EXISTS idx_daily_snapshots_date ON daily_snapshots(date);
+        CREATE INDEX IF NOT EXISTS idx_rec_outcomes_ticker ON recommendation_outcomes(ticker);
+        CREATE INDEX IF NOT EXISTS idx_rec_outcomes_status ON recommendation_outcomes(status);
         CREATE INDEX IF NOT EXISTS idx_earnings_ticker ON earnings_calls(ticker);
         CREATE INDEX IF NOT EXISTS idx_cross_mentions_mentioned ON cross_mentions(mentioned_ticker);
         CREATE INDEX IF NOT EXISTS idx_prediction_date ON prediction_markets(date);
@@ -757,4 +799,236 @@ def build_memory_context() -> dict[str, Any]:
         "moonshot_list": get_moonshot_list(active_only=True),
         "active_flags": get_active_flags(),
         "yesterday_brief": get_yesterday_brief(),
+    }
+
+
+# ═══════════════════════════════════════════════════════
+# DAILY SNAPSHOTS (Delta Engine)
+# ═══════════════════════════════════════════════════════
+
+def save_daily_snapshot(date_str: str, snapshot_data: dict) -> None:
+    """Insert or replace a daily snapshot for delta engine comparison."""
+    conn = _get_db()
+    conn.execute("""
+        INSERT OR REPLACE INTO daily_snapshots (date, snapshot_data, created_at)
+        VALUES (?, ?, ?)
+    """, (date_str, json.dumps(snapshot_data), datetime.now().isoformat()))
+    conn.commit()
+    conn.close()
+    log.info("Saved daily snapshot for %s", date_str)
+
+
+def get_latest_snapshot_before(date_str: str) -> dict | None:
+    """Get the most recent snapshot before the given date."""
+    conn = _get_db()
+    row = conn.execute("""
+        SELECT snapshot_data FROM daily_snapshots
+        WHERE date < ? ORDER BY date DESC LIMIT 1
+    """, (date_str,)).fetchone()
+    conn.close()
+    if not row:
+        return None
+    try:
+        return json.loads(row[0])
+    except (json.JSONDecodeError, TypeError):
+        log.exception("Failed to parse snapshot data")
+        return None
+
+
+def get_snapshot_for_date(date_str: str) -> dict | None:
+    """Get the snapshot for an exact date."""
+    conn = _get_db()
+    row = conn.execute("""
+        SELECT snapshot_data FROM daily_snapshots WHERE date = ?
+    """, (date_str,)).fetchone()
+    conn.close()
+    if not row:
+        return None
+    try:
+        return json.loads(row[0])
+    except (json.JSONDecodeError, TypeError):
+        log.exception("Failed to parse snapshot data for %s", date_str)
+        return None
+
+
+# ═══════════════════════════════════════════════════════
+# RECOMMENDATION OUTCOMES (Outcome Tracking)
+# ═══════════════════════════════════════════════════════
+
+def record_recommendation(rec) -> None:
+    """Record a recommendation for outcome tracking.
+
+    Args:
+        rec: A Recommendation dataclass or dict with required fields.
+    """
+    conn = _get_db()
+    now = datetime.now().isoformat()
+
+    # Handle both Recommendation objects and dicts
+    if hasattr(rec, "to_dict"):
+        d = rec.to_dict()
+    else:
+        d = rec
+
+    ticker = d.get("ticker", "")
+    rec_date = d.get("recommendation_date", date.today().isoformat())
+    action = d.get("action", "WATCH")
+    conviction = d.get("conviction_level", d.get("conviction", "medium"))
+    entry_price = d.get("valuation", {}).get("current_price", 0.0)
+    target_price = d.get("valuation", {}).get("target_price")
+    thesis_summary = d.get("thesis", {}).get("core_argument", "") if isinstance(d.get("thesis"), dict) else str(d.get("thesis", ""))
+    bear_case = d.get("bear_case", {}).get("primary_risk", "") if isinstance(d.get("bear_case"), dict) else ""
+    invalidation = json.dumps(d.get("invalidation_conditions", []))
+    evidence_score = d.get("thesis", {}).get("evidence_quality_score", 0.0) if isinstance(d.get("thesis"), dict) else 0.0
+    composite = d.get("analyst_scores", {}).get("composite_score", 0.0) if isinstance(d.get("analyst_scores"), dict) else 0.0
+    source = d.get("source", "")
+    category = d.get("category", "")
+
+    try:
+        conn.execute("""
+            INSERT OR REPLACE INTO recommendation_outcomes
+            (ticker, recommendation_date, action, conviction, entry_price,
+             target_price, thesis_summary, bear_case_summary, invalidation_conditions,
+             evidence_quality_score, composite_score, source, category, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (ticker, rec_date, action, conviction, entry_price,
+              target_price, thesis_summary, bear_case, invalidation,
+              evidence_score, composite, source, category, now))
+        conn.commit()
+        log.info("Recorded recommendation outcome for %s", ticker)
+    except Exception:
+        log.exception("Failed to record recommendation for %s", ticker)
+    conn.close()
+
+
+def get_open_recommendations() -> list[dict[str, Any]]:
+    """Return all recommendations where status='open'."""
+    conn = _get_db()
+    rows = conn.execute("""
+        SELECT * FROM recommendation_outcomes WHERE status = 'open'
+        ORDER BY recommendation_date DESC
+    """).fetchall()
+    cols = [d[0] for d in conn.execute("SELECT * FROM recommendation_outcomes LIMIT 0").description]
+    conn.close()
+    return [dict(zip(cols, row)) for row in rows]
+
+
+def get_recommendations_by_ticker(ticker: str) -> list[dict[str, Any]]:
+    """Return all recommendations for a ticker, newest first."""
+    conn = _get_db()
+    rows = conn.execute("""
+        SELECT * FROM recommendation_outcomes WHERE ticker = ?
+        ORDER BY recommendation_date DESC
+    """, (ticker,)).fetchall()
+    cols = [d[0] for d in conn.execute("SELECT * FROM recommendation_outcomes LIMIT 0").description]
+    conn.close()
+    return [dict(zip(cols, row)) for row in rows]
+
+
+_OUTCOME_FIELDS = frozenset({
+    "price_1d", "return_1d_pct", "price_1w", "return_1w_pct",
+    "price_1m", "return_1m_pct", "price_3m", "return_3m_pct",
+    "spy_return_1m_pct", "alpha_1m_pct",
+    "thesis_played_out", "invalidation_triggered", "invalidation_detail",
+    "user_rating", "status", "closed_date", "closed_reason", "updated_at",
+})
+
+
+def update_recommendation_outcome(rec_id: int, **kwargs) -> None:
+    """Update outcome fields for a recommendation. Only whitelisted fields accepted."""
+    if not kwargs:
+        return
+    invalid = set(kwargs.keys()) - _OUTCOME_FIELDS - {"updated_at"}
+    if invalid:
+        raise ValueError(f"Invalid outcome fields: {invalid}. Allowed: {_OUTCOME_FIELDS}")
+    conn = _get_db()
+    kwargs["updated_at"] = datetime.now().isoformat()
+    sets = ", ".join(f"{k} = ?" for k in kwargs)
+    vals = list(kwargs.values()) + [rec_id]
+    conn.execute(f"UPDATE recommendation_outcomes SET {sets} WHERE id = ?", vals)
+    conn.commit()
+    conn.close()
+
+
+def close_recommendation(rec_id: int, reason: str) -> None:
+    """Close a recommendation with a reason."""
+    conn = _get_db()
+    now = datetime.now().isoformat()
+    conn.execute("""
+        UPDATE recommendation_outcomes SET status = 'closed', closed_date = ?,
+        closed_reason = ?, updated_at = ? WHERE id = ?
+    """, (date.today().isoformat(), reason, now, rec_id))
+    conn.commit()
+    conn.close()
+
+
+def get_recommendation_scorecard(lookback_days: int = 30) -> dict:
+    """Compute aggregate metrics for recommendation outcomes.
+
+    Returns dict with: total_recommendations, hit_rate_1m, avg_return_1m_pct,
+    avg_alpha_1m_pct, false_positive_rate, hit_rate_by_source,
+    hit_rate_by_conviction, best_recommendation, worst_recommendation.
+    """
+    conn = _get_db()
+    cutoff = date.today().isoformat()  # Get all since we filter by lookback
+    rows = conn.execute("""
+        SELECT * FROM recommendation_outcomes
+        WHERE recommendation_date >= date(?, '-' || ? || ' days')
+        ORDER BY recommendation_date DESC
+    """, (cutoff, lookback_days)).fetchall()
+    cols = [d[0] for d in conn.execute("SELECT * FROM recommendation_outcomes LIMIT 0").description]
+    conn.close()
+
+    recs = [dict(zip(cols, row)) for row in rows]
+    total = len(recs)
+
+    if total == 0:
+        return {"total_recommendations": 0, "hit_rate_1m": 0, "avg_return_1m_pct": 0,
+                "avg_alpha_1m_pct": 0, "false_positive_rate": 0}
+
+    # 1-month hit rate
+    recs_with_1m = [r for r in recs if r.get("return_1m_pct") is not None]
+    hits_1m = sum(1 for r in recs_with_1m if r["return_1m_pct"] > 0)
+    hit_rate_1m = (hits_1m / len(recs_with_1m) * 100) if recs_with_1m else 0
+
+    # Average return
+    avg_return_1m = (sum(r["return_1m_pct"] for r in recs_with_1m) / len(recs_with_1m)) if recs_with_1m else 0
+
+    # Average alpha
+    recs_with_alpha = [r for r in recs if r.get("alpha_1m_pct") is not None]
+    avg_alpha = (sum(r["alpha_1m_pct"] for r in recs_with_alpha) / len(recs_with_alpha)) if recs_with_alpha else 0
+
+    # False positive rate (high conviction with return < -10%)
+    high_conv = [r for r in recs_with_1m if r.get("conviction") == "high"]
+    false_positives = sum(1 for r in high_conv if r["return_1m_pct"] < -10)
+    fp_rate = (false_positives / len(high_conv) * 100) if high_conv else 0
+
+    # Best/worst
+    best = max(recs_with_1m, key=lambda r: r["return_1m_pct"]) if recs_with_1m else None
+    worst = min(recs_with_1m, key=lambda r: r["return_1m_pct"]) if recs_with_1m else None
+
+    # By source
+    from collections import defaultdict
+    source_hits: dict[str, list] = defaultdict(list)
+    for r in recs_with_1m:
+        src = (r.get("source") or "unknown").split("/")[0]
+        source_hits[src].append(r["return_1m_pct"] > 0)
+    hit_by_source = {s: sum(v) / len(v) * 100 for s, v in source_hits.items() if v}
+
+    # By conviction
+    conv_hits: dict[str, list] = defaultdict(list)
+    for r in recs_with_1m:
+        conv_hits[r.get("conviction", "unknown")].append(r["return_1m_pct"] > 0)
+    hit_by_conviction = {c: sum(v) / len(v) * 100 for c, v in conv_hits.items() if v}
+
+    return {
+        "total_recommendations": total,
+        "hit_rate_1m": round(hit_rate_1m, 1),
+        "avg_return_1m_pct": round(avg_return_1m, 2),
+        "avg_alpha_1m_pct": round(avg_alpha, 2),
+        "false_positive_rate": round(fp_rate, 1),
+        "hit_rate_by_source": hit_by_source,
+        "hit_rate_by_conviction": hit_by_conviction,
+        "best_recommendation": {"ticker": best["ticker"], "return_pct": best["return_1m_pct"]} if best else None,
+        "worst_recommendation": {"ticker": worst["ticker"], "return_pct": worst["return_1m_pct"]} if worst else None,
     }

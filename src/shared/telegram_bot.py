@@ -235,6 +235,61 @@ async def handle_command(command: str, chat_id: str) -> None:
         result = await run_single_section(section)
         send_message(chat_id, result["formatted"])
 
+    elif cmd == "/delta":
+        send_message(chat_id, "Computing delta report...")
+        try:
+            from src.advisor.memory import get_latest_snapshot_before, get_snapshot_for_date
+            from src.advisor.delta_engine import compute_deltas, generate_delta_summary, format_delta_for_telegram
+            from datetime import date as _date
+            today_str = _date.today().isoformat()
+            today_snap = get_snapshot_for_date(today_str)
+            if not today_snap:
+                send_message(chat_id, "No snapshot for today. Run /advisor first to generate data.")
+                return
+            yesterday_snap = get_latest_snapshot_before(today_str)
+            report = compute_deltas(today_snap, yesterday_snap)
+            report.summary = generate_delta_summary(report)
+            formatted = format_delta_for_telegram(report)
+            send_message(chat_id, formatted)
+        except Exception as e:
+            log.exception("Delta command failed")
+            send_message(chat_id, f"Delta report failed: {e}")
+
+    elif cmd == "/catalysts":
+        send_message(chat_id, "Fetching catalyst calendar...")
+        try:
+            from src.advisor.catalyst_tracker import run_catalyst_tracking
+            from src.shared.config_loader import load_config
+            config = load_config("advisor")
+            tickers = [h["ticker"] for h in config.get("holdings", [])]
+            result = run_catalyst_tracking(tickers)
+            send_message(chat_id, result.get("formatted", "No catalysts found."))
+        except Exception as e:
+            log.exception("Catalysts command failed")
+            send_message(chat_id, f"Catalyst fetch failed: {e}")
+
+    elif cmd == "/scorecard":
+        send_message(chat_id, "Computing scorecard...")
+        try:
+            from src.advisor.outcome_scorer import score_all_outcomes, format_scorecard
+            scorecard = score_all_outcomes()
+            formatted = format_scorecard(scorecard)
+            send_message(chat_id, formatted)
+        except Exception as e:
+            log.exception("Scorecard command failed")
+            send_message(chat_id, f"Scorecard failed: {e}")
+
+    elif cmd == "/retro":
+        send_message(chat_id, "Running weekly retrospective...")
+        try:
+            from src.advisor.retrospective import run_weekly_retrospective, format_retrospective
+            retro = run_weekly_retrospective()
+            formatted = format_retrospective(retro)
+            send_message(chat_id, formatted)
+        except Exception as e:
+            log.exception("Retrospective command failed")
+            send_message(chat_id, f"Retrospective failed: {e}")
+
     elif cmd == "/cost":
         report = format_cost_report()
         send_message(chat_id, report)
@@ -270,6 +325,11 @@ async def handle_command(command: str, chat_id: str) -> None:
             "/news — Market news only\n"
             "/trending — Reddit intelligence only\n"
             "/discover — Ticker discovery\n\n"
+            "<b>v2 Intelligence</b>\n"
+            "/delta — What changed since yesterday\n"
+            "/catalysts — Upcoming catalysts (30d)\n"
+            "/scorecard — Recommendation track record\n"
+            "/retro — Weekly retrospective &amp; self-assessment\n\n"
             "<b>System</b>\n"
             "/cost — API cost report\n"
             "/status — System status\n"
@@ -298,6 +358,34 @@ def _run_scheduled_brief() -> None:
             send_message(CHAT_ID, f"<b>Scheduled advisor brief failed</b>\n{e}")
 
 
+def _run_scheduled_scorecard() -> None:
+    """Run the scheduled weekly scorecard (Sundays)."""
+    log.info("Running scheduled weekly scorecard")
+    try:
+        from src.advisor.outcome_scorer import score_all_outcomes, format_scorecard
+        scorecard = score_all_outcomes()
+        formatted = format_scorecard(scorecard)
+        if CHAT_ID:
+            send_message(CHAT_ID, formatted)
+            log.info("Scheduled scorecard sent successfully")
+    except Exception as e:
+        log.error("Scheduled scorecard failed: %s", e, exc_info=True)
+
+
+def _run_scheduled_retrospective() -> None:
+    """Run the scheduled weekly retrospective (Sundays at 8:00 AM)."""
+    log.info("Running scheduled weekly retrospective")
+    try:
+        from src.advisor.retrospective import run_weekly_retrospective, format_retrospective
+        retro = run_weekly_retrospective()
+        formatted = format_retrospective(retro)
+        if CHAT_ID:
+            send_message(CHAT_ID, formatted)
+            log.info("Scheduled retrospective sent successfully")
+    except Exception as e:
+        log.error("Scheduled retrospective failed: %s", e, exc_info=True)
+
+
 def start_scheduler() -> threading.Thread:
     """Start the background scheduler for daily briefs.
 
@@ -305,7 +393,9 @@ def start_scheduler() -> threading.Thread:
     Returns the scheduler thread.
     """
     schedule.every().day.at("07:00").do(_run_scheduled_brief)
-    log.info("Scheduler configured: daily brief at 07:00")
+    schedule.every().sunday.at("08:00").do(_run_scheduled_retrospective)
+    schedule.every().sunday.at("08:30").do(_run_scheduled_scorecard)
+    log.info("Scheduler configured: daily brief at 07:00, retro Sundays 08:00, scorecard 08:30")
 
     def _scheduler_loop():
         while True:

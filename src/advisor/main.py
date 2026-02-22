@@ -139,6 +139,16 @@ async def run() -> dict[str, Any]:
              len(memory["holdings"]), len(memory["macro_theses"]),
              len(memory["conviction_list"]), len(memory["moonshot_list"]))
 
+    # ── Step 1b: Load retrospective context ────────────────────────────
+    retrospective_context = ""
+    try:
+        from src.advisor.retrospective import get_latest_retrospective_context
+        retrospective_context = get_latest_retrospective_context()
+        if retrospective_context:
+            log.info("Loaded retrospective context (%d chars)", len(retrospective_context))
+    except Exception:
+        log.exception("Failed to load retrospective context")
+
     # Build ticker universe: holdings + conviction + moonshots
     holding_tickers = [h["ticker"] for h in memory["holdings"]]
     conviction_tickers = [c["ticker"] for c in memory["conviction_list"]]
@@ -232,8 +242,11 @@ async def run() -> dict[str, Any]:
         earnings_data = {}
 
     try:
-        superinvestor_data = await asyncio.to_thread(
+        _raw_si_data = await asyncio.to_thread(
             run_superinvestor_tracking, all_tickers, config)
+        # Unwrap: run_superinvestor_tracking returns {insider_transactions, institutional_holders,
+        # filings_13f, smart_money_summaries}. Downstream code expects {ticker: data} mapping.
+        superinvestor_data = _raw_si_data.get("smart_money_summaries", {}) if isinstance(_raw_si_data, dict) else {}
     except Exception:
         log.exception("Failed to run superinvestor tracking")
         superinvestor_data = {}
@@ -293,6 +306,55 @@ async def run() -> dict[str, Any]:
         holdings_reports = []
 
     holdings_narrative = build_holdings_narrative(holdings_reports)
+
+    # ── Step 5b: Delta Engine — snapshot + compute changes ─────────────
+    from src.advisor.delta_engine import (
+        build_snapshot,
+        save_today_snapshot,
+        compute_deltas,
+        generate_delta_summary,
+        format_delta_for_prompt,
+    )
+    from src.advisor.memory import get_latest_snapshot_before
+
+    log.info("Step 5b: Delta Engine")
+    delta_report = None
+    delta_prompt_section = ""
+    try:
+        today_snapshot = build_snapshot(
+            holdings_reports=holdings_reports,
+            fundamentals=fundamentals,
+            technicals=technicals,
+            macro_data=macro_data,
+            conviction_list=memory["conviction_list"],
+            moonshot_list=memory["moonshot_list"],
+            strategy={},
+            earnings_data=earnings_data if isinstance(earnings_data, dict) else {},
+            superinvestor_data=superinvestor_data,
+            reddit_mood=_reddit_mood,
+            reddit_themes=_reddit_themes,
+        )
+        save_today_snapshot(today_snapshot)
+    except Exception:
+        log.exception("Failed to build/save daily snapshot")
+        today_snapshot = {}
+
+    try:
+        yesterday_snapshot = get_latest_snapshot_before(date.today().isoformat())
+        delta_report = compute_deltas(today_snapshot, yesterday_snapshot)
+        try:
+            client = anthropic.Anthropic()
+            delta_report.summary = generate_delta_summary(delta_report, anthropic_client=client)
+        except Exception:
+            delta_report.summary = generate_delta_summary(delta_report)
+        delta_prompt_section = format_delta_for_prompt(delta_report)
+        log.info("Delta report: %d high, %d medium, %d low",
+                 len(delta_report.high_significance),
+                 len(delta_report.medium_significance),
+                 len(delta_report.low_significance))
+    except Exception:
+        log.exception("Failed to compute deltas")
+        delta_prompt_section = ""
 
     # ── Step 6: Decision engine ────────────────────────────────────────
     from src.advisor.valuation_engine import compute_target_price
@@ -378,6 +440,80 @@ async def run() -> dict[str, Any]:
         log.exception("Failed to update conviction list")
         conviction_result = {"current_list": memory["conviction_list"], "added": [], "removed": []}
 
+    # ── Step 6b: Catalyst tracking ────────────────────────────────────
+    catalyst_data = {}
+    catalyst_prompt_section = ""
+    try:
+        from src.advisor.catalyst_tracker import run_catalyst_tracking, format_catalysts_for_prompt
+        catalyst_data = run_catalyst_tracking(all_tickers)
+        catalyst_prompt_section = format_catalysts_for_prompt(catalyst_data.get("catalysts", []))
+        log.info("Catalyst tracking: %d catalysts found", len(catalyst_data.get("catalysts", [])))
+    except Exception:
+        log.exception("Catalyst tracking failed — continuing without catalysts")
+
+    # Record conviction additions as structured recommendations for outcome tracking
+    try:
+        from src.advisor.memory import record_recommendation
+        from src.advisor.conviction_manager import build_evidence_items
+        from src.shared.schemas import compute_evidence_quality_score
+        for added_entry in conviction_result.get("added", []):
+            t = added_entry.get("ticker", "")
+            if not t:
+                continue
+            # Build evidence items for this ticker
+            si_data = superinvestor_data.get(t)
+            earn_data = earnings_data.get("per_ticker", {}).get(t) if isinstance(earnings_data, dict) else None
+            fund = fundamentals.get(t, {})
+            val = valuation_data.get(t)
+            crowd = {}
+            for c in discovery_candidates:
+                if c.get("ticker") == t:
+                    sig = c.get("signal_data", {})
+                    if sig.get("sentiment") is not None:
+                        crowd["reddit_sentiment"] = sig["sentiment"]
+                    break
+            evidence_items = build_evidence_items(t, earn_data, crowd, si_data, fund, val)
+            eq_score = compute_evidence_quality_score(evidence_items)
+
+            # Fetch actual thesis text from memory for skeptic review
+            thesis_text = ""
+            try:
+                conv_entries = memory.get_conviction_list(active_only=True)
+                for ce in conv_entries:
+                    if ce.get("ticker") == t:
+                        thesis_text = ce.get("thesis", "")
+                        break
+            except Exception:
+                pass
+
+            # Run skeptic challenge on new conviction additions
+            rec_dict = {
+                "ticker": t,
+                "recommendation_date": date.today().isoformat(),
+                "action": "BUY",
+                "conviction_level": added_entry.get("conviction", "medium"),
+                "valuation": val or {},
+                "thesis": {"core_argument": thesis_text, "supporting_evidence": [e.to_dict() for e in evidence_items], "evidence_quality_score": eq_score},
+                "bear_case": {"primary_risk": ""},
+                "analyst_scores": {"composite_score": 0.0},
+                "source": "conviction_pipeline",
+                "category": "conviction_add",
+            }
+            try:
+                from src.advisor.skeptic_agent import SkepticAgent, apply_skeptic_to_recommendation
+                skeptic = SkepticAgent()
+                market_ctx = {"vix": macro_data.get("vix", {}).get("value") if isinstance(macro_data.get("vix"), dict) else macro_data.get("vix"),
+                              "treasury_10y": macro_data.get("treasury_10y", {}).get("value") if isinstance(macro_data.get("treasury_10y"), dict) else macro_data.get("treasury_10y")}
+                skeptic_result = skeptic.challenge_recommendation(rec_dict, market_ctx)
+                rec_dict = apply_skeptic_to_recommendation(rec_dict, skeptic_result)
+                log.info("Skeptic reviewed %s: modifier=%.2f", t, skeptic_result.get("confidence_modifier", 1.0))
+            except Exception:
+                log.exception("Skeptic review failed for %s — recording without skeptic", t)
+
+            record_recommendation(rec_dict)
+    except Exception:
+        log.exception("Failed to record conviction recommendations for outcome tracking")
+
     # Update moonshot list
     try:
         moonshot_result = update_moonshot_list(
@@ -405,27 +541,96 @@ async def run() -> dict[str, Any]:
 
     log.info("Step 6 completed in %.1fs", time.time() - step_start)
 
-    # ── Step 7: Opus 4.6 synthesis ─────────────────────────────────────
-    log.info("Step 7: Opus synthesis")
-    synthesis = _synthesize_brief(
-        memory=memory,
-        macro_data=macro_data,
-        updated_theses=updated_theses,
-        prediction_shifts=prediction_shifts,
-        holdings_reports=holdings_reports,
-        strategy=strategy,
-        conviction_list=conviction_result.get("current_list", []),
-        moonshot_list=moonshot_result.get("current_list", []),
-        earnings_data=earnings_data,
-        superinvestor_data=superinvestor_data,
-        reddit_mood=_reddit_mood,
-        reddit_themes=_reddit_themes,
-    )
+    # ── Step 7: Analyst Committee synthesis ──────────────────────────────
+    log.info("Step 7: Analyst Committee synthesis")
+
+    # Build context strings for the committee editor
+    _macro_ctx_parts = []
+    for t in updated_theses:
+        _macro_ctx_parts.append(f"- {t.get('title')}: {t.get('status', 'intact')}")
+    _macro_ctx_str = "\n".join(_macro_ctx_parts) if _macro_ctx_parts else "No macro theses."
+
+    _holdings_ctx_str = "\n".join(
+        f"- {h.get('ticker')}: ${h.get('price', 'N/A')} "
+        f"({(h.get('change_pct') or 0):+.1f}% today, {(h.get('cumulative_return_pct') or 0):+.1f}% total) "
+        f"thesis: {h.get('thesis_status', 'intact')}"
+        for h in holdings_reports
+    ) if holdings_reports else "No holdings data."
+
+    _conviction_ctx_str = "\n".join(
+        f"- {c.get('ticker')}: week {c.get('weeks_on_list', 1)}, "
+        f"conviction: {c.get('conviction', 'medium')}, thesis: {c.get('thesis', '')}"
+        for c in conviction_result.get("current_list", [])
+    ) if conviction_result.get("current_list") else "Conviction list empty."
+
+    _actions_ctx_str = "\n".join(
+        f"- {a.get('action', '').upper()} {a.get('ticker')}: {a.get('reason', '')} [urgency: {a.get('urgency', 'low')}]"
+        for a in strategy.get("actions", [])
+    ) if strategy.get("actions") else "No action recommended."
+
+    # Build data context for committee analysts
+    _data_context = {
+        "fundamentals": fundamentals,
+        "holdings_reports": holdings_reports,
+        "valuation_data": valuation_data,
+        "macro_data": macro_data,
+        "strategy": strategy,
+    }
+
+    synthesis = {}
+    try:
+        from src.advisor.analyst_committee import run_analyst_committee
+
+        committee_result = await run_analyst_committee(
+            tickers=all_tickers[:12],
+            data_context=_data_context,
+            delta_summary=delta_prompt_section,
+            retrospective_context=retrospective_context,
+            catalyst_section=catalyst_prompt_section,
+            macro_context=_macro_ctx_str,
+            holdings_context=_holdings_ctx_str,
+            conviction_context=_conviction_ctx_str,
+            strategy_context=_actions_ctx_str,
+        )
+
+        brief_text = committee_result.get("formatted_brief", "")
+        if brief_text and "error" not in committee_result:
+            synthesis = {
+                "macro_summary": brief_text,
+                "formatted_brief": brief_text,
+                "committee_result": committee_result,
+            }
+            log.info("Committee synthesis complete: %d chars", len(brief_text))
+        else:
+            log.warning("Committee returned no brief — falling back to single-pass synthesis")
+            raise ValueError("Committee returned empty brief")
+
+    except Exception:
+        log.exception("Analyst committee failed — falling back to single-pass synthesis")
+        synthesis = _synthesize_brief(
+            memory=memory,
+            macro_data=macro_data,
+            updated_theses=updated_theses,
+            prediction_shifts=prediction_shifts,
+            holdings_reports=holdings_reports,
+            strategy=strategy,
+            conviction_list=conviction_result.get("current_list", []),
+            moonshot_list=moonshot_result.get("current_list", []),
+            earnings_data=earnings_data,
+            superinvestor_data=superinvestor_data,
+            reddit_mood=_reddit_mood,
+            reddit_themes=_reddit_themes,
+            delta_prompt_section=delta_prompt_section,
+            catalyst_prompt_section=catalyst_prompt_section,
+        )
 
     # ── Step 8: Save memory state ──────────────────────────────────────
     try:
+        # Extract a short macro_summary for memory (first 500 chars of brief)
+        _brief_text = synthesis.get("macro_summary", "")
+        _macro_for_memory = _brief_text[:500] if _brief_text else "No synthesis available."
         save_daily_brief(
-            macro_summary=synthesis.get("macro_summary"),
+            macro_summary=_macro_for_memory,
             portfolio_actions=strategy.get("actions", []),
             conviction_changes=conviction_result.get("added", []) + conviction_result.get("removed", []),
             moonshot_changes=moonshot_result.get("added", []) + moonshot_result.get("removed", []),
@@ -465,10 +670,66 @@ async def run() -> dict[str, Any]:
         top_articles = news_desk_result.get("top_articles", [])
         key_headlines_section = format_key_headlines(top_articles)
 
-        # If Opus produced an enhanced brief, use it; otherwise use structured sections
-        opus_brief = synthesis.get("formatted_brief")
-        if opus_brief:
-            formatted = opus_brief
+        # Format catalyst section
+        catalyst_formatted = ""
+        try:
+            catalyst_formatted = catalyst_data.get("formatted", "") if catalyst_data else ""
+        except Exception:
+            pass
+
+        # If committee produced an enhanced brief, wrap it with structured sections;
+        # otherwise use the old format
+        committee_brief = synthesis.get("formatted_brief")
+        if committee_brief:
+            # Build the full v2 formatted output using committee brief as core
+            from datetime import datetime as _dt
+            today_str = _dt.now().strftime("%b %d, %Y")
+            SEPARATOR = "\u2501" * 35
+
+            sections = [
+                f"\u2600\ufe0f <b>ALPHADESK DAILY BRIEF \u2014 {today_str}</b>",
+                SEPARATOR,
+                "",
+            ]
+
+            # Committee synthesis is the main body
+            sections.append(committee_brief)
+
+            # Key headlines
+            if key_headlines_section:
+                sections.extend(["", SEPARATOR, "", key_headlines_section])
+
+            # Catalysts
+            if catalyst_formatted:
+                sections.extend(["", SEPARATOR, "", catalyst_formatted])
+
+            # Thesis exposure
+            if thesis_exposure_section:
+                sections.extend(["", SEPARATOR, "", thesis_exposure_section])
+
+            # Conviction list
+            sections.extend(["", SEPARATOR, "", conviction_section])
+
+            # Moonshots
+            sections.extend(["", SEPARATOR, "", moonshot_section])
+
+            # Reddit mood
+            if reddit_mood and reddit_mood != "unknown":
+                theme_suffix = ""
+                if reddit_themes:
+                    from src.shared.security import sanitize_html as _san
+                    theme_suffix = f" \u2014 {', '.join(_san(t) for t in reddit_themes[:2])}"
+                sections.append(f"\n\U0001f4e3 Reddit mood: <b>{reddit_mood}</b>{theme_suffix}")
+
+            # Footer
+            sections.extend([
+                "",
+                SEPARATOR,
+                f"AlphaDesk v2.0 | ${daily_cost:.2f} today",
+                "/advisor /delta /catalysts /scorecard /retro /cost",
+            ])
+
+            formatted = "\n".join(sections)
         else:
             formatted = format_daily_brief(
                 macro_section=macro_section,
@@ -507,6 +768,9 @@ async def run() -> dict[str, Any]:
             "strategy": strategy,
             "conviction": conviction_result,
             "moonshots": moonshot_result,
+            "delta_report": delta_report.to_dict() if delta_report else None,
+            "catalysts": catalyst_data,
+            "committee": synthesis.get("committee_result"),
         },
     }
 
@@ -606,6 +870,8 @@ def _synthesize_brief(
     superinvestor_data: dict[str, Any] | None = None,
     reddit_mood: str = "",
     reddit_themes: list[str] | None = None,
+    delta_prompt_section: str = "",
+    catalyst_prompt_section: str = "",
 ) -> dict[str, Any]:
     """Use Opus 4.6 to enhance the daily brief with narrative and judgment."""
     within_budget, spent, cap = check_budget()
@@ -690,6 +956,8 @@ INVESTOR PROFILE:
 
 {yesterday_ctx}
 
+{delta_prompt_section}
+
 ## TODAY'S DATA
 
 ### MACRO
@@ -729,6 +997,8 @@ Top themes: {', '.join((reddit_themes or [])[:3]) or 'N/A'}
 
 ### MOONSHOT LIST
 {moonshot_ctx}
+
+{catalyst_prompt_section}
 
 ## YOUR TASK
 

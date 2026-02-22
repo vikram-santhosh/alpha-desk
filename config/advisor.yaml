@@ -163,3 +163,86 @@ moonshot:
 output:
   max_conviction_list: 5
   max_moonshots: 2
+
+# ═══════════════════════════════════════════════════
+# v2 Architecture Settings
+# ═══════════════════════════════════════════════════
+
+# Analyst Committee — multi-perspective analysis pipeline
+committee:
+  enabled: true
+  growth_analyst: true
+  value_analyst: true
+  risk_officer: true
+  editor_model: "claude-opus-4-6"
+  analyst_model: "claude-opus-4-6"
+  max_tokens_per_analyst: 3000
+  max_tokens_editor: 4000
+
+# Delta Engine — "what changed" detection
+delta_engine:
+  enabled: true
+  significance_thresholds:
+    price_high_pct: 5.0
+    price_medium_pct: 2.0
+    vix_high_delta: 3.0
+    treasury_high_delta: 0.10
+
+# Catalyst Calendar
+catalyst_tracker:
+  enabled: true
+  scan_news_for_catalysts: true
+  fomc_dates_2026:
+    - "2026-01-29"
+    - "2026-03-19"
+    - "2026-05-07"
+    - "2026-06-18"
+    - "2026-07-30"
+    - "2026-09-17"
+    - "2026-11-05"
+    - "2026-12-17"
+
+# Evidence Weighting — base weights by source type
+evidence_weighting:
+  insider_purchase_large: 5.0
+  insider_purchase_small: 3.5
+  insider_selling_large: -4.0
+  earnings_guidance_raised: 5.0
+  earnings_guidance_maintained: 2.0
+  earnings_guidance_lowered: -3.0
+  superinvestor_new_position: 3.0
+  superinvestor_existing: 1.0
+  reddit_strong_positive: 2.5
+  reddit_moderate_positive: 1.0
+  reddit_negative: -1.5
+  fundamentals_strong: 4.0
+  fundamentals_moderate: 2.0
+  fundamentals_weak: -2.0
+  valuation_attractive: 4.0
+  valuation_fair: 1.5
+  valuation_stretched: -2.0
+  recency_full_days: 14
+  recency_moderate_days: 30
+  recency_weak_days: 60
+  recency_minimal_days: 90
+
+# Outcome Tracking
+outcome_tracking:
+  enabled: true
+  auto_close_after_days: 180
+  universal_stop_loss_pct: -20
+
+# Weekly Retrospective — self-improving feedback loop
+retrospective:
+  enabled: true
+  schedule_day: "sunday"
+  lookback_days: 30
+
+# Scoring weights for composite score (must sum to 1.0)
+scoring_weights:
+  growth: 0.25
+  value: 0.25
+  risk: 0.15
+  catalyst_proximity: 0.15
+  novelty: 0.10
+  diversification: 0.10

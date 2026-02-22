@@ -388,6 +388,167 @@ def run_superinvestor_tracking(
 
 
 # ═══════════════════════════════════════════════════════
+# v2: FULL-UNIVERSE 13F SCANNING
+# ═══════════════════════════════════════════════════════
+
+def _ensure_filings_table():
+    """Create superinvestor_filings table if needed."""
+    from src.advisor.memory import _get_db
+    conn = _get_db()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS superinvestor_filings (
+            id INTEGER PRIMARY KEY,
+            investor_name TEXT NOT NULL,
+            cik TEXT NOT NULL,
+            filing_date TEXT NOT NULL,
+            positions TEXT NOT NULL,
+            new_positions TEXT,
+            exited_positions TEXT,
+            created_at TEXT NOT NULL,
+            UNIQUE(cik, filing_date)
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+def get_new_superinvestor_positions(
+    cik: str, investor_name: str, fmp_api_key: str | None = None,
+) -> list[dict]:
+    """Fetch latest 13F and identify new/increased positions via FMP API.
+
+    Returns list of position change dicts.
+    """
+    import json as _json
+    import os
+    import time
+
+    fmp_key = fmp_api_key or os.getenv("FMP_API_KEY", "")
+    changes: list[dict] = []
+
+    if not fmp_key:
+        log.debug("No FMP_API_KEY — skipping full 13F scan for %s", investor_name)
+        return changes
+
+    _ensure_filings_table()
+
+    try:
+        time.sleep(0.2)  # SEC rate limit
+
+        resp = requests.get(
+            f"https://financialmodelingprep.com/api/v3/cik/{cik}",
+            params={"apikey": fmp_key},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            log.warning("FMP returned %d for CIK %s", resp.status_code, cik)
+            return changes
+
+        positions = resp.json()
+        if not isinstance(positions, list):
+            return changes
+
+        # Get previous filing from memory
+        from src.advisor.memory import _get_db
+        conn = _get_db()
+        prev = conn.execute("""
+            SELECT positions FROM superinvestor_filings
+            WHERE cik = ? ORDER BY filing_date DESC LIMIT 1
+        """, (cik,)).fetchone()
+        conn.close()
+
+        prev_tickers = set()
+        if prev:
+            try:
+                prev_data = _json.loads(prev[0])
+                prev_tickers = {p.get("ticker", "").upper() for p in prev_data}
+            except (ValueError, TypeError):
+                pass
+
+        current_tickers = set()
+        filing_date = datetime.now().strftime("%Y-%m-%d")
+
+        for pos in positions[:100]:
+            ticker = pos.get("symbol", pos.get("ticker", ""))
+            if not ticker:
+                continue
+            current_tickers.add(ticker.upper())
+
+            if ticker.upper() not in prev_tickers:
+                changes.append({
+                    "ticker": ticker, "investor": investor_name,
+                    "change_type": "new_position", "filing_date": filing_date,
+                    "shares": pos.get("shares"), "value_usd": pos.get("value"),
+                })
+
+        for prev_t in prev_tickers:
+            if prev_t not in current_tickers and prev_t != "__13F_FILING__":
+                changes.append({
+                    "ticker": prev_t, "investor": investor_name,
+                    "change_type": "exited", "filing_date": filing_date,
+                })
+
+        # Save filing
+        conn = _get_db()
+        conn.execute("""
+            INSERT OR REPLACE INTO superinvestor_filings
+            (investor_name, cik, filing_date, positions, new_positions, exited_positions, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            investor_name, cik, filing_date,
+            _json.dumps([{"ticker": p.get("symbol", ""), "shares": p.get("shares"), "value": p.get("value")} for p in positions[:100]]),
+            _json.dumps([c["ticker"] for c in changes if c["change_type"] == "new_position"]),
+            _json.dumps([c["ticker"] for c in changes if c["change_type"] == "exited"]),
+            datetime.now().isoformat(),
+        ))
+        conn.commit()
+        conn.close()
+
+        log.info("%s: %d new, %d exited",
+                 investor_name,
+                 sum(1 for c in changes if c["change_type"] == "new_position"),
+                 sum(1 for c in changes if c["change_type"] == "exited"))
+
+    except requests.RequestException:
+        log.exception("Network error fetching 13F for %s", investor_name)
+    except Exception:
+        log.exception("Error processing full 13F for %s", investor_name)
+
+    return changes
+
+
+def get_new_positions_as_candidates(config: dict[str, Any]) -> list[dict]:
+    """Fetch all superinvestors' new positions as candidate dicts for sourcer."""
+    superinvestors = config.get("superinvestors", [])
+    candidates: list[dict] = []
+
+    for investor in superinvestors:
+        name = investor.get("name", "Unknown")
+        cik = investor.get("cik", "")
+        if not cik:
+            continue
+        try:
+            changes = get_new_superinvestor_positions(cik, name)
+            for change in changes:
+                if change["change_type"] == "new_position":
+                    candidates.append({
+                        "ticker": change["ticker"],
+                        "source": f"superinvestor_13f/{name.replace(' ', '_')}",
+                        "signal_type": "superinvestor_new_position",
+                        "signal_data": {
+                            "investor": name,
+                            "shares": change.get("shares"),
+                            "value_usd": change.get("value_usd"),
+                        },
+                    })
+        except Exception:
+            log.exception("Failed to get new positions for %s", name)
+
+    log.info("13F sourcing: %d new position candidates", len(candidates))
+    return candidates
+
+
+# ═══════════════════════════════════════════════════════
 # HELPERS
 # ═══════════════════════════════════════════════════════
 

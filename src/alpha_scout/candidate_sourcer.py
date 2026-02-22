@@ -214,6 +214,29 @@ def source_all_candidates(
     if sources_config.get("agent_bus", True):
         all_candidates.extend(_source_from_agent_bus())
 
+    # Supply chain (v2 — high quality, before sector peers)
+    if sources_config.get("supply_chain", True):
+        try:
+            from src.alpha_scout.supply_chain_sourcer import source_from_supply_chain
+            existing_set_for_chain = {t.upper() for t in existing_tickers}
+            chain_candidates = source_from_supply_chain(holdings, existing_set_for_chain)
+            all_candidates.extend(chain_candidates)
+        except Exception:
+            log.exception("Supply chain sourcing failed")
+
+    # Thematic scanner (v2 — discovers emerging themes from news/Reddit)
+    if sources_config.get("thematic_scanner", True):
+        try:
+            from src.alpha_scout.thematic_scanner import themes_to_candidates
+            # Themes may be passed in config by the advisor pipeline
+            themes = config.get("_themes", [])
+            if themes:
+                existing_set_for_themes = {t.upper() for t in existing_tickers}
+                theme_candidates = themes_to_candidates(themes, existing_set_for_themes)
+                all_candidates.extend(theme_candidates)
+        except Exception:
+            log.exception("Thematic candidate sourcing failed")
+
     # Sector peers
     if sources_config.get("sector_peers", True):
         sector_peers = config.get("sector_peers", {})
@@ -222,6 +245,17 @@ def source_all_candidates(
     # S&P 500 index
     if sources_config.get("sp500_index", True):
         all_candidates.extend(_source_from_sp500())
+
+    # Superinvestor 13F new positions (v2 — full universe scan)
+    if sources_config.get("superinvestor_13f", True):
+        try:
+            from src.advisor.superinvestor_tracker import get_new_positions_as_candidates
+            si_candidates = get_new_positions_as_candidates(config)
+            all_candidates.extend(si_candidates)
+        except ImportError:
+            log.debug("get_new_positions_as_candidates not available yet")
+        except Exception:
+            log.exception("Superinvestor 13F candidate sourcing failed")
 
     # yfinance screeners
     if sources_config.get("yfinance_screener", True):

@@ -532,3 +532,159 @@ def format_daily_brief(
     ])
 
     return "\n".join(sections)
+
+
+# ═══════════════════════════════════════════════════════
+# v2 FORMATTERS
+# ═══════════════════════════════════════════════════════
+
+def format_committee_brief(editor_output: dict[str, Any]) -> str:
+    """Format the analyst committee's Editor output for Telegram.
+
+    Shows the 5-section brief produced by the CIO editor, with
+    analyst disagreements highlighted.
+    """
+    brief = editor_output.get("formatted_brief", "")
+    if not brief:
+        return "<i>Committee synthesis unavailable.</i>"
+
+    # The editor outputs plain text with **SECTION** headers — convert to HTML
+    formatted = sanitize_html(brief)
+    # Bold section headers (patterns like "SECTION 1 - ..." or "**SECTION...**")
+    import re
+    formatted = re.sub(
+        r"\*\*(.+?)\*\*",
+        r"<b>\1</b>",
+        formatted,
+    )
+    return formatted
+
+
+def format_delta_section(delta_report) -> str:
+    """Format delta report for the daily brief.
+
+    Shows HIGH significance items prominently, MEDIUM items compactly.
+    """
+    if not delta_report or delta_report.total_changes == 0:
+        return ""
+
+    lines = ["\u26a1 <b>WHAT CHANGED TODAY</b>", ""]
+
+    if delta_report.summary:
+        lines.append(f"<i>{sanitize_html(delta_report.summary)}</i>")
+        lines.append("")
+
+    for item in delta_report.high_significance:
+        lines.append(f"  \u26a1 {sanitize_html(item.narrative)}")
+
+    if delta_report.medium_significance:
+        lines.append("")
+        for item in delta_report.medium_significance[:5]:
+            lines.append(f"  \U0001f4cc {sanitize_html(item.narrative)}")
+
+    return "\n".join(lines)
+
+
+def format_scorecard_section(scorecard: dict[str, Any]) -> str:
+    """Format recommendation scorecard for the daily brief footer."""
+    total = scorecard.get("total_recommendations", 0)
+    if total == 0:
+        return ""
+
+    hit_rate = scorecard.get("hit_rate_1m", 0)
+    avg_alpha = scorecard.get("avg_alpha_1m_pct", 0)
+    fp_rate = scorecard.get("false_positive_rate", 0)
+
+    # Visual bar for hit rate (1 block per 10%)
+    bar_len = int(hit_rate / 10)
+    bar = "\u2588" * bar_len + "\u2591" * (10 - bar_len)
+
+    lines = [
+        "\U0001f4ca <b>TRACK RECORD (30d)</b>",
+        "",
+        f"  Hit rate: <code>{bar}</code> {hit_rate:.0f}% ({total} recs)",
+        f"  Alpha: {avg_alpha:+.1f}% vs SPY | False positives: {fp_rate:.0f}%",
+    ]
+
+    best = scorecard.get("best_recommendation")
+    worst = scorecard.get("worst_recommendation")
+    if best:
+        lines.append(f"  Best: {best['ticker']} ({best['return_pct']:+.1f}%)")
+    if worst:
+        lines.append(f"  Worst: {worst['ticker']} ({worst['return_pct']:+.1f}%)")
+
+    return "\n".join(lines)
+
+
+def format_recommendation_card(rec: dict[str, Any]) -> str:
+    """Format a single recommendation as a compact Telegram card."""
+    ticker = sanitize_html(rec.get("ticker", "???"))
+    action = rec.get("action", "WATCH")
+    conviction = rec.get("conviction_level", rec.get("conviction", "medium"))
+    badge = _conviction_badge(conviction)
+
+    # Action emoji
+    action_emoji = {
+        "BUY": "\U0001f3af",
+        "WATCH": "\U0001f440",
+        "TRIM": "\u2702\ufe0f",
+        "SELL": "\U0001f6d1",
+        "HOLD": "\U0001f7e2",
+    }.get(action, "\U0001f4cb")
+
+    lines = [f"{action_emoji} <b>{action} {ticker}</b> [{badge}]"]
+
+    # Thesis
+    thesis = rec.get("thesis", {})
+    core = thesis.get("core_argument", "") if isinstance(thesis, dict) else str(thesis)
+    if core:
+        lines.append(f"  {_truncate(sanitize_html(core), 160)}")
+
+    # Bear case
+    bear = rec.get("bear_case", {})
+    primary_risk = bear.get("primary_risk", "") if isinstance(bear, dict) else ""
+    if primary_risk:
+        lines.append(f"  \u2696\ufe0f Bear: {_truncate(sanitize_html(primary_risk), 120)}")
+
+    # Invalidation
+    conditions = rec.get("invalidation_conditions", [])
+    if conditions:
+        first = conditions[0] if isinstance(conditions[0], dict) else {"condition": str(conditions[0])}
+        lines.append(f"  \u274c Invalidate if: {_truncate(sanitize_html(first.get('condition', '')), 120)}")
+
+    # Valuation
+    val = rec.get("valuation", {})
+    target = val.get("target_price")
+    cagr = val.get("implied_cagr")
+    if target and cagr:
+        lines.append(f"  \U0001f4ca Target: ${target:.0f} (CAGR {cagr:.1f}%)")
+
+    return "\n".join(lines)
+
+
+def split_message(text: str, max_chars: int = 4000) -> list[str]:
+    """Split a message into chunks that fit Telegram's 4096 char limit.
+
+    Splits on section boundaries (separator lines) rather than mid-content.
+    """
+    if len(text) <= max_chars:
+        return [text]
+
+    chunks = []
+    while text:
+        if len(text) <= max_chars:
+            chunks.append(text)
+            break
+
+        # Try to split at a separator line
+        split_at = text.rfind(SEPARATOR, 0, max_chars)
+        if split_at == -1:
+            # Fall back to splitting at a newline
+            split_at = text.rfind("\n", 0, max_chars)
+        if split_at == -1:
+            split_at = max_chars
+
+        chunks.append(text[:split_at])
+        text = text[split_at:].lstrip("\n")
+
+    return chunks

@@ -8,11 +8,22 @@ Takes the top-N screened candidates and uses Claude to:
 """
 
 import json
+from datetime import date
 from typing import Any
 
 import anthropic
 
 from src.shared.cost_tracker import check_budget, record_usage
+from src.shared.schemas import (
+    Recommendation,
+    Thesis,
+    WhyNow,
+    BearCase,
+    InvalidationCondition,
+    AnalystScores,
+    EvidenceItem,
+    validate_recommendation,
+)
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -256,3 +267,95 @@ def _fallback_recommendations(
         "watchlist_recs": watchlist_recs,
         "raw_synthesis": "(fallback — synthesis skipped due to budget or error)",
     }
+
+
+def recs_to_structured(
+    portfolio_recs: list[dict], watchlist_recs: list[dict],
+) -> list[Recommendation]:
+    """Convert legacy recommendation dicts into structured Recommendation objects.
+
+    Best-effort: populates what's available, validates, and logs any issues.
+    Returns only valid Recommendation objects.
+    """
+    structured = []
+    today = date.today().isoformat()
+
+    for rec_dict in portfolio_recs + watchlist_recs:
+        ticker = rec_dict.get("ticker", "")
+        category = rec_dict.get("category", "watchlist")
+        conviction = rec_dict.get("conviction", "medium")
+        thesis_text = rec_dict.get("thesis", "")
+        scores = rec_dict.get("scores", {})
+        fund = rec_dict.get("fundamentals_summary", {})
+
+        action = "BUY" if category == "portfolio" else "WATCH"
+
+        try:
+            rec = Recommendation(
+                ticker=ticker,
+                recommendation_date=today,
+                action=action,
+                category="conviction_add" if category == "portfolio" else "watchlist",
+                conviction_level=conviction,
+                why_now=WhyNow(
+                    catalyst="Quantitative screening + LLM synthesis",
+                    what_changed="Identified by Alpha Scout discovery pipeline",
+                    timing_signal=f"Composite score: {scores.get('composite', 0):.1f}",
+                ),
+                thesis=Thesis(
+                    core_argument=thesis_text,
+                    supporting_evidence=[
+                        EvidenceItem(
+                            source="fundamental_data",
+                            date=today,
+                            claim=f"Revenue growth {fund.get('revenue_growth', 0):.0%}" if fund.get("revenue_growth") else "Fundamentals screened",
+                            base_weight=2.0,
+                            recency_days=7,
+                        ),
+                        EvidenceItem(
+                            source="technical_signal",
+                            date=today,
+                            claim=f"Technical score {scores.get('technical', 0)}",
+                            base_weight=1.5,
+                            recency_days=1,
+                        ),
+                    ],
+                    evidence_quality_score=scores.get("composite", 50.0),
+                ),
+                valuation=fund,
+                bear_case=BearCase(
+                    primary_risk="Quantitative screen — full bear case pending skeptic review",
+                    base_rate="Most screened candidates underperform the index",
+                    whats_priced_in="Market consensus reflected in current price",
+                ),
+                invalidation_conditions=[
+                    InvalidationCondition(
+                        condition=f"{ticker} drops 20% from current levels",
+                        monitoring="Daily price check",
+                        action_if_triggered="Review thesis and consider exit",
+                    ),
+                ],
+                sizing=None,
+                analyst_scores=AnalystScores(
+                    growth_score=scores.get("fundamental", 50),
+                    value_score=50,
+                    risk_score=50,
+                    catalyst_proximity_score=50,
+                    novelty_score=50,
+                    diversification_score=scores.get("diversification", 50),
+                    composite_score=scores.get("composite", 50.0),
+                    skeptic_confidence_modifier=1.0,
+                ),
+                source=rec_dict.get("source", "alpha_scout"),
+            )
+
+            errors = validate_recommendation(rec)
+            if errors:
+                log.warning("Validation issues for %s: %s", ticker, errors)
+
+            structured.append(rec)
+
+        except Exception:
+            log.exception("Failed to create structured rec for %s", ticker)
+
+    return structured

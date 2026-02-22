@@ -1,0 +1,56 @@
+# Supply Chain Map — ticker dependencies for discovery sourcing
+# Format: holding_ticker -> {relationship_type -> [related_tickers]}
+
+NVDA:
+  suppliers: [TSM, ASML, KLAC, LRCX, AMAT, SNPS, CDNS]
+  customers: [MSFT, GOOG, META, AMZN, ORCL, TSLA, BIDU]
+  competitors: [AMD, INTC, QCOM]
+  adjacent: [MRVL, AVGO, ARM, SMCI, DELL, HPE]
+
+AMZN:
+  suppliers: [NVDA, INTC, AMD, EQIX, DLR]
+  customers: []
+  competitors: [MSFT, GOOG, SHOP, WMT, BABA]
+  adjacent: [AFRM, RIVN]
+
+GOOG:
+  suppliers: [TSM, NVDA, MRVL, EQIX]
+  customers: []
+  competitors: [META, MSFT, AMZN, SNAP, TTD, MGNI]
+  adjacent: [UBER, LYFT, ABNB]
+
+META:
+  suppliers: [NVDA, TSM, MRVL]
+  customers: []
+  competitors: [GOOG, SNAP, PINS, TTD, MGNI, RDDT]
+  adjacent: [RBLX, U, AAPL]
+
+AVGO:
+  suppliers: [TSM, ASML]
+  customers: [AAPL, MSFT, GOOG, META]
+  competitors: [MRVL, QCOM, TXN]
+  adjacent: [CSCO, ANET, JNPR]
+
+VRT:
+  suppliers: []
+  customers: [EQIX, DLR, MSFT, GOOG, AMZN]
+  competitors: [ETN, ROK, EMR]
+  adjacent: [GNRC, PWR, FLR]
+
+MRVL:
+  suppliers: [TSM, ASML]
+  customers: [MSFT, AMZN, GOOG, META]
+  competitors: [AVGO, QCOM]
+  adjacent: [ANET, CSCO, CIEN]
+
+NFLX:
+  suppliers: []
+  customers: []
+  competitors: [DIS, WBD, CMCSA, AMZN]
+  adjacent: [ROKU, SPOT]
+
+MSFT:
+  suppliers: [NVDA, AMD, INTC, TSM]
+  customers: []
+  competitors: [GOOG, AMZN, CRM, SAP, ORCL]
+  adjacent: [TEAM, ADBE, NOW, SNOW, MDB]

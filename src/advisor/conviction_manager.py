@@ -5,11 +5,19 @@ Names are added based on multi-source evidence scoring and the 25% CAGR gate.
 Names persist until evidence weakens, not because something new appeared.
 """
 
+from datetime import date
+
 import anthropic
 
 from src.advisor import memory
 from src.advisor.valuation_engine import compute_target_price, passes_investment_gate
 from src.shared.cost_tracker import check_budget, record_usage
+from src.shared.schemas import (
+    EvidenceItem,
+    compute_recency_decay,
+    compute_evidence_quality_score,
+    BASE_WEIGHTS,
+)
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -167,6 +175,216 @@ def evidence_test(
     return sources_passing, descriptions
 
 
+def build_evidence_items(
+    ticker: str,
+    guidance_data: dict | None,
+    crowd_data: dict | None,
+    smart_money_data: dict | None,
+    fundamentals: dict | None,
+    valuation: dict | None,
+) -> list[EvidenceItem]:
+    """Build weighted EvidenceItem objects from the same data as evidence_test.
+
+    This produces structured evidence with proper weights and recency decay,
+    complementing the legacy pass/fail evidence_test for backward compatibility.
+    """
+    items: list[EvidenceItem]  = []
+    today = date.today().isoformat()
+
+    # 1. Company guidance
+    if guidance_data:
+        sentiment = guidance_data.get("guidance_sentiment", "")
+        tone = guidance_data.get("management_tone", "")
+        if sentiment == "raised" and tone == "confident":
+            items.append(EvidenceItem(
+                source="earnings_transcript", date=today,
+                claim=f"Guidance raised, tone confident",
+                base_weight=BASE_WEIGHTS["earnings_guidance_raised_confident"],
+                recency_days=7,
+            ))
+        elif sentiment == "raised" or tone == "confident":
+            items.append(EvidenceItem(
+                source="earnings_transcript", date=today,
+                claim=f"Guidance {sentiment}, tone {tone}",
+                base_weight=BASE_WEIGHTS["earnings_guidance_raised"],
+                recency_days=7,
+            ))
+        elif sentiment == "maintained" and tone != "defensive":
+            items.append(EvidenceItem(
+                source="earnings_transcript", date=today,
+                claim=f"Guidance maintained, tone {tone}",
+                base_weight=BASE_WEIGHTS["earnings_guidance_maintained"],
+                recency_days=7,
+            ))
+        elif sentiment == "lowered" or tone == "defensive":
+            items.append(EvidenceItem(
+                source="earnings_transcript", date=today,
+                claim=f"Guidance {sentiment}, tone {tone} (negative)",
+                base_weight=BASE_WEIGHTS["earnings_guidance_lowered"],
+                recency_days=7,
+            ))
+
+    # 2. Crowd sentiment
+    if crowd_data:
+        reddit_sentiment = crowd_data.get("reddit_sentiment")
+        mentions = crowd_data.get("mentions", 0)
+        if reddit_sentiment is not None:
+            if reddit_sentiment > 0.7 and mentions > 10:
+                items.append(EvidenceItem(
+                    source="reddit_sentiment", date=today,
+                    claim=f"Strong Reddit sentiment ({reddit_sentiment:.2f}, {mentions} mentions)",
+                    base_weight=BASE_WEIGHTS["reddit_strong_positive"],
+                    recency_days=3,
+                ))
+            elif reddit_sentiment > 0.5:
+                items.append(EvidenceItem(
+                    source="reddit_sentiment", date=today,
+                    claim=f"Moderate Reddit sentiment ({reddit_sentiment:.2f})",
+                    base_weight=BASE_WEIGHTS["reddit_moderate_positive"],
+                    recency_days=3,
+                ))
+            elif reddit_sentiment > 0.3:
+                items.append(EvidenceItem(
+                    source="reddit_sentiment", date=today,
+                    claim=f"Weak positive Reddit sentiment ({reddit_sentiment:.2f})",
+                    base_weight=BASE_WEIGHTS["reddit_weak_positive"],
+                    recency_days=3,
+                ))
+            elif reddit_sentiment < -0.3 and mentions > 5:
+                items.append(EvidenceItem(
+                    source="reddit_sentiment", date=today,
+                    claim=f"Negative Reddit sentiment ({reddit_sentiment:.2f})",
+                    base_weight=BASE_WEIGHTS["reddit_negative"],
+                    recency_days=3,
+                ))
+
+        pred_prob = crowd_data.get("prediction_market_probability")
+        if pred_prob is not None:
+            if pred_prob > 0.7:
+                items.append(EvidenceItem(
+                    source="prediction_market", date=today,
+                    claim=f"Prediction market favorable ({pred_prob:.0%})",
+                    base_weight=BASE_WEIGHTS["prediction_market_favorable"],
+                    recency_days=1,
+                ))
+            elif pred_prob < 0.3:
+                items.append(EvidenceItem(
+                    source="prediction_market", date=today,
+                    claim=f"Prediction market unfavorable ({pred_prob:.0%})",
+                    base_weight=BASE_WEIGHTS["prediction_market_unfavorable"],
+                    recency_days=1,
+                ))
+
+    # 3. Smart money
+    if smart_money_data:
+        si_count = smart_money_data.get("superinvestor_count", 0)
+        insider_buying = smart_money_data.get("insider_buying", False)
+
+        if insider_buying:
+            items.append(EvidenceItem(
+                source="insider_filing", date=today,
+                claim="Insider buying detected",
+                base_weight=BASE_WEIGHTS["insider_purchase_small"],
+                recency_days=14,
+            ))
+        if si_count >= 3:
+            items.append(EvidenceItem(
+                source="superinvestor_13f", date=today,
+                claim=f"{si_count} superinvestors holding",
+                base_weight=BASE_WEIGHTS["superinvestor_3plus"],
+                recency_days=45,
+            ))
+        elif si_count >= 2:
+            items.append(EvidenceItem(
+                source="superinvestor_13f", date=today,
+                claim=f"{si_count} superinvestors holding",
+                base_weight=BASE_WEIGHTS["superinvestor_2"],
+                recency_days=45,
+            ))
+        elif si_count >= 1:
+            items.append(EvidenceItem(
+                source="superinvestor_13f", date=today,
+                claim=f"{si_count} superinvestor holding",
+                base_weight=BASE_WEIGHTS["superinvestor_existing"],
+                recency_days=45,
+            ))
+
+    # 4. Fundamentals
+    if fundamentals:
+        rev_growth = fundamentals.get("revenue_growth")
+        net_margin = fundamentals.get("net_margin")
+        gross_margin = fundamentals.get("gross_margin")
+
+        if rev_growth is not None and net_margin is not None and gross_margin is not None:
+            if rev_growth > 0.30 and net_margin > 0.15 and gross_margin > 0.50:
+                items.append(EvidenceItem(
+                    source="fundamental_data", date=today,
+                    claim=f"Strong fundamentals: rev growth {rev_growth:.0%}, margin {net_margin:.0%}",
+                    base_weight=BASE_WEIGHTS["fundamentals_strong"],
+                    recency_days=7,
+                ))
+            elif rev_growth > 0.15 and net_margin > 0 and gross_margin > 0.30:
+                items.append(EvidenceItem(
+                    source="fundamental_data", date=today,
+                    claim=f"Moderate fundamentals: rev growth {rev_growth:.0%}",
+                    base_weight=BASE_WEIGHTS["fundamentals_moderate"],
+                    recency_days=7,
+                ))
+            elif rev_growth > 0 and net_margin is not None and net_margin > 0:
+                items.append(EvidenceItem(
+                    source="fundamental_data", date=today,
+                    claim=f"Positive fundamentals: rev growth {rev_growth:.0%}",
+                    base_weight=BASE_WEIGHTS["fundamentals_weak"],
+                    recency_days=7,
+                ))
+            elif rev_growth is not None and rev_growth < 0:
+                items.append(EvidenceItem(
+                    source="fundamental_data", date=today,
+                    claim=f"Declining fundamentals: rev growth {rev_growth:.0%}",
+                    base_weight=BASE_WEIGHTS["fundamentals_declining"],
+                    recency_days=7,
+                ))
+
+    # 5. Valuation
+    if valuation and not valuation.get("insufficient_data"):
+        cagr = valuation.get("implied_cagr", 0)
+        mos = valuation.get("margin_of_safety", 0)
+        if cagr > 35 and mos > 25:
+            items.append(EvidenceItem(
+                source="fundamental_data", date=today,
+                claim=f"Attractive valuation: CAGR {cagr:.1f}%, MoS {mos:.1f}%",
+                base_weight=BASE_WEIGHTS["valuation_attractive"],
+                recency_days=1,
+            ))
+        elif cagr > 25 and mos > 15:
+            items.append(EvidenceItem(
+                source="fundamental_data", date=today,
+                claim=f"Fair valuation: CAGR {cagr:.1f}%",
+                base_weight=BASE_WEIGHTS["valuation_fair"],
+                recency_days=1,
+            ))
+        elif cagr > 15:
+            items.append(EvidenceItem(
+                source="fundamental_data", date=today,
+                claim=f"Moderate valuation: CAGR {cagr:.1f}%",
+                base_weight=BASE_WEIGHTS["valuation_moderate"],
+                recency_days=1,
+            ))
+        elif cagr < 0:
+            items.append(EvidenceItem(
+                source="fundamental_data", date=today,
+                claim=f"Stretched valuation: negative CAGR {cagr:.1f}%",
+                base_weight=BASE_WEIGHTS["valuation_stretched"],
+                recency_days=1,
+            ))
+
+    # Compute weighted scores
+    for item in items:
+        item.weighted_score = item.base_weight * compute_recency_decay(item.recency_days)
+
+    return items
+
+
 def _fmt_pct(val: float | None) -> str:
     """Format a float as a percentage string or N/A."""
     if val is None:
@@ -233,7 +451,7 @@ def update_conviction_list(
 
         # Gather evidence data for this ticker
         si_data = superinvestor_data.get(ticker)
-        earn_data = earnings_data.get(ticker)
+        earn_data = earnings_data.get("per_ticker", {}).get(ticker) if isinstance(earnings_data, dict) else None
         fund_data = _extract_fundamentals_from_candidates(ticker, candidates)
         val_data = valuation_data.get(ticker)
         crowd = _build_crowd_data(ticker, candidates, prediction_by_ticker)
@@ -299,7 +517,7 @@ def update_conviction_list(
 
             # Gather evidence data
             si_data = superinvestor_data.get(ticker)
-            earn_data = earnings_data.get(ticker)
+            earn_data = earnings_data.get("per_ticker", {}).get(ticker) if isinstance(earnings_data, dict) else None
             fund_data = candidate.get("fundamentals_summary") or {}
             # Merge full fundamentals if available in candidate signal_data
             if candidate.get("signal_data"):
