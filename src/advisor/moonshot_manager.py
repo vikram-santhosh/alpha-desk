@@ -223,6 +223,8 @@ def _has_asymmetric_profile(
         return "small_cap_disruptor"
 
     # --- Archetype 2: Catalyst-driven ---
+    # Must be sub-$50B -- mega-caps are not moonshots
+    catalyst_max_cap = mc.get("catalyst_max_market_cap", 50_000_000_000)
     catalyst_composite = mc.get("catalyst_min_composite", 45)
     has_catalyst = False
 
@@ -237,14 +239,19 @@ def _has_asymmetric_profile(
     if signal_type in ("earnings_surprise", "sentiment_reversal", "guidance_change", "breaking_news"):
         has_catalyst = True
 
-    if has_catalyst and scores.get("composite", 0) >= catalyst_composite:
+    if (has_catalyst
+            and scores.get("composite", 0) >= catalyst_composite
+            and (market_cap is None or market_cap < catalyst_max_cap)):
         return "catalyst_driven"
 
     # --- Archetype 3: Contrarian turnaround ---
+    # Must be sub-$50B -- mega-caps recovering from a drawdown are not moonshots
+    turnaround_max_cap = mc.get("turnaround_max_market_cap", 50_000_000_000)
     turnaround_pct = mc.get("turnaround_max_pct_from_high", -30)
     turnaround_sentiment = mc.get("turnaround_min_sentiment", 50)
 
-    if pct_from_high is not None and pct_from_high <= turnaround_pct:
+    if (pct_from_high is not None and pct_from_high <= turnaround_pct
+            and (market_cap is None or market_cap < turnaround_max_cap)):
         if revenue_growth is not None and revenue_growth > 0:
             return "contrarian_turnaround"
         if sentiment_score >= turnaround_sentiment:
@@ -374,7 +381,7 @@ Respond with ONLY valid JSON, no markdown code blocks."""
         )
 
         usage = response.usage
-        record_usage(_AGENT_NAME, usage.input_tokens, usage.output_tokens)
+        record_usage(_AGENT_NAME, usage.input_tokens, usage.output_tokens, model=_MODEL)
 
         if not response.content:
             log.warning("Empty Opus response for %s", ticker)

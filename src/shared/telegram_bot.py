@@ -8,6 +8,7 @@ Includes scheduling via the `schedule` library.
 import asyncio
 import json
 import os
+import re
 import threading
 import time
 from datetime import datetime
@@ -90,7 +91,12 @@ def send_message(chat_id: str, text: str, parse_mode: str = "HTML") -> bool:
 
 
 def _split_message(text: str) -> list[str]:
-    """Split a message into chunks that fit Telegram's limit."""
+    """Split a message into chunks that fit Telegram's limit.
+
+    Ensures HTML tags are not broken across chunks by closing any
+    open tags at the end of each chunk and re-opening them at the
+    start of the next.
+    """
     if len(text) <= MAX_MSG_LEN:
         return [text]
 
@@ -105,10 +111,48 @@ def _split_message(text: str) -> list[str]:
         if split_at == -1:
             split_at = MAX_MSG_LEN
 
-        chunks.append(text[:split_at])
-        text = text[split_at:].lstrip("\n")
+        chunk = text[:split_at]
+        remainder = text[split_at:].lstrip("\n")
+
+        # Fix unclosed HTML tags: close them at end of chunk,
+        # re-open at start of next chunk
+        open_tags = _get_unclosed_tags(chunk)
+        if open_tags:
+            # Close tags in reverse order at end of this chunk
+            chunk += "".join(f"</{tag}>" for tag in reversed(open_tags))
+            # Re-open tags at start of next chunk
+            remainder = "".join(f"<{tag}>" for tag in open_tags) + remainder
+
+        chunks.append(chunk)
+        text = remainder
 
     return chunks
+
+
+# HTML tags used in Telegram messages
+_SIMPLE_TAG_RE = re.compile(r"<(/?)([a-zA-Z]+)(?:\s[^>]*)?>")
+
+
+def _get_unclosed_tags(html_text: str) -> list[str]:
+    """Return a list of unclosed HTML tag names in the text.
+
+    Only tracks simple tags (b, i, code, pre, u, s) relevant to Telegram HTML.
+    Excludes <a> tags since re-opening them without the href would be invalid;
+    instead the split should not break inside anchor text (handled by newline splitting).
+    """
+    stack: list[str] = []
+    for match in _SIMPLE_TAG_RE.finditer(html_text):
+        is_closing = match.group(1) == "/"
+        tag_name = match.group(2).lower()
+        if tag_name not in ("b", "i", "code", "pre", "u", "s"):
+            continue
+        if is_closing:
+            # Pop matching open tag if present
+            if stack and stack[-1] == tag_name:
+                stack.pop()
+        else:
+            stack.append(tag_name)
+    return stack
 
 
 def get_updates(offset: int | None = None, timeout: int = 30) -> list[dict]:

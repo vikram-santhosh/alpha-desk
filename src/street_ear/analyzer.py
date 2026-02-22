@@ -1,8 +1,11 @@
-"""Claude Opus 4.6 analysis of Reddit posts for Street Ear.
+"""Claude analysis of Reddit posts for Street Ear.
 
 Batches Reddit posts and sends them to Claude for extraction of ticker
 mentions, sentiment, confidence, themes, and notable quotes. Aggregates
 results across batches into per-ticker summaries.
+
+Uses Sonnet for ticker extraction and sentiment classification rather
+than Opus, since this is structured extraction, not creative reasoning.
 """
 
 import json
@@ -17,7 +20,7 @@ from src.utils.logger import get_logger
 
 log = get_logger(__name__)
 
-MODEL = "claude-opus-4-6"
+MODEL = "claude-sonnet-4-6"
 AGENT_NAME = "street_ear"
 BATCH_SIZE = 20
 MAX_TOKENS = 4096
@@ -170,7 +173,7 @@ def _analyze_batch(
     known_tickers: list[str],
     client: anthropic.Anthropic,
 ) -> dict[str, Any]:
-    """Analyze a single batch of posts using Claude Opus 4.6.
+    """Analyze a single batch of posts using Claude.
 
     Args:
         posts: Batch of post dicts to analyze.
@@ -210,7 +213,7 @@ def _analyze_batch(
 
     # Track costs
     usage = response.usage
-    record_usage(AGENT_NAME, usage.input_tokens, usage.output_tokens)
+    record_usage(AGENT_NAME, usage.input_tokens, usage.output_tokens, model=MODEL)
 
     # Extract text from response
     response_text = ""
@@ -311,7 +314,7 @@ def _aggregate_results(
 
 
 def analyze_posts(posts: list[dict[str, Any]]) -> dict[str, Any]:
-    """Analyze Reddit posts using Claude Opus 4.6 for market intelligence.
+    """Analyze Reddit posts using Claude for market intelligence.
 
     Batches posts into groups and sends each batch to the LLM for analysis.
     Extracts ticker mentions, sentiment, themes, and notable quotes.

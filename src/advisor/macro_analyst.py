@@ -125,8 +125,7 @@ def update_macro_theses(macro_data: dict, news_signals: list[dict]) -> list[dict
     """Evaluate existing macro theses against new macro data and news signals.
 
     Reads current theses from memory, enriches them with today's data points,
-    and returns a list of thesis dicts with suggested status updates.
-    The orchestrator / Opus synthesis step uses these to update memory.
+    persists any new evidence to the database, and returns enriched dicts.
 
     Args:
         macro_data: Output from fetch_macro_data().
@@ -141,23 +140,42 @@ def update_macro_theses(macro_data: dict, news_signals: list[dict]) -> list[dict
           - relevant_news: news items that touch this thesis
           - affected_tickers: list of tickers
     """
-    from src.advisor.memory import get_all_macro_theses
+    from src.advisor.memory import get_all_macro_theses, update_macro_thesis
 
     theses = get_all_macro_theses()
     if not theses:
         log.warning("No macro theses in memory — seed them first via config")
         return []
 
+    # First pass: persist evidence for each thesis
+    for thesis in theses:
+        try:
+            title = thesis["title"]
+            affected = thesis.get("affected_tickers", [])
+            relevant_news = _match_news_to_thesis(title, affected, news_signals)
+
+            if relevant_news:
+                evidence_parts = []
+                for news in relevant_news[:5]:
+                    headline = news.get("headline", "")
+                    reason = news.get("match_reason", "")
+                    evidence_parts.append(f"[{reason}] {headline}")
+                evidence_str = "; ".join(evidence_parts)
+                update_macro_thesis(title, thesis.get("status", "intact"), evidence=evidence_str)
+                log.info("Persisted %d evidence items for thesis '%s'", len(relevant_news), title)
+        except Exception:
+            log.exception("Failed to persist evidence for thesis: %s", thesis.get("title"))
+
+    # Re-read all theses once to get updated evidence_logs
+    theses = get_all_macro_theses()
+
+    # Second pass: build enriched results
     results = []
     for thesis in theses:
         try:
             title = thesis["title"]
             affected = thesis.get("affected_tickers", [])
-
-            # Collect macro data points relevant to this thesis
             macro_snapshot = _extract_relevant_macro(title, macro_data)
-
-            # Find news signals relevant to this thesis
             relevant_news = _match_news_to_thesis(title, affected, news_signals)
 
             results.append({

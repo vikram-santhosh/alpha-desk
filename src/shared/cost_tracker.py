@@ -15,9 +15,14 @@ log = get_logger(__name__)
 
 DB_PATH = Path("data/cost_tracker.db")
 
-# Opus 4.6 pricing (per million tokens)
-OPUS_INPUT_COST_PER_MTOK = 15.0
-OPUS_OUTPUT_COST_PER_MTOK = 75.0
+# Pricing per million tokens by model family
+MODEL_PRICING = {
+    "claude-opus-4-6": {"input": 15.0, "output": 75.0},
+    "claude-sonnet-4-6": {"input": 3.0, "output": 15.0},
+    "claude-haiku-4-5": {"input": 0.80, "output": 4.0},
+}
+# Default to Opus pricing for unknown models (conservative estimate)
+DEFAULT_PRICING = {"input": 15.0, "output": 75.0}
 
 DEFAULT_DAILY_CAP = 20.0
 
@@ -41,8 +46,21 @@ def _get_db() -> sqlite3.Connection:
     return conn
 
 
+def _get_pricing(model: str | None) -> dict[str, float]:
+    """Look up pricing for a model, falling back to default."""
+    if model is None:
+        return DEFAULT_PRICING
+    # Try exact match first, then prefix match for versioned model IDs
+    if model in MODEL_PRICING:
+        return MODEL_PRICING[model]
+    for key, pricing in MODEL_PRICING.items():
+        if model.startswith(key):
+            return pricing
+    return DEFAULT_PRICING
+
+
 def record_usage(
-    agent: str, input_tokens: int, output_tokens: int
+    agent: str, input_tokens: int, output_tokens: int, model: str | None = None
 ) -> float:
     """Record an API call's token usage and cost.
 
@@ -50,13 +68,15 @@ def record_usage(
         agent: Name of the agent making the call.
         input_tokens: Number of input tokens used.
         output_tokens: Number of output tokens used.
+        model: Model ID used for the call (for accurate pricing).
 
     Returns:
         Cost in USD for this call.
     """
+    pricing = _get_pricing(model)
     cost = (
-        input_tokens / 1_000_000 * OPUS_INPUT_COST_PER_MTOK
-        + output_tokens / 1_000_000 * OPUS_OUTPUT_COST_PER_MTOK
+        input_tokens / 1_000_000 * pricing["input"]
+        + output_tokens / 1_000_000 * pricing["output"]
     )
 
     conn = _get_db()

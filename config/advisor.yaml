@@ -86,7 +86,7 @@ strategy:
   moonshot_max_pct: 3
   min_cagr_pct: 25
   min_margin_of_safety_pct: 15
-  min_evidence_sources: 2
+  min_evidence_sources: 3
 
 # Earnings intelligence
 earnings:
@@ -126,22 +126,22 @@ moonshot:
   disruptor_max_market_cap: 30000000000
   disruptor_min_rev_growth: 0.30
   disruptor_min_sentiment: 40
-  # Catalyst-driven
+  # Catalyst-driven (must be sub-$50B -- mega-caps are not moonshots)
   catalyst_min_composite: 45
-  # Contrarian turnaround
+  catalyst_max_market_cap: 50000000000
+  # Contrarian turnaround (must be sub-$50B)
   turnaround_max_pct_from_high: -30
   turnaround_min_sentiment: 50
+  turnaround_max_market_cap: 50000000000
 
   # Pre-IPO proxy plays (unlisted company exposure via public equities)
+  # NOTE: MSFT, GOOG, AMZN are already core holdings — their OpenAI/Anthropic
+  # exposure is captured in the holdings thesis, not as moonshot seeds.
   pre_ipo_proxies:
-    - ticker: MSFT
-      exposure: "OpenAI (49% stake, exclusive cloud+API partner)"
-    - ticker: GOOG
-      exposure: "Anthropic (major cloud deal, $2B+ investment)"
-    - ticker: AMZN
-      exposure: "Anthropic (up to $4B investment, AWS partnership)"
     - ticker: RKLB
       exposure: "SpaceX adjacent — only pure-play orbital launch competitor"
+    - ticker: SOUN
+      exposure: "Voice AI pure-play — proxy for conversational AI adoption"
 
   # Commodity / collectible plays
   commodity_tickers:

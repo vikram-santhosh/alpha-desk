@@ -9,6 +9,7 @@ and graceful degradation when API keys are missing.
 """
 
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -387,6 +388,7 @@ def fetch_all_news(
 
         # 3. NewsAPI: broad category searches to cover all finance-relevant topics
         # Each query = 1 API call. 7 queries × 4 runs/day = 28 calls/day (within 100 free-tier limit)
+        # Queries are independent and run in parallel for speed.
         broad_queries = [
             "economy OR inflation OR GDP OR unemployment OR recession",
             "tariff OR trade OR sanctions OR import OR export OR trade deal",
@@ -396,10 +398,19 @@ def fetch_all_news(
             "China OR Taiwan OR semiconductor OR chip OR AI OR geopolitical",
             "oil OR energy OR commodity OR OPEC OR dollar OR currency",
         ]
-        for q in broad_queries:
-            market_articles = fetch_newsapi_market(newsapi_key, q)
-            all_articles.extend(market_articles)
-            log.info("NewsAPI market search '%s': %d articles", q[:40], len(market_articles))
+        with ThreadPoolExecutor(max_workers=len(broad_queries)) as executor:
+            futures = {
+                executor.submit(fetch_newsapi_market, newsapi_key, q): q
+                for q in broad_queries
+            }
+            for future in as_completed(futures):
+                q = futures[future]
+                try:
+                    market_articles = future.result()
+                    all_articles.extend(market_articles)
+                    log.info("NewsAPI market search '%s': %d articles", q[:40], len(market_articles))
+                except Exception as e:
+                    log.error("NewsAPI market search '%s' failed: %s", q[:40], e)
     else:
         log.info("NewsAPI key not available; skipping NewsAPI source")
 

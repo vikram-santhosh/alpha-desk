@@ -612,14 +612,39 @@ Conviction changes: {len(yesterday.get('conviction_changes', []))}
         macro_ctx_parts.append(f"- {t.get('title')}: {t.get('status', 'intact')}")
     macro_ctx = "\n".join(macro_ctx_parts) if macro_ctx_parts else "No macro theses."
 
-    prompt = f"""You are a senior portfolio manager writing a daily brief for an investor.
+    # Build strategy actions context
+    actions_ctx = ""
+    if strategy.get("actions"):
+        actions_lines = []
+        for a in strategy["actions"]:
+            actions_lines.append(
+                f"- {a.get('action', '').upper()} {a.get('ticker')}: "
+                f"{a.get('reason', '')} [urgency: {a.get('urgency', 'low')}]"
+            )
+        actions_ctx = "\n".join(actions_lines)
+    else:
+        actions_ctx = "No action recommended."
+
+    # Build moonshot context
+    moonshot_ctx = "\n".join(
+        f"- {m.get('ticker')}: {m.get('thesis', '')}" for m in moonshot_list
+    ) if moonshot_list else "Empty."
+
+    # Build prediction shifts context
+    pred_ctx = "\n".join(
+        f"- {s.get('market_title')}: {s.get('probability', 0)*100:.0f}% "
+        f"({s.get('delta', 0)*100:+.0f}pp)"
+        for s in prediction_shifts[:5]
+    ) if prediction_shifts else "No significant shifts."
+
+    prompt = f"""You are a senior portfolio manager writing a daily brief for an investor who holds 18 positions in a tech/AI-heavy portfolio.
 
 INVESTOR PROFILE:
 - Holds positions for 1+ years. Low churn. Not a trader.
-- Prefers undervalued stocks but open to momentum with strong evidence.
-- Current portfolio is tech/AI-heavy by conviction.
-- Only recommend changes if thesis is invalidated or opportunity is exceptional (25% CAGR minimum).
-- Weight crowd sentiment and company guidance over analyst opinions.
+- Current portfolio heavily concentrated in semiconductors and hyperscalers.
+- Only recommend changes when thesis is invalidated or opportunity passes the 25% CAGR gate.
+- Weight company guidance and smart money over analyst opinions.
+- Cares about: thesis integrity, concentration risk, macro tailwinds/headwinds to their specific holdings.
 
 {yesterday_ctx}
 
@@ -636,7 +661,7 @@ Yield Curve: {macro_data.get('yield_curve_spread_calculated', 'N/A')}
 {macro_ctx}
 
 ### PREDICTION MARKET SHIFTS
-{chr(10).join(f"- {s.get('market_title')}: {s.get('probability', 0)*100:.0f}% ({s.get('delta', 0)*100:+.0f}pp)" for s in prediction_shifts[:5]) if prediction_shifts else "No significant shifts."}
+{pred_ctx}
 
 ### HOLDINGS
 {holdings_ctx}
@@ -648,35 +673,53 @@ Yield Curve: {macro_data.get('yield_curve_spread_calculated', 'N/A')}
 {_build_superinvestor_ctx(superinvestor_data)}
 
 ### STRATEGY ENGINE OUTPUT
-Actions: {len(strategy.get('actions', []))}
-{chr(10).join(f"- {a.get('action').upper()} {a.get('ticker')}: {a.get('reason', '')}" for a in strategy.get('actions', [])) if strategy.get('actions') else "No action recommended."}
+{actions_ctx}
 
 ### CONVICTION LIST
 {conviction_ctx}
 
 ### MOONSHOT LIST
-{chr(10).join(f"- {m.get('ticker')}: {m.get('thesis', '')}" for m in moonshot_list) if moonshot_list else "Empty."}
+{moonshot_ctx}
 
-Produce a concise 2-3 paragraph MACRO SUMMARY that connects the dots between macro forces, how they affect the portfolio, and any actionable implications. Focus on what CHANGED today. If nothing material changed, say so.
+## YOUR TASK
 
-Respond with ONLY the macro summary text. No headers."""
+Write TWO sections:
+
+**SECTION 1 - WHAT CHANGED TODAY (2-3 sentences)**
+Lead with the single most important thing for THIS portfolio today. Was it a macro shift, an earnings report, a thesis change, a price move? If nothing material changed, say "Quiet day" and explain why that's fine. Do NOT just summarize the data -- interpret it.
+
+**SECTION 2 - ADVISOR NOTES (2-4 bullet points)**
+Specific, actionable observations. Examples of what belongs here:
+- If strategy engine recommends trims: Do you agree? Is the reason strong enough to act, or just noise?
+- If conviction names are proposed: Are they differentiated from existing holdings, or more of the same tech?
+- Concentration risk: Is the portfolio too exposed to one thesis (e.g., all names ride CapEx cycle)?
+- What to watch this week: specific catalysts, earnings dates, macro events that matter for this portfolio.
+- If nothing is actionable: say so clearly. "Hold. No action needed." is a valid answer.
+
+RULES:
+- Be direct. No hedging language ("it might be worth considering"). Either recommend action or don't.
+- Cite specific numbers (prices, percentages, dates).
+- If the strategy engine's recommendation is wrong or poorly supported, say so.
+- Separate the two sections with a blank line. No markdown headers. No bullet points in Section 1.
+
+Respond with ONLY the two sections."""
 
     try:
         client = anthropic.Anthropic()
         response = client.messages.create(
             model=MODEL,
-            max_tokens=1000,
+            max_tokens=1500,
             messages=[{"role": "user", "content": prompt}],
         )
 
         if not response.content:
             return {"macro_summary": "Synthesis unavailable — empty response."}
         usage = response.usage
-        record_usage(AGENT_NAME, usage.input_tokens, usage.output_tokens)
-        macro_summary = response.content[0].text
+        record_usage(AGENT_NAME, usage.input_tokens, usage.output_tokens, model=MODEL)
+        full_text = response.content[0].text
 
         log.info("Synthesis complete: %d in, %d out", usage.input_tokens, usage.output_tokens)
-        return {"macro_summary": macro_summary}
+        return {"macro_summary": full_text}
 
     except Exception:
         log.exception("Opus synthesis failed")

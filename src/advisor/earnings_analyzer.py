@@ -263,7 +263,7 @@ def analyze_transcript(ticker: str, transcript_text: str) -> dict[str, Any]:
 
         # Record cost
         usage = response.usage
-        record_usage("advisor_earnings", usage.input_tokens, usage.output_tokens)
+        record_usage("advisor_earnings", usage.input_tokens, usage.output_tokens, model="claude-opus-4-6")
 
         # Parse the JSON response
         raw_text = response.content[0].text.strip()

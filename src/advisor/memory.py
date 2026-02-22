@@ -364,7 +364,8 @@ def upsert_conviction(ticker: str, conviction: str, thesis: str,
     if existing:
         conn.execute("""
             UPDATE conviction_list SET conviction = ?, thesis = ?, pros = ?, cons = ?,
-            superinvestor_activity = ?, updated_at = ? WHERE ticker = ?
+            superinvestor_activity = ?, status = 'active', removal_reason = NULL,
+            removal_date = NULL, updated_at = ? WHERE ticker = ?
         """, (conviction, thesis, json.dumps(pros or []), json.dumps(cons or []),
               superinvestor_activity, now, ticker))
     else:

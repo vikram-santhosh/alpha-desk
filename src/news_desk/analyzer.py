@@ -1,8 +1,11 @@
-"""News analysis using Anthropic Claude Opus 4.6 for AlphaDesk News Desk.
+"""News analysis using Anthropic Claude for AlphaDesk News Desk.
 
 Analyzes fetched news articles in batches, scoring each for relevance,
 sentiment, urgency, and categorization. Publishes signals to the agent bus
 for inter-agent coordination.
+
+Uses Sonnet for classification tasks (relevance/sentiment scoring) rather
+than Opus, since this is structured extraction, not creative reasoning.
 """
 
 import json
@@ -17,8 +20,8 @@ from src.utils.logger import get_logger
 log = get_logger(__name__)
 
 AGENT_NAME = "news_desk"
-MODEL = "claude-opus-4-6"
-BATCH_SIZE = 15
+MODEL = "claude-sonnet-4-6"
+BATCH_SIZE = 25
 MAX_TOKENS = 4096
 
 # System prompt template — portfolio context is injected at runtime
@@ -138,12 +141,14 @@ def _parse_analysis_response(response_text: str, batch_size: int) -> list[dict[s
             log.warning("Skipping non-dict analysis item: %s", type(item).__name__)
             continue
 
+        raw_urgency = str(item.get("urgency", "low")).lower()
+        raw_category = str(item.get("category", "other")).lower()
         validated.append({
             "relevance": _clamp(int(item.get("relevance", 0)), 0, 10),
             "sentiment": _clamp(float(item.get("sentiment", 0)), -2.0, 2.0),
-            "urgency": item.get("urgency", "low") if item.get("urgency") in ("low", "med", "high") else "low",
+            "urgency": raw_urgency if raw_urgency in ("low", "med", "high") else "low",
             "affected_tickers": item.get("affected_tickers", []) if isinstance(item.get("affected_tickers"), list) else [],
-            "category": item.get("category", "other"),
+            "category": raw_category,
             "summary": str(item.get("summary", "")),
         })
 
@@ -169,7 +174,7 @@ def analyze_batch(
     articles: list[dict[str, Any]],
     system_prompt: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Analyze a single batch of articles using Claude Opus 4.6.
+    """Analyze a single batch of articles using Claude.
 
     Sends the batch to Claude for scoring and parses the structured response.
     Tracks API costs and checks budget before making the call.
@@ -211,6 +216,7 @@ def analyze_batch(
             agent=AGENT_NAME,
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
+            model=MODEL,
         )
 
         # Extract text from response
@@ -292,7 +298,7 @@ def analyze_news(
     articles: list[dict[str, Any]],
     anthropic_key: str,
 ) -> list[dict[str, Any]]:
-    """Analyze all news articles in batches using Claude Opus 4.6.
+    """Analyze all news articles in batches using Claude.
 
     Articles are processed in batches of ~15 to optimize API usage.
     Each article is enriched with analysis fields (relevance, sentiment,
@@ -459,8 +465,12 @@ def publish_signals(articles: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
         # Macro/geopolitical/regulatory events: broad market impact
         # Publish if relevance >= 6 OR urgency is high (e.g., emergency Fed action
-        # or geopolitical escalation that might score relevance 5 but is urgent)
-        if category in ("macro", "geopolitical", "regulatory") and (relevance >= 6 or urgency == "high"):
+        # or geopolitical escalation that might score relevance 5 but is urgent).
+        # Also include market_sentiment articles at higher relevance threshold,
+        # since the LLM often categorizes tariff/trade/policy news as market_sentiment.
+        is_macro_category = category in ("macro", "geopolitical", "regulatory")
+        is_broad_market = category == "market_sentiment" and relevance >= 7
+        if (is_macro_category and (relevance >= 6 or urgency == "high")) or is_broad_market:
             payload = {
                 "title": article.get("title", ""),
                 "url": article.get("url", ""),

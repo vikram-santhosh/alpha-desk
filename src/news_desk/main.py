@@ -3,7 +3,7 @@
 Orchestrates the full news intelligence pipeline:
 1. Load tickers from portfolio and watchlist configuration
 2. Fetch news from Finnhub (per-ticker) and NewsAPI (headlines + market search)
-3. Analyze articles with Claude Opus 4.6 for relevance, sentiment, urgency
+3. Analyze articles with Claude for relevance, sentiment, urgency
 4. Publish signals to the agent bus for inter-agent coordination
 5. Format output as Telegram HTML digest
 
@@ -149,7 +149,7 @@ async def run() -> dict[str, Any]:
         stats["timing"]["total"] = round(time.time() - pipeline_start, 2)
         return result
 
-    # Step 4: Analyze with Claude Opus 4.6
+    # Step 4: Analyze with Claude
     step_start = time.time()
     analyzed_articles: list[dict[str, Any]] = []
     if keys.get("anthropic_key"):

@@ -170,6 +170,8 @@ def generate_strategy(
     """
     actions = []
     new_flags = []
+    strategy = config.get("strategy", {})
+    max_position_pct = strategy.get("max_position_pct", 15)
 
     existing_flags = memory.get_active_flags()
     existing_flag_keys = {
@@ -187,7 +189,7 @@ def generate_strategy(
                 "ticker": ticker,
                 "action": "trim",
                 "reason": trim_reason,
-                "urgency": _assess_urgency(holding, val),
+                "urgency": _assess_urgency(holding, val, max_position_pct),
             })
 
             # Flag it if not already flagged
@@ -308,7 +310,7 @@ def generate_strategy(
     return result
 
 
-def _assess_urgency(holding: dict, valuation: dict) -> str:
+def _assess_urgency(holding: dict, valuation: dict, max_position_pct: float = 15) -> str:
     """Assess urgency of a trim recommendation."""
     thesis_status = holding.get("thesis_status", "intact")
 
@@ -316,8 +318,7 @@ def _assess_urgency(holding: dict, valuation: dict) -> str:
         return "high"
 
     position_pct = holding.get("position_pct")
-    strategy_max = 15  # default
-    if position_pct is not None and position_pct > strategy_max * 1.5:
+    if position_pct is not None and position_pct > max_position_pct * 1.5:
         return "high"
 
     cagr = valuation.get("implied_cagr", 0) if valuation else 0
