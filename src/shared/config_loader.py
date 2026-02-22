@@ -51,6 +51,11 @@ def load_subreddits() -> dict[str, Any]:
     return load_config("subreddits")
 
 
+def load_scout_config() -> dict[str, Any]:
+    """Load Alpha Scout config."""
+    return load_config("scout")
+
+
 def get_all_tickers() -> list[str]:
     """Get combined list of tickers from portfolio and watchlist."""
     portfolio = load_portfolio()

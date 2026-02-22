@@ -51,10 +51,11 @@ def _synthesize_brief(
     street_ear: dict[str, Any],
     portfolio: dict[str, Any],
     news_desk: dict[str, Any],
+    alpha_scout: dict[str, Any] | None = None,
 ) -> str:
     """Use Opus 4.6 to synthesize key takeaways and action items.
 
-    Takes the raw outputs from all three agents and produces
+    Takes the raw outputs from all agents and produces
     the KEY TAKEAWAYS and ACTION ITEMS sections of the morning brief.
     """
     within_budget, spent, cap = check_budget()
@@ -72,6 +73,9 @@ def _synthesize_brief(
         + portfolio.get("signals", [])
         + news_desk.get("signals", [])
     )
+    if alpha_scout:
+        all_signals.extend(alpha_scout.get("signals", []))
+
     stats = {
         "street_ear": street_ear.get("stats", {}),
         "portfolio": {
@@ -82,11 +86,20 @@ def _synthesize_brief(
         "news_desk": news_desk.get("stats", {}),
     }
 
+    # Build Alpha Scout section for the synthesis prompt
+    alpha_scout_section = ""
+    if alpha_scout:
+        alpha_scout_section = f"""
+
+## ALPHA SCOUT (Ticker Discovery)
+{alpha_scout.get('formatted', 'No data available')}
+"""
+
     prompt = f"""You are an expert investment analyst synthesizing a morning briefing.
 
 Today is {date.today().strftime('%B %d, %Y')}.
 
-Here are the outputs from three research agents:
+Here are the outputs from the research agents:
 
 ## STREET EAR (Reddit Intelligence)
 {street_ear.get('formatted', 'No data available')}
@@ -96,7 +109,7 @@ Here are the outputs from three research agents:
 
 ## NEWS DESK (Market News)
 {news_desk.get('formatted', 'No data available')}
-
+{alpha_scout_section}
 ## ACTIVE SIGNALS
 {_format_signals_for_synthesis(all_signals)}
 
@@ -183,6 +196,7 @@ def _assemble_briefing(
     portfolio_formatted: str,
     news_desk_formatted: str,
     daily_cost: float,
+    alpha_scout_formatted: str = "",
 ) -> str:
     """Assemble the complete morning briefing."""
     today = datetime.now().strftime("%b %d, %Y")
@@ -207,11 +221,23 @@ def _assemble_briefing(
         "",
         f"\U0001f4f0 <b>NEWS DESK \u2014 Market Intelligence</b>",
         news_desk_formatted,
+    ]
+
+    # Alpha Scout section (if available)
+    if alpha_scout_formatted:
+        sections.extend([
+            "",
+            separator,
+            "",
+            alpha_scout_formatted,
+        ])
+
+    sections.extend([
         "",
         separator,
         f"AlphaDesk v0.1 | API cost today: ${daily_cost:.2f}",
-        "/refresh /portfolio /news /trending /brief /cost",
-    ]
+        "/refresh /portfolio /news /trending /discover /brief /cost",
+    ])
 
     return "\n".join(sections)
 
@@ -232,10 +258,12 @@ async def run() -> dict[str, Any]:
     pipeline_start = time.time()
     log.info("Morning Brief pipeline starting")
 
-    # Run all three agents (Street Ear and News Desk in parallel first,
-    # then Portfolio Analyst which consumes their signals)
+    # Run all agents: Street Ear + News Desk in parallel first,
+    # then Alpha Scout (reads signals without consuming),
+    # then Portfolio Analyst (consumes signals).
     from src.street_ear.main import run as run_street_ear
     from src.news_desk.main import run as run_news_desk
+    from src.alpha_scout.main import run as run_alpha_scout
     from src.portfolio_analyst.main import run as run_portfolio
 
     # Phase 1: Run Street Ear and News Desk in parallel
@@ -245,14 +273,20 @@ async def run() -> dict[str, Any]:
         _run_agent("News Desk", run_news_desk),
     )
 
-    # Phase 2: Run Portfolio Analyst (consumes signals from Phase 1)
-    log.info("Phase 2: Running Portfolio Analyst")
+    # Phase 2: Run Alpha Scout (reads signals without consuming them)
+    log.info("Phase 2: Running Alpha Scout")
+    alpha_scout_result = await _run_agent("Alpha Scout", run_alpha_scout)
+
+    # Phase 3: Run Portfolio Analyst (consumes signals from Phase 1)
+    log.info("Phase 3: Running Portfolio Analyst")
     portfolio_result = await _run_agent("Portfolio Analyst", run_portfolio)
 
-    # Phase 3: Synthesize with Opus 4.6
-    log.info("Phase 3: Synthesizing with Opus 4.6")
+    # Phase 4: Synthesize with Opus 4.6
+    log.info("Phase 4: Synthesizing with Opus 4.6")
     synthesis_start = time.time()
-    synthesis = _synthesize_brief(street_ear_result, portfolio_result, news_desk_result)
+    synthesis = _synthesize_brief(
+        street_ear_result, portfolio_result, news_desk_result, alpha_scout_result,
+    )
     log.info("Synthesis took %.1fs", time.time() - synthesis_start)
 
     # Assemble the complete briefing
@@ -263,6 +297,7 @@ async def run() -> dict[str, Any]:
         portfolio_formatted=portfolio_result.get("formatted", ""),
         news_desk_formatted=news_desk_result.get("formatted", ""),
         daily_cost=daily_cost,
+        alpha_scout_formatted=alpha_scout_result.get("formatted", ""),
     )
 
     # Collect all signals
@@ -270,6 +305,7 @@ async def run() -> dict[str, Any]:
         street_ear_result.get("signals", [])
         + portfolio_result.get("signals", [])
         + news_desk_result.get("signals", [])
+        + alpha_scout_result.get("signals", [])
     )
 
     total_time = time.time() - pipeline_start
@@ -281,6 +317,7 @@ async def run() -> dict[str, Any]:
             "street_ear": street_ear_result,
             "portfolio": portfolio_result,
             "news_desk": news_desk_result,
+            "alpha_scout": alpha_scout_result,
         },
         "signals": all_signals,
         "stats": {
@@ -299,6 +336,8 @@ async def run_single_agent(agent_name: str) -> dict[str, Any]:
         from src.portfolio_analyst.main import run as agent_run
     elif agent_name == "news_desk":
         from src.news_desk.main import run as agent_run
+    elif agent_name == "alpha_scout":
+        from src.alpha_scout.main import run as agent_run
     else:
         return {"formatted": f"Unknown agent: {agent_name}", "signals": []}
 

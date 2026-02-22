@@ -32,6 +32,9 @@ SIGNAL_TYPES = {
     "technical_signal",
     "concentration_warning",
     "fundamental_alert",
+    # Alpha Scout signals
+    "discovery_recommendation",
+    "new_candidate",
 }
 
 

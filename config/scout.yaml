@@ -1,0 +1,35 @@
+sources:
+  agent_bus: true
+  sector_peers: true
+  sp500_index: true
+  yfinance_screener: true
+
+yfinance_screeners: [undervalued_growth_stocks, most_actives]
+
+screening:
+  max_candidates: 50
+  batch_size: 10
+  top_n_for_synthesis: 20
+
+weights:
+  technical: 0.30
+  fundamental: 0.30
+  sentiment: 0.20
+  diversification: 0.20
+
+output:
+  max_portfolio_recommendations: 5
+  max_watchlist_recommendations: 10
+
+sector_peers:
+  Technology: [AAPL, MSFT, GOOG, META, NVDA, AVGO, CRM, ADBE, ORCL, INTC, AMD, QCOM, TXN, CSCO, IBM]
+  Healthcare: [JNJ, UNH, PFE, ABT, TMO, MRK, ABBV, LLY, DHR, BMY, AMGN, MDT, CVS, CI, ISRG]
+  Financial Services: [JPM, BAC, WFC, GS, MS, BLK, SCHW, AXP, C, USB]
+  Consumer Cyclical: [AMZN, TSLA, HD, MCD, NKE, SBUX, LOW, TJX, BKNG, MAR]
+  Communication Services: [GOOG, META, DIS, NFLX, CMCSA, T, VZ, TMUS, CHTR, EA]
+  Industrials: [HON, UPS, CAT, RTX, DE, BA, GE, LMT, MMM, ITW]
+  Consumer Defensive: [PG, KO, PEP, WMT, COST, PM, MO, CL, KMB, MDLZ]
+  Energy: [XOM, CVX, COP, SLB, EOG, MPC, VLO, PSX, OKE, WMB]
+  Utilities: [NEE, DUK, SO, D, AEP, SRE, EXC, XEL, WEC, ES]
+  Real Estate: [PLD, AMT, EQIX, CCI, PSA, SPG, O, WELL, DLR, AVB]
+  Basic Materials: [LIN, APD, SHW, ECL, FCX, NEM, NUE, DOW, DD, PPG]

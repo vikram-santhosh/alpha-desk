@@ -166,6 +166,11 @@ async def handle_command(command: str, chat_id: str) -> None:
         result = await run_single_agent("street_ear")
         send_message(chat_id, result["formatted"])
 
+    elif cmd == "/discover":
+        send_message(chat_id, "Running Alpha Scout discovery... this may take a few minutes.")
+        result = await run_single_agent("alpha_scout")
+        send_message(chat_id, result["formatted"])
+
     elif cmd == "/cost":
         report = format_cost_report()
         send_message(chat_id, report)
@@ -193,6 +198,7 @@ async def handle_command(command: str, chat_id: str) -> None:
             "/portfolio — Portfolio analysis only\n"
             "/news — Market news only\n"
             "/trending — Reddit intelligence only\n"
+            "/discover — Ticker discovery &amp; recommendations\n"
             "/cost — API cost report\n"
             "/status — System status\n"
             "/help — This message"
