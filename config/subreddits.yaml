@@ -1,0 +1,8 @@
+primary: [wallstreetbets, investing, stocks]
+secondary: [options, SecurityAnalysis, ValueInvesting, StockMarket]
+thematic: [semiconductor, artificial]
+settings:
+  min_score: 10
+  min_comments: 5
+  max_post_age_hours: 24
+  posts_per_sub: 50

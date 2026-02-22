@@ -1,0 +1,16 @@
+holdings:
+  - ticker: AMZN
+    shares: 50
+    cost_basis: 178.50
+  - ticker: GOOG
+    shares: 30
+    cost_basis: 142.20
+  - ticker: MSFT
+    shares: 15
+    cost_basis: 378.00
+  - ticker: RKLB
+    shares: 200
+    cost_basis: 24.50
+  - ticker: VTI
+    shares: 25
+    cost_basis: 265.00
