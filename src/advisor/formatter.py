@@ -312,6 +312,48 @@ def format_strategy_section(strategy: dict[str, Any]) -> str:
 
 
 # ═══════════════════════════════════════════════════════
+# §3b THESIS EXPOSURE
+# ═══════════════════════════════════════════════════════
+
+def format_thesis_exposure_section(thesis_exposure: list[dict[str, Any]]) -> str:
+    """Format thesis-level portfolio concentration risk."""
+    if not thesis_exposure:
+        return ""
+
+    lines = ["\U0001f4ca <b>THESIS EXPOSURE</b>", ""]
+
+    for entry in thesis_exposure:
+        thesis = sanitize_html(entry.get("thesis", ""))
+        pct = entry.get("exposure_pct", 0)
+        tickers = entry.get("tickers", [])
+        status = entry.get("status", "intact")
+        warning = entry.get("warning")
+        overlaps = entry.get("overlaps_with", [])
+
+        # Visual bar (1 block per 5%)
+        bar_len = int(pct / 5)
+        bar = "\u2588" * bar_len
+
+        status_e = _status_emoji(status)
+        ticker_str = ", ".join(tickers[:5])
+        lines.append(f"  <b>{pct:.0f}%</b> {thesis} {status_e}")
+        lines.append(f"     <code>{bar}</code> ({ticker_str})")
+        if overlaps:
+            overlap_names = ", ".join(sanitize_html(o) for o in overlaps[:2])
+            lines.append(f"     \u2194\ufe0f Overlaps with: {overlap_names}")
+        if warning:
+            lines.append(f"     \u26a0\ufe0f {warning}")
+        lines.append("")
+
+    # Footnote if any thesis has overlaps — prevents user from double-counting
+    has_overlaps = any(entry.get("overlaps_with") for entry in thesis_exposure)
+    if has_overlaps:
+        lines.append("  <i>Note: Tickers can appear in multiple theses. Percentages are not additive.</i>")
+
+    return "\n".join(lines)
+
+
+# ═══════════════════════════════════════════════════════
 # §4 CONVICTION
 # ═══════════════════════════════════════════════════════
 
@@ -378,6 +420,41 @@ def format_moonshot_section(moonshot_list: list[dict[str, Any]]) -> str:
 # ASSEMBLY
 # ═══════════════════════════════════════════════════════
 
+def format_key_headlines(top_articles: list[dict[str, Any]], max_headlines: int = 3) -> str:
+    """Format top macro/geopolitical news headlines for the advisor brief.
+
+    Shows the most relevant news articles so the reader can see what
+    drove the analysis, instead of only seeing signals downstream.
+
+    Args:
+        top_articles: Analyzed articles from news_desk (sorted by relevance).
+        max_headlines: Maximum headlines to show.
+
+    Returns:
+        Formatted HTML string, or empty string if no relevant articles.
+    """
+    # Filter to macro-relevant categories with relevance >= 6
+    macro_categories = {"macro", "geopolitical", "regulatory", "market_sentiment"}
+    relevant = [
+        a for a in top_articles
+        if a.get("category", "").lower() in macro_categories
+        and a.get("relevance", 0) >= 6
+    ]
+
+    if not relevant:
+        return ""
+
+    lines = ["\U0001f4f0 <b>KEY HEADLINES</b>", ""]
+    for article in relevant[:max_headlines]:
+        title = sanitize_html(article.get("title", ""))
+        source = sanitize_html(article.get("source", ""))
+        sentiment = article.get("sentiment", 0)
+        emoji = "\U0001f7e2" if sentiment > 0 else "\U0001f534" if sentiment < 0 else "\u26aa"
+        lines.append(f"  {emoji} {title} <i>({source})</i>")
+
+    return "\n".join(lines)
+
+
 def format_daily_brief(
     macro_section: str,
     holdings_section: str,
@@ -386,6 +463,10 @@ def format_daily_brief(
     moonshot_section: str,
     daily_cost: float = 0.0,
     macro_summary: str | None = None,
+    thesis_exposure_section: str = "",
+    key_headlines_section: str = "",
+    reddit_mood: str = "",
+    reddit_themes: list[str] | None = None,
 ) -> str:
     """Assemble the complete daily brief with Opus synthesis lead."""
     today = datetime.now().strftime("%b %d, %Y")
@@ -401,11 +482,26 @@ def format_daily_brief(
         sections.append(f"\U0001f4ac <b>TODAY&apos;S TAKE</b>")
         sections.append(f"  {sanitize_html(macro_summary)}")
 
+    # Key headlines — show what news drove the analysis
+    if key_headlines_section:
+        sections.extend(["", SEPARATOR, "", key_headlines_section])
+
     sections.extend([
         "",
         SEPARATOR,
         "",
         macro_section,
+    ])
+
+    # Reddit mood (if available) — include top themes for context
+    if reddit_mood and reddit_mood != "unknown":
+        theme_suffix = ""
+        if reddit_themes:
+            safe_themes = ", ".join(sanitize_html(t) for t in reddit_themes[:2])
+            theme_suffix = f" \u2014 {safe_themes}"
+        sections.append(f"  \U0001f4e3 Reddit mood: <b>{sanitize_html(reddit_mood)}</b>{theme_suffix}")
+
+    sections.extend([
         "",
         SEPARATOR,
         "",
@@ -414,6 +510,13 @@ def format_daily_brief(
         SEPARATOR,
         "",
         strategy_section,
+    ])
+
+    # Thesis exposure (between strategy and conviction)
+    if thesis_exposure_section:
+        sections.extend(["", SEPARATOR, "", thesis_exposure_section])
+
+    sections.extend([
         "",
         SEPARATOR,
         "",

@@ -158,6 +158,10 @@ async def run() -> dict[str, Any]:
     # Read signals without consuming (Portfolio Analyst needs them later)
     agent_bus_signals = consume(mark_consumed=False)
 
+    # Extract Reddit mood + themes from Street Ear (used in synthesis prompt + formatter)
+    _reddit_mood = street_ear_result.get("analysis", {}).get("market_mood", "")
+    _reddit_themes = street_ear_result.get("analysis", {}).get("themes", [])
+
     # ── Step 3: Fetch market data ──────────────────────────────────────
     from src.portfolio_analyst.price_fetcher import fetch_current_prices, fetch_all_historical
     from src.portfolio_analyst.fundamental_analyzer import fetch_all_fundamentals
@@ -414,6 +418,8 @@ async def run() -> dict[str, Any]:
         moonshot_list=moonshot_result.get("current_list", []),
         earnings_data=earnings_data,
         superinvestor_data=superinvestor_data,
+        reddit_mood=_reddit_mood,
+        reddit_themes=_reddit_themes,
     )
 
     # ── Step 8: Save memory state ──────────────────────────────────────
@@ -430,21 +436,34 @@ async def run() -> dict[str, Any]:
     # ── Step 9: Format output ──────────────────────────────────────────
     from src.advisor.formatter import (
         format_daily_brief,
+        format_key_headlines,
         format_macro_section,
         format_holdings_section,
         format_strategy_section,
+        format_thesis_exposure_section,
         format_conviction_section,
         format_moonshot_section,
     )
 
     daily_cost = get_daily_cost()
 
+    # Use Reddit mood + themes extracted after Step 2
+    reddit_mood = _reddit_mood
+    reddit_themes = _reddit_themes
+
     try:
         macro_section = format_macro_section(macro_data, updated_theses, prediction_shifts)
         holdings_section = format_holdings_section(holdings_reports)
         strategy_section = format_strategy_section(strategy)
+        thesis_exposure_section = format_thesis_exposure_section(
+            strategy.get("thesis_exposure", [])
+        )
         conviction_section = format_conviction_section(conviction_result.get("current_list", []))
         moonshot_section = format_moonshot_section(moonshot_result.get("current_list", []))
+
+        # Key headlines from news desk
+        top_articles = news_desk_result.get("top_articles", [])
+        key_headlines_section = format_key_headlines(top_articles)
 
         # If Opus produced an enhanced brief, use it; otherwise use structured sections
         opus_brief = synthesis.get("formatted_brief")
@@ -459,6 +478,10 @@ async def run() -> dict[str, Any]:
                 moonshot_section=moonshot_section,
                 daily_cost=daily_cost,
                 macro_summary=synthesis.get("macro_summary"),
+                thesis_exposure_section=thesis_exposure_section,
+                key_headlines_section=key_headlines_section,
+                reddit_mood=reddit_mood,
+                reddit_themes=reddit_themes,
             )
     except Exception:
         log.exception("Failed to format brief")
@@ -553,6 +576,23 @@ def _build_superinvestor_ctx(superinvestor_data: dict[str, Any] | None) -> str:
     return "\n".join(lines) if lines else "No notable superinvestor activity."
 
 
+def _build_thesis_exposure_ctx(thesis_exposure: list[dict]) -> str:
+    """Build thesis exposure context for the Opus prompt."""
+    if not thesis_exposure:
+        return "No thesis exposure data."
+    lines = []
+    for entry in thesis_exposure:
+        thesis = entry.get("thesis", "")
+        pct = entry.get("exposure_pct", 0)
+        tickers = ", ".join(entry.get("tickers", []))
+        warning = entry.get("warning", "")
+        warn_str = f" ⚠ {warning}" if warning else ""
+        overlaps = entry.get("overlaps_with", [])
+        overlap_str = f" [overlaps: {', '.join(overlaps[:2])}]" if overlaps else ""
+        lines.append(f"- {thesis}: {pct:.0f}% ({tickers}){warn_str}{overlap_str}")
+    return "\n".join(lines)
+
+
 def _synthesize_brief(
     memory: dict[str, Any],
     macro_data: dict[str, Any],
@@ -564,6 +604,8 @@ def _synthesize_brief(
     moonshot_list: list[dict[str, Any]],
     earnings_data: dict[str, Any],
     superinvestor_data: dict[str, Any] | None = None,
+    reddit_mood: str = "",
+    reddit_themes: list[str] | None = None,
 ) -> dict[str, Any]:
     """Use Opus 4.6 to enhance the daily brief with narrative and judgment."""
     within_budget, spent, cap = check_budget()
@@ -672,8 +714,15 @@ Yield Curve: {macro_data.get('yield_curve_spread_calculated', 'N/A')}
 ### SUPERINVESTOR ACTIVITY
 {_build_superinvestor_ctx(superinvestor_data)}
 
+### REDDIT SENTIMENT
+Mood: {reddit_mood or 'N/A'}
+Top themes: {', '.join((reddit_themes or [])[:3]) or 'N/A'}
+
 ### STRATEGY ENGINE OUTPUT
 {actions_ctx}
+
+### THESIS EXPOSURE (% of portfolio on each macro thesis)
+{_build_thesis_exposure_ctx(strategy.get('thesis_exposure', []))}
 
 ### CONVICTION LIST
 {conviction_ctx}

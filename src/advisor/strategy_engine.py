@@ -283,6 +283,9 @@ def generate_strategy(
                     })
                     existing_flag_keys.add(flag_key)
 
+    # --- Thesis exposure analysis ---
+    thesis_exposure = _compute_thesis_exposure(holdings_reports, macro_theses)
+
     # --- Build summary ---
     if not actions:
         summary = "NO CHANGES RECOMMENDED TODAY. All holdings theses intact."
@@ -301,6 +304,7 @@ def generate_strategy(
         "flags": new_flags,
         "existing_flags": existing_flags,
         "summary": summary,
+        "thesis_exposure": thesis_exposure,
     }
 
     log.info(
@@ -330,3 +334,85 @@ def _assess_urgency(holding: dict, valuation: dict, max_position_pct: float = 15
         return "high"
 
     return "low"
+
+
+def _compute_thesis_exposure(
+    holdings_reports: list[dict],
+    macro_theses: list[dict],
+) -> list[dict]:
+    """Compute portfolio exposure by macro thesis.
+
+    Calculates what % of portfolio value is tied to each macro thesis,
+    so the investor can see concentration risk at the thesis level
+    (e.g., "62% of portfolio exposed to Hyperscaler CapEx").
+
+    Args:
+        holdings_reports: Enriched holding dicts with price, shares, position_pct.
+        macro_theses: Active macro theses with affected_tickers.
+
+    Returns:
+        List of dicts sorted by exposure descending:
+        [{thesis, exposure_pct, tickers, status, warning}]
+    """
+    # Build lookup: ticker -> position_pct
+    position_map: dict[str, float] = {}
+    for h in holdings_reports:
+        ticker = h.get("ticker", "")
+        pct = h.get("position_pct")
+        if ticker and pct is not None:
+            position_map[ticker] = pct
+
+    exposure_list = []
+    for thesis in macro_theses:
+        title = thesis.get("title", "")
+        status = thesis.get("status") or thesis.get("current_status", "intact")
+        affected = thesis.get("affected_tickers", [])
+
+        # Sum position weights for tickers in this thesis that we actually hold
+        held_tickers = []
+        total_exposure = 0.0
+        for ticker in affected:
+            if ticker in position_map:
+                total_exposure += position_map[ticker]
+                held_tickers.append(ticker)
+
+        if not held_tickers:
+            continue
+
+        warning = None
+        if total_exposure > 40:
+            warning = f"HIGH: {total_exposure:.0f}% on one thesis — consider if thesis breaks"
+        elif total_exposure > 25:
+            warning = f"ELEVATED: {total_exposure:.0f}% on one thesis — monitor closely"
+
+        exposure_list.append({
+            "thesis": title,
+            "exposure_pct": round(total_exposure, 1),
+            "tickers": held_tickers,
+            "ticker_count": len(held_tickers),
+            "status": status,
+            "warning": warning,
+        })
+
+    exposure_list.sort(key=lambda x: x["exposure_pct"], reverse=True)
+
+    # Detect overlapping theses: if two theses share >50% of tickers,
+    # annotate them so the reader doesn't mentally double-count exposure.
+    for i, a in enumerate(exposure_list):
+        a_set = set(a["tickers"])
+        overlaps = []
+        for j, b in enumerate(exposure_list):
+            if i == j:
+                continue
+            b_set = set(b["tickers"])
+            shared = a_set & b_set
+            # Overlap if >50% of either thesis's tickers are shared
+            if shared and (
+                len(shared) / len(a_set) > 0.5
+                or len(shared) / len(b_set) > 0.5
+            ):
+                overlaps.append(b["thesis"])
+        if overlaps:
+            a["overlaps_with"] = overlaps
+
+    return exposure_list

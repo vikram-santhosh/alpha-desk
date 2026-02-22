@@ -182,4 +182,9 @@ async def run() -> dict[str, Any]:
         "formatted": formatted,
         "signals": signals,
         "stats": stats,
+        "analysis": {
+            "market_mood": analysis.get("market_mood", "unknown"),
+            "tickers_found": len(analysis.get("tickers", {})),
+            "themes": analysis.get("themes", []),
+        },
     }
