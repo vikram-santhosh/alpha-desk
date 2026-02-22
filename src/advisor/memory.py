@@ -1,0 +1,736 @@
+"""Persistent memory layer for AlphaDesk Advisor.
+
+SQLite database that stores holdings, snapshots, macro theses, conviction list,
+moonshot list, strategy flags, superinvestor positions, earnings calls,
+cross-company mentions, prediction market data, and daily brief history.
+
+This is the foundation — every other advisor module reads/writes through here.
+"""
+
+import json
+import sqlite3
+from datetime import date, datetime
+from pathlib import Path
+from typing import Any
+
+from src.utils.logger import get_logger
+
+log = get_logger(__name__)
+
+DB_PATH = Path("data/advisor_memory.db")
+
+
+def _get_db() -> sqlite3.Connection:
+    """Get or create the advisor memory database with all tables."""
+    DB_PATH.parent.mkdir(exist_ok=True)
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS holdings (
+            id INTEGER PRIMARY KEY,
+            ticker TEXT NOT NULL UNIQUE,
+            tracking_since TEXT NOT NULL,
+            entry_price REAL,
+            thesis TEXT NOT NULL,
+            thesis_status TEXT DEFAULT 'intact',
+            category TEXT DEFAULT 'core',
+            notes TEXT,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS holding_snapshots (
+            id INTEGER PRIMARY KEY,
+            ticker TEXT NOT NULL,
+            date TEXT NOT NULL,
+            price REAL NOT NULL,
+            change_pct REAL,
+            cumulative_return_pct REAL,
+            thesis_status TEXT,
+            daily_narrative TEXT,
+            key_event TEXT,
+            UNIQUE(ticker, date)
+        );
+
+        CREATE TABLE IF NOT EXISTS macro_theses (
+            id INTEGER PRIMARY KEY,
+            title TEXT NOT NULL UNIQUE,
+            description TEXT NOT NULL,
+            status TEXT DEFAULT 'intact',
+            created_date TEXT NOT NULL,
+            last_updated TEXT NOT NULL,
+            affected_tickers TEXT,
+            evidence_log TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS conviction_list (
+            id INTEGER PRIMARY KEY,
+            ticker TEXT NOT NULL UNIQUE,
+            date_added TEXT NOT NULL,
+            weeks_on_list INTEGER DEFAULT 1,
+            conviction TEXT DEFAULT 'medium',
+            thesis TEXT NOT NULL,
+            pros TEXT,
+            cons TEXT,
+            superinvestor_activity TEXT,
+            status TEXT DEFAULT 'active',
+            removal_reason TEXT,
+            removal_date TEXT,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS moonshot_list (
+            id INTEGER PRIMARY KEY,
+            ticker TEXT NOT NULL UNIQUE,
+            date_added TEXT NOT NULL,
+            months_on_list INTEGER DEFAULT 1,
+            conviction TEXT DEFAULT 'medium',
+            thesis TEXT NOT NULL,
+            upside_case TEXT,
+            downside_case TEXT,
+            key_milestone TEXT,
+            max_position_pct REAL DEFAULT 3.0,
+            status TEXT DEFAULT 'active',
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS strategy_flags (
+            id INTEGER PRIMARY KEY,
+            ticker TEXT NOT NULL,
+            flag_type TEXT NOT NULL,
+            flag_date TEXT NOT NULL,
+            description TEXT NOT NULL,
+            trigger_condition TEXT,
+            resolved INTEGER DEFAULT 0,
+            resolved_date TEXT,
+            resolved_action TEXT,
+            UNIQUE(ticker, flag_type, resolved)
+        );
+
+        CREATE TABLE IF NOT EXISTS superinvestor_positions (
+            id INTEGER PRIMARY KEY,
+            investor_name TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            quarter TEXT NOT NULL,
+            action TEXT,
+            shares INTEGER,
+            value_usd REAL,
+            pct_of_portfolio REAL,
+            UNIQUE(investor_name, ticker, quarter)
+        );
+
+        CREATE TABLE IF NOT EXISTS earnings_calls (
+            id INTEGER PRIMARY KEY,
+            ticker TEXT NOT NULL,
+            quarter TEXT NOT NULL,
+            call_date TEXT NOT NULL,
+            revenue_actual REAL,
+            revenue_estimate REAL,
+            eps_actual REAL,
+            eps_estimate REAL,
+            guidance_revenue_low REAL,
+            guidance_revenue_high REAL,
+            guidance_eps_low REAL,
+            guidance_eps_high REAL,
+            guidance_sentiment TEXT,
+            key_quotes TEXT,
+            capex_guidance REAL,
+            mentioned_companies TEXT,
+            management_tone TEXT,
+            transcript_summary TEXT,
+            UNIQUE(ticker, quarter)
+        );
+
+        CREATE TABLE IF NOT EXISTS cross_mentions (
+            id INTEGER PRIMARY KEY,
+            source_ticker TEXT NOT NULL,
+            mentioned_ticker TEXT NOT NULL,
+            quarter TEXT NOT NULL,
+            context TEXT NOT NULL,
+            sentiment TEXT,
+            category TEXT,
+            UNIQUE(source_ticker, mentioned_ticker, quarter)
+        );
+
+        CREATE TABLE IF NOT EXISTS prediction_markets (
+            id INTEGER PRIMARY KEY,
+            date TEXT NOT NULL,
+            platform TEXT NOT NULL,
+            market_title TEXT NOT NULL,
+            category TEXT,
+            probability REAL NOT NULL,
+            prev_probability REAL,
+            volume_usd REAL,
+            affected_tickers TEXT,
+            url TEXT,
+            UNIQUE(date, platform, market_title)
+        );
+
+        CREATE TABLE IF NOT EXISTS daily_briefs (
+            id INTEGER PRIMARY KEY,
+            date TEXT NOT NULL UNIQUE,
+            macro_summary TEXT,
+            portfolio_actions TEXT,
+            conviction_changes TEXT,
+            moonshot_changes TEXT,
+            full_brief_hash TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_snapshots_ticker_date ON holding_snapshots(ticker, date);
+        CREATE INDEX IF NOT EXISTS idx_earnings_ticker ON earnings_calls(ticker);
+        CREATE INDEX IF NOT EXISTS idx_cross_mentions_mentioned ON cross_mentions(mentioned_ticker);
+        CREATE INDEX IF NOT EXISTS idx_prediction_date ON prediction_markets(date);
+        CREATE INDEX IF NOT EXISTS idx_superinvestor_ticker ON superinvestor_positions(ticker);
+        CREATE INDEX IF NOT EXISTS idx_strategy_flags_active ON strategy_flags(ticker, resolved);
+    """)
+    conn.commit()
+    return conn
+
+
+# ═══════════════════════════════════════════════════════
+# HOLDINGS
+# ═══════════════════════════════════════════════════════
+
+def seed_holdings(holdings_config: list[dict[str, Any]]) -> None:
+    """Seed holdings from config. Only inserts new tickers, doesn't overwrite existing."""
+    conn = _get_db()
+    now = datetime.now().isoformat()
+    today = date.today().isoformat()
+    for h in holdings_config:
+        try:
+            conn.execute("""
+                INSERT OR IGNORE INTO holdings (ticker, tracking_since, thesis, thesis_status, category, updated_at)
+                VALUES (?, ?, ?, 'intact', ?, ?)
+            """, (h["ticker"], today, h.get("thesis", ""), h.get("category", "core"), now))
+        except Exception:
+            log.exception("Failed to seed holding %s", h.get("ticker"))
+    conn.commit()
+    conn.close()
+    log.info("Seeded %d holdings", len(holdings_config))
+
+
+def get_all_holdings() -> list[dict[str, Any]]:
+    """Get all tracked holdings."""
+    conn = _get_db()
+    rows = conn.execute("SELECT * FROM holdings ORDER BY category, ticker").fetchall()
+    cols = [d[0] for d in conn.execute("SELECT * FROM holdings LIMIT 0").description]
+    conn.close()
+    return [dict(zip(cols, row)) for row in rows]
+
+
+def update_holding(ticker: str, **kwargs) -> None:
+    """Update a holding's fields."""
+    conn = _get_db()
+    kwargs["updated_at"] = datetime.now().isoformat()
+    sets = ", ".join(f"{k} = ?" for k in kwargs)
+    vals = list(kwargs.values()) + [ticker]
+    conn.execute(f"UPDATE holdings SET {sets} WHERE ticker = ?", vals)
+    conn.commit()
+    conn.close()
+
+
+def record_snapshot(ticker: str, price: float, change_pct: float | None,
+                    cumulative_return_pct: float | None, thesis_status: str | None,
+                    daily_narrative: str | None, key_event: str | None) -> None:
+    """Record a daily snapshot for a holding."""
+    conn = _get_db()
+    today = date.today().isoformat()
+    conn.execute("""
+        INSERT OR REPLACE INTO holding_snapshots
+        (ticker, date, price, change_pct, cumulative_return_pct, thesis_status, daily_narrative, key_event)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (ticker, today, price, change_pct, cumulative_return_pct, thesis_status, daily_narrative, key_event))
+    conn.commit()
+    conn.close()
+
+
+def get_recent_snapshots(ticker: str, days: int = 7) -> list[dict[str, Any]]:
+    """Get recent snapshots for a holding."""
+    conn = _get_db()
+    rows = conn.execute("""
+        SELECT * FROM holding_snapshots WHERE ticker = ?
+        ORDER BY date DESC LIMIT ?
+    """, (ticker, days)).fetchall()
+    cols = [d[0] for d in conn.execute("SELECT * FROM holding_snapshots LIMIT 0").description]
+    conn.close()
+    return [dict(zip(cols, row)) for row in rows]
+
+
+# ═══════════════════════════════════════════════════════
+# MACRO THESES
+# ═══════════════════════════════════════════════════════
+
+def seed_macro_theses(theses_config: list[dict[str, Any]]) -> None:
+    """Seed macro theses from config. Only inserts new titles."""
+    conn = _get_db()
+    now = datetime.now().isoformat()
+    today = date.today().isoformat()
+    for t in theses_config:
+        try:
+            conn.execute("""
+                INSERT OR IGNORE INTO macro_theses
+                (title, description, status, created_date, last_updated, affected_tickers, evidence_log)
+                VALUES (?, ?, 'intact', ?, ?, ?, '[]')
+            """, (t["title"], t.get("description", ""),
+                  today, now, json.dumps(t.get("affected_tickers", []))))
+        except Exception:
+            log.exception("Failed to seed macro thesis: %s", t.get("title"))
+    conn.commit()
+    conn.close()
+
+
+def get_all_macro_theses() -> list[dict[str, Any]]:
+    """Get all macro theses."""
+    conn = _get_db()
+    rows = conn.execute("SELECT * FROM macro_theses ORDER BY id").fetchall()
+    cols = [d[0] for d in conn.execute("SELECT * FROM macro_theses LIMIT 0").description]
+    conn.close()
+    results = []
+    for row in rows:
+        d = dict(zip(cols, row))
+        d["affected_tickers"] = json.loads(d["affected_tickers"] or "[]")
+        d["evidence_log"] = json.loads(d["evidence_log"] or "[]")
+        results.append(d)
+    return results
+
+
+def update_macro_thesis(title: str, status: str, evidence: str | None = None) -> None:
+    """Update a macro thesis status and optionally add evidence."""
+    conn = _get_db()
+    now = datetime.now().isoformat()
+    conn.execute(
+        "UPDATE macro_theses SET status = ?, last_updated = ? WHERE title = ?",
+        (status, now, title),
+    )
+    if evidence:
+        row = conn.execute(
+            "SELECT evidence_log FROM macro_theses WHERE title = ?", (title,)
+        ).fetchone()
+        if row:
+            log_entries = json.loads(row[0] or "[]")
+            log_entries.append({"date": date.today().isoformat(), "evidence": evidence})
+            # Keep last 30 entries
+            log_entries = log_entries[-30:]
+            conn.execute(
+                "UPDATE macro_theses SET evidence_log = ? WHERE title = ?",
+                (json.dumps(log_entries), title),
+            )
+    conn.commit()
+    conn.close()
+
+
+# ═══════════════════════════════════════════════════════
+# CONVICTION LIST
+# ═══════════════════════════════════════════════════════
+
+def get_conviction_list(active_only: bool = True) -> list[dict[str, Any]]:
+    """Get conviction list entries."""
+    conn = _get_db()
+    query = "SELECT * FROM conviction_list"
+    if active_only:
+        query += " WHERE status = 'active'"
+    query += " ORDER BY conviction DESC, weeks_on_list DESC"
+    rows = conn.execute(query).fetchall()
+    cols = [d[0] for d in conn.execute("SELECT * FROM conviction_list LIMIT 0").description]
+    conn.close()
+    results = []
+    for row in rows:
+        d = dict(zip(cols, row))
+        d["pros"] = json.loads(d["pros"] or "[]")
+        d["cons"] = json.loads(d["cons"] or "[]")
+        results.append(d)
+    return results
+
+
+def upsert_conviction(ticker: str, conviction: str, thesis: str,
+                      pros: list[str] | None = None, cons: list[str] | None = None,
+                      superinvestor_activity: str | None = None) -> None:
+    """Add or update a conviction list entry."""
+    conn = _get_db()
+    now = datetime.now().isoformat()
+    today = date.today().isoformat()
+    existing = conn.execute("SELECT id FROM conviction_list WHERE ticker = ?", (ticker,)).fetchone()
+    if existing:
+        conn.execute("""
+            UPDATE conviction_list SET conviction = ?, thesis = ?, pros = ?, cons = ?,
+            superinvestor_activity = ?, updated_at = ? WHERE ticker = ?
+        """, (conviction, thesis, json.dumps(pros or []), json.dumps(cons or []),
+              superinvestor_activity, now, ticker))
+    else:
+        conn.execute("""
+            INSERT INTO conviction_list
+            (ticker, date_added, weeks_on_list, conviction, thesis, pros, cons,
+             superinvestor_activity, status, updated_at)
+            VALUES (?, ?, 1, ?, ?, ?, ?, ?, 'active', ?)
+        """, (ticker, today, conviction, thesis, json.dumps(pros or []),
+              json.dumps(cons or []), superinvestor_activity, now))
+    conn.commit()
+    conn.close()
+
+
+def remove_conviction(ticker: str, reason: str) -> None:
+    """Remove a ticker from the conviction list with a reason."""
+    conn = _get_db()
+    now = datetime.now().isoformat()
+    today = date.today().isoformat()
+    conn.execute("""
+        UPDATE conviction_list SET status = 'removed', removal_reason = ?,
+        removal_date = ?, updated_at = ? WHERE ticker = ?
+    """, (reason, today, now, ticker))
+    conn.commit()
+    conn.close()
+
+
+def increment_conviction_weeks() -> None:
+    """Increment weeks_on_list for all active conviction entries. Call once per week."""
+    conn = _get_db()
+    conn.execute("UPDATE conviction_list SET weeks_on_list = weeks_on_list + 1 WHERE status = 'active'")
+    conn.commit()
+    conn.close()
+
+
+# ═══════════════════════════════════════════════════════
+# MOONSHOT LIST
+# ═══════════════════════════════════════════════════════
+
+def get_moonshot_list(active_only: bool = True) -> list[dict[str, Any]]:
+    """Get moonshot list entries."""
+    conn = _get_db()
+    query = "SELECT * FROM moonshot_list"
+    if active_only:
+        query += " WHERE status = 'active'"
+    query += " ORDER BY conviction DESC"
+    rows = conn.execute(query).fetchall()
+    cols = [d[0] for d in conn.execute("SELECT * FROM moonshot_list LIMIT 0").description]
+    conn.close()
+    return [dict(zip(cols, row)) for row in rows]
+
+
+def upsert_moonshot(ticker: str, conviction: str, thesis: str,
+                    upside_case: str | None = None, downside_case: str | None = None,
+                    key_milestone: str | None = None, max_position_pct: float = 3.0) -> None:
+    """Add or update a moonshot entry."""
+    conn = _get_db()
+    now = datetime.now().isoformat()
+    today = date.today().isoformat()
+    existing = conn.execute("SELECT id FROM moonshot_list WHERE ticker = ?", (ticker,)).fetchone()
+    if existing:
+        conn.execute("""
+            UPDATE moonshot_list SET conviction = ?, thesis = ?, upside_case = ?,
+            downside_case = ?, key_milestone = ?, max_position_pct = ?, updated_at = ?
+            WHERE ticker = ?
+        """, (conviction, thesis, upside_case, downside_case, key_milestone, max_position_pct, now, ticker))
+    else:
+        conn.execute("""
+            INSERT INTO moonshot_list
+            (ticker, date_added, conviction, thesis, upside_case, downside_case,
+             key_milestone, max_position_pct, status, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+        """, (ticker, today, conviction, thesis, upside_case, downside_case,
+              key_milestone, max_position_pct, now))
+    conn.commit()
+    conn.close()
+
+
+# ═══════════════════════════════════════════════════════
+# STRATEGY FLAGS
+# ═══════════════════════════════════════════════════════
+
+def get_active_flags(ticker: str | None = None) -> list[dict[str, Any]]:
+    """Get active (unresolved) strategy flags."""
+    conn = _get_db()
+    query = "SELECT * FROM strategy_flags WHERE resolved = 0"
+    params: list[Any] = []
+    if ticker:
+        query += " AND ticker = ?"
+        params.append(ticker)
+    query += " ORDER BY flag_date DESC"
+    rows = conn.execute(query, params).fetchall()
+    cols = [d[0] for d in conn.execute("SELECT * FROM strategy_flags LIMIT 0").description]
+    conn.close()
+    return [dict(zip(cols, row)) for row in rows]
+
+
+def add_flag(ticker: str, flag_type: str, description: str,
+             trigger_condition: str | None = None) -> None:
+    """Add a strategy flag. Silently ignores if duplicate active flag exists."""
+    conn = _get_db()
+    today = date.today().isoformat()
+    try:
+        conn.execute("""
+            INSERT OR IGNORE INTO strategy_flags (ticker, flag_type, flag_date, description, trigger_condition)
+            VALUES (?, ?, ?, ?, ?)
+        """, (ticker, flag_type, today, description, trigger_condition))
+        conn.commit()
+    except Exception:
+        log.exception("Failed to add flag for %s", ticker)
+    conn.close()
+
+
+def resolve_flag(ticker: str, flag_type: str, action: str) -> None:
+    """Resolve a strategy flag."""
+    conn = _get_db()
+    today = date.today().isoformat()
+    conn.execute("""
+        UPDATE strategy_flags SET resolved = 1, resolved_date = ?, resolved_action = ?
+        WHERE ticker = ? AND flag_type = ? AND resolved = 0
+    """, (today, action, ticker, flag_type))
+    conn.commit()
+    conn.close()
+
+
+# ═══════════════════════════════════════════════════════
+# SUPERINVESTOR POSITIONS
+# ═══════════════════════════════════════════════════════
+
+def upsert_superinvestor_position(investor_name: str, ticker: str, quarter: str,
+                                  action: str | None = None, shares: int | None = None,
+                                  value_usd: float | None = None,
+                                  pct_of_portfolio: float | None = None) -> None:
+    """Record a superinvestor position."""
+    conn = _get_db()
+    conn.execute("""
+        INSERT OR REPLACE INTO superinvestor_positions
+        (investor_name, ticker, quarter, action, shares, value_usd, pct_of_portfolio)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (investor_name, ticker, quarter, action, shares, value_usd, pct_of_portfolio))
+    conn.commit()
+    conn.close()
+
+
+def get_superinvestor_activity(ticker: str) -> list[dict[str, Any]]:
+    """Get all superinvestor activity for a ticker."""
+    conn = _get_db()
+    rows = conn.execute("""
+        SELECT * FROM superinvestor_positions WHERE ticker = ?
+        ORDER BY quarter DESC, investor_name
+    """, (ticker,)).fetchall()
+    cols = [d[0] for d in conn.execute("SELECT * FROM superinvestor_positions LIMIT 0").description]
+    conn.close()
+    return [dict(zip(cols, row)) for row in rows]
+
+
+def get_all_superinvestor_positions(quarter: str | None = None) -> list[dict[str, Any]]:
+    """Get all superinvestor positions, optionally filtered by quarter."""
+    conn = _get_db()
+    if quarter:
+        rows = conn.execute(
+            "SELECT * FROM superinvestor_positions WHERE quarter = ? ORDER BY investor_name, ticker",
+            (quarter,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM superinvestor_positions ORDER BY quarter DESC, investor_name, ticker"
+        ).fetchall()
+    cols = [d[0] for d in conn.execute("SELECT * FROM superinvestor_positions LIMIT 0").description]
+    conn.close()
+    return [dict(zip(cols, row)) for row in rows]
+
+
+# ═══════════════════════════════════════════════════════
+# EARNINGS CALLS
+# ═══════════════════════════════════════════════════════
+
+def upsert_earnings_call(data: dict[str, Any]) -> None:
+    """Record earnings call data."""
+    conn = _get_db()
+    conn.execute("""
+        INSERT OR REPLACE INTO earnings_calls
+        (ticker, quarter, call_date, revenue_actual, revenue_estimate, eps_actual, eps_estimate,
+         guidance_revenue_low, guidance_revenue_high, guidance_eps_low, guidance_eps_high,
+         guidance_sentiment, key_quotes, capex_guidance, mentioned_companies,
+         management_tone, transcript_summary)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        data["ticker"], data["quarter"], data["call_date"],
+        data.get("revenue_actual"), data.get("revenue_estimate"),
+        data.get("eps_actual"), data.get("eps_estimate"),
+        data.get("guidance_revenue_low"), data.get("guidance_revenue_high"),
+        data.get("guidance_eps_low"), data.get("guidance_eps_high"),
+        data.get("guidance_sentiment"),
+        json.dumps(data.get("key_quotes", [])),
+        data.get("capex_guidance"),
+        json.dumps(data.get("mentioned_companies", [])),
+        data.get("management_tone"), data.get("transcript_summary"),
+    ))
+    conn.commit()
+    conn.close()
+
+
+def get_earnings_history(ticker: str, quarters: int = 4) -> list[dict[str, Any]]:
+    """Get earnings call history for a ticker."""
+    conn = _get_db()
+    rows = conn.execute("""
+        SELECT * FROM earnings_calls WHERE ticker = ?
+        ORDER BY quarter DESC LIMIT ?
+    """, (ticker, quarters)).fetchall()
+    cols = [d[0] for d in conn.execute("SELECT * FROM earnings_calls LIMIT 0").description]
+    conn.close()
+    results = []
+    for row in rows:
+        d = dict(zip(cols, row))
+        d["key_quotes"] = json.loads(d["key_quotes"] or "[]")
+        d["mentioned_companies"] = json.loads(d["mentioned_companies"] or "[]")
+        results.append(d)
+    return results
+
+
+# ═══════════════════════════════════════════════════════
+# CROSS-COMPANY MENTIONS
+# ═══════════════════════════════════════════════════════
+
+def upsert_cross_mention(source_ticker: str, mentioned_ticker: str, quarter: str,
+                         context: str, sentiment: str | None = None,
+                         category: str | None = None) -> None:
+    """Record a cross-company mention from an earnings call."""
+    conn = _get_db()
+    conn.execute("""
+        INSERT OR REPLACE INTO cross_mentions
+        (source_ticker, mentioned_ticker, quarter, context, sentiment, category)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (source_ticker, mentioned_ticker, quarter, context, sentiment, category))
+    conn.commit()
+    conn.close()
+
+
+def get_cross_mentions_for(ticker: str) -> list[dict[str, Any]]:
+    """Get all cross-mentions where this ticker was mentioned by others."""
+    conn = _get_db()
+    rows = conn.execute("""
+        SELECT * FROM cross_mentions WHERE mentioned_ticker = ?
+        ORDER BY quarter DESC
+    """, (ticker,)).fetchall()
+    cols = [d[0] for d in conn.execute("SELECT * FROM cross_mentions LIMIT 0").description]
+    conn.close()
+    return [dict(zip(cols, row)) for row in rows]
+
+
+# ═══════════════════════════════════════════════════════
+# PREDICTION MARKETS
+# ═══════════════════════════════════════════════════════
+
+def record_prediction_market(platform: str, market_title: str, probability: float,
+                             category: str | None = None, volume_usd: float | None = None,
+                             affected_tickers: list[str] | None = None,
+                             url: str | None = None) -> None:
+    """Record prediction market data point."""
+    conn = _get_db()
+    today = date.today().isoformat()
+    # Get yesterday's probability for delta tracking
+    prev = conn.execute("""
+        SELECT probability FROM prediction_markets
+        WHERE platform = ? AND market_title = ? AND date < ?
+        ORDER BY date DESC LIMIT 1
+    """, (platform, market_title, today)).fetchone()
+    prev_prob = prev[0] if prev else None
+
+    conn.execute("""
+        INSERT OR REPLACE INTO prediction_markets
+        (date, platform, market_title, category, probability, prev_probability,
+         volume_usd, affected_tickers, url)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (today, platform, market_title, category, probability, prev_prob,
+          volume_usd, json.dumps(affected_tickers or []), url))
+    conn.commit()
+    conn.close()
+
+
+def get_prediction_markets(date_str: str | None = None) -> list[dict[str, Any]]:
+    """Get prediction market data for a date (defaults to today)."""
+    conn = _get_db()
+    d = date_str or date.today().isoformat()
+    rows = conn.execute("""
+        SELECT * FROM prediction_markets WHERE date = ?
+        ORDER BY category, market_title
+    """, (d,)).fetchall()
+    cols = [d_col[0] for d_col in conn.execute("SELECT * FROM prediction_markets LIMIT 0").description]
+    conn.close()
+    results = []
+    for row in rows:
+        entry = dict(zip(cols, row))
+        entry["affected_tickers"] = json.loads(entry["affected_tickers"] or "[]")
+        results.append(entry)
+    return results
+
+
+def get_prediction_market_deltas(min_delta: float = 0.05) -> list[dict[str, Any]]:
+    """Get prediction markets with significant probability changes."""
+    conn = _get_db()
+    today = date.today().isoformat()
+    rows = conn.execute("""
+        SELECT * FROM prediction_markets
+        WHERE date = ? AND prev_probability IS NOT NULL
+        AND ABS(probability - prev_probability) >= ?
+        ORDER BY ABS(probability - prev_probability) DESC
+    """, (today, min_delta)).fetchall()
+    cols = [d[0] for d in conn.execute("SELECT * FROM prediction_markets LIMIT 0").description]
+    conn.close()
+    results = []
+    for row in rows:
+        entry = dict(zip(cols, row))
+        entry["affected_tickers"] = json.loads(entry["affected_tickers"] or "[]")
+        entry["delta"] = entry["probability"] - (entry["prev_probability"] or 0)
+        results.append(entry)
+    return results
+
+
+# ═══════════════════════════════════════════════════════
+# DAILY BRIEFS
+# ═══════════════════════════════════════════════════════
+
+def save_daily_brief(macro_summary: str | None = None,
+                     portfolio_actions: list[dict] | None = None,
+                     conviction_changes: list[dict] | None = None,
+                     moonshot_changes: list[dict] | None = None) -> None:
+    """Save today's brief summary for tomorrow's context."""
+    conn = _get_db()
+    today = date.today().isoformat()
+    conn.execute("""
+        INSERT OR REPLACE INTO daily_briefs
+        (date, macro_summary, portfolio_actions, conviction_changes, moonshot_changes)
+        VALUES (?, ?, ?, ?, ?)
+    """, (today, macro_summary,
+          json.dumps(portfolio_actions or []),
+          json.dumps(conviction_changes or []),
+          json.dumps(moonshot_changes or [])))
+    conn.commit()
+    conn.close()
+
+
+def get_yesterday_brief() -> dict[str, Any] | None:
+    """Get yesterday's brief summary."""
+    conn = _get_db()
+    today = date.today().isoformat()
+    row = conn.execute("""
+        SELECT * FROM daily_briefs WHERE date < ? ORDER BY date DESC LIMIT 1
+    """, (today,)).fetchone()
+    if not row:
+        conn.close()
+        return None
+    cols = [d[0] for d in conn.execute("SELECT * FROM daily_briefs LIMIT 0").description]
+    conn.close()
+    d = dict(zip(cols, row))
+    d["portfolio_actions"] = json.loads(d["portfolio_actions"] or "[]")
+    d["conviction_changes"] = json.loads(d["conviction_changes"] or "[]")
+    d["moonshot_changes"] = json.loads(d["moonshot_changes"] or "[]")
+    return d
+
+
+# ═══════════════════════════════════════════════════════
+# AGGREGATE CONTEXT FOR OPUS PROMPT
+# ═══════════════════════════════════════════════════════
+
+def build_memory_context() -> dict[str, Any]:
+    """Build the complete memory context for the Opus synthesis prompt.
+
+    Returns a dict with all memory state needed for the daily brief.
+    """
+    return {
+        "holdings": get_all_holdings(),
+        "macro_theses": get_all_macro_theses(),
+        "conviction_list": get_conviction_list(active_only=True),
+        "moonshot_list": get_moonshot_list(active_only=True),
+        "active_flags": get_active_flags(),
+        "yesterday_brief": get_yesterday_brief(),
+    }

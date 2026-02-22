@@ -1,0 +1,120 @@
+# ═══════════════════════════════════════════════════
+# AlphaDesk Advisor Configuration
+# ═══════════════════════════════════════════════════
+
+# Your actual holdings
+holdings:
+  - ticker: NVDA
+    category: core
+    thesis: "AI CapEx beneficiary — dominant GPU franchise"
+  - ticker: AMZN
+    category: core
+    thesis: "AWS re-acceleration + retail margin expansion"
+  - ticker: GOOG
+    category: core
+    thesis: "Cloud margin inflection + Search moat"
+  - ticker: META
+    category: core
+    thesis: "Reels monetization + AI ad targeting"
+  - ticker: AVGO
+    category: new_position
+    thesis: "AI ASIC design wins + VMware integration"
+  - ticker: VRT
+    category: new_position
+    thesis: "Data center power/cooling picks-and-shovels"
+  - ticker: MRVL
+    category: new_position
+    thesis: "Custom silicon / AI networking"
+  - ticker: NFLX
+    category: core
+    thesis: "Ad tier growth + pricing power"
+  - ticker: MSFT
+    category: core
+    thesis: "Azure growth + Copilot monetization"
+
+# Active macro theses (seeded, then managed by the system)
+macro_theses:
+  - title: "Hyperscaler CapEx Boom"
+    description: "MSFT, GOOG, META, AMZN guiding CapEx higher → chip/infra revenue tailwind"
+    affected_tickers: [NVDA, AVGO, VRT, MRVL]
+  - title: "SaaS Rotation / Multiple Compression"
+    description: "Enterprise software de-rating, rotation out of high-multiple names"
+    affected_tickers: [MSFT]
+  - title: "Fed Easing Cycle"
+    description: "Rate cuts expected in 2026, dollar weakening, growth tailwind"
+    affected_tickers: [NVDA, AMZN, GOOG, META, NFLX]
+  - title: "Big Beautiful Bill / Fiscal Stimulus"
+    description: "Tax cuts + infrastructure + defense spending"
+    affected_tickers: []
+
+# Superinvestors to track (CIK = SEC Central Index Key)
+superinvestors:
+  - name: "Berkshire Hathaway"
+    cik: "0001067983"
+  - name: "Bridgewater Associates"
+    cik: "0001350694"
+  - name: "Pershing Square"
+    cik: "0001336528"
+  - name: "ARK Invest"
+    cik: "0001697748"
+  - name: "Appaloosa Management"
+    cik: "0001656456"
+  - name: "Viking Global"
+    cik: "0001103804"
+  - name: "Dragoneer Investment"
+    cik: "0001571983"
+  - name: "Coatue Management"
+    cik: "0001535392"
+  - name: "Tiger Global"
+    cik: "0001167483"
+  - name: "Altimeter Capital"
+    cik: "0001806813"
+
+# Strategy parameters
+strategy:
+  min_hold_period_days: 365
+  churn_bias: low
+  max_position_pct: 15
+  trim_trigger_pct: 30
+  conviction_promotion_weeks: 3
+  moonshot_max_pct: 3
+  min_cagr_pct: 25
+  min_margin_of_safety_pct: 15
+  min_evidence_sources: 3
+
+# Earnings intelligence
+earnings:
+  transcript_source: fmp
+  lookback_quarters: 4
+  cross_mention_tracking: true
+
+# Prediction markets
+prediction_markets:
+  polymarket: true
+  kalshi: true
+  min_volume_usd: 100000
+  alert_delta_pct: 10
+  tracked_categories:
+    - fed_policy
+    - recession
+    - regulation
+    - trade_war
+    - fiscal_policy
+
+# Conviction hierarchy weights (must sum to 1.0)
+conviction_weights:
+  company_guidance: 0.30
+  crowd_sentiment: 0.25
+  smart_money: 0.20
+  fundamentals: 0.15
+  analyst_consensus: 0.10
+
+# Screening (reused from Alpha Scout)
+screening:
+  max_candidates: 50
+  top_n_for_synthesis: 20
+
+# Output limits
+output:
+  max_conviction_list: 5
+  max_moonshots: 2

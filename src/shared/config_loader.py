@@ -56,6 +56,11 @@ def load_scout_config() -> dict[str, Any]:
     return load_config("scout")
 
 
+def load_advisor_config() -> dict[str, Any]:
+    """Load Advisor config."""
+    return load_config("advisor")
+
+
 def get_all_tickers() -> list[str]:
     """Get combined list of tickers from portfolio and watchlist."""
     portfolio = load_portfolio()

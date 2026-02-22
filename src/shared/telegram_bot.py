@@ -171,6 +171,26 @@ async def handle_command(command: str, chat_id: str) -> None:
         result = await run_single_agent("alpha_scout")
         send_message(chat_id, result["formatted"])
 
+    elif cmd == "/advisor":
+        send_message(chat_id, "Running Advisor... this may take a few minutes.")
+        from src.advisor.main import run as run_advisor
+        result = await run_advisor()
+        send_message(chat_id, result["formatted"])
+
+    elif cmd in ("/holdings", "/macro", "/conviction", "/moonshot", "/action"):
+        section_map = {
+            "/holdings": "holdings",
+            "/macro": "macro",
+            "/conviction": "conviction",
+            "/moonshot": "moonshot",
+            "/action": "action",
+        }
+        section = section_map[cmd]
+        send_message(chat_id, f"Fetching {section}...")
+        from src.advisor.main import run_single_section
+        result = await run_single_section(section)
+        send_message(chat_id, result["formatted"])
+
     elif cmd == "/cost":
         report = format_cost_report()
         send_message(chat_id, report)
@@ -193,12 +213,20 @@ async def handle_command(command: str, chat_id: str) -> None:
     elif cmd == "/help":
         help_text = (
             "<b>AlphaDesk Commands</b>\n\n"
-            "/brief — Full morning briefing\n"
-            "/refresh — Refresh all data\n"
+            "<b>Advisor (new)</b>\n"
+            "/advisor — Full 5-section daily brief\n"
+            "/holdings — Portfolio check-in\n"
+            "/macro — Macro &amp; market context\n"
+            "/conviction — Conviction list (3-5 names)\n"
+            "/moonshot — Moonshot ideas\n"
+            "/action — Strategy actions (add/trim/hold)\n\n"
+            "<b>Legacy Agents</b>\n"
+            "/brief — Full morning briefing (legacy)\n"
             "/portfolio — Portfolio analysis only\n"
             "/news — Market news only\n"
             "/trending — Reddit intelligence only\n"
-            "/discover — Ticker discovery &amp; recommendations\n"
+            "/discover — Ticker discovery\n\n"
+            "<b>System</b>\n"
             "/cost — API cost report\n"
             "/status — System status\n"
             "/help — This message"
