@@ -202,7 +202,7 @@ def fetch_newsapi_headlines(api_key: str) -> list[dict[str, Any]]:
         params = {
             "category": "business",
             "country": "us",
-            "pageSize": 20,
+            "pageSize": 50,
             "apiKey": api_key,
         }
 
@@ -385,14 +385,21 @@ def fetch_all_news(
         all_articles.extend(headlines)
         log.info("NewsAPI headlines contributed %d articles", len(headlines))
 
-        # 3. NewsAPI: market search — use a combined query to save calls (1 call)
-        # Combine key search terms into a single query to conserve API calls
-        market_articles = fetch_newsapi_market(
-            newsapi_key,
-            query="stock market OR Federal Reserve OR earnings",
-        )
-        all_articles.extend(market_articles)
-        log.info("NewsAPI market search contributed %d articles", len(market_articles))
+        # 3. NewsAPI: broad category searches to cover all finance-relevant topics
+        # Each query = 1 API call. 7 queries × 4 runs/day = 28 calls/day (within 100 free-tier limit)
+        broad_queries = [
+            "economy OR inflation OR GDP OR unemployment OR recession",
+            "tariff OR trade OR sanctions OR import OR export OR trade deal",
+            "Federal Reserve OR interest rate OR central bank OR monetary policy",
+            "earnings OR IPO OR merger OR acquisition OR stock market",
+            "regulation OR SEC OR antitrust OR policy OR legislation",
+            "China OR Taiwan OR semiconductor OR chip OR AI OR geopolitical",
+            "oil OR energy OR commodity OR OPEC OR dollar OR currency",
+        ]
+        for q in broad_queries:
+            market_articles = fetch_newsapi_market(newsapi_key, q)
+            all_articles.extend(market_articles)
+            log.info("NewsAPI market search '%s': %d articles", q[:40], len(market_articles))
     else:
         log.info("NewsAPI key not available; skipping NewsAPI source")
 

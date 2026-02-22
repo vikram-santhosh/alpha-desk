@@ -28,6 +28,7 @@ SIGNAL_TYPES = {
     "breaking_news",
     "earnings_approaching",
     "sector_news",
+    "macro_event",
     # Portfolio Analyst signals
     "technical_signal",
     "concentration_warning",

@@ -179,73 +179,66 @@ def update_macro_theses(macro_data: dict, news_signals: list[dict]) -> list[dict
 
 
 def _extract_relevant_macro(thesis_title: str, macro_data: dict) -> dict:
-    """Extract macro data points relevant to a specific thesis."""
-    title_lower = thesis_title.lower()
-    snapshot = {}
+    """Return all macro data for every thesis.
 
-    # Fed / rate-related theses
-    if any(kw in title_lower for kw in ("fed", "rate", "easing", "monetary")):
-        for key in ("fed_funds_rate", "treasury_10y", "treasury_2y",
-                     "yield_curve_spread", "yield_curve_spread_calculated"):
-            if key in macro_data:
-                snapshot[key] = macro_data[key]
-
-    # Market volatility / risk-related theses
-    if any(kw in title_lower for kw in ("vix", "volatility", "risk", "recession")):
-        if "vix" in macro_data:
-            snapshot["vix"] = macro_data["vix"]
-
-    # Broad market / growth theses
-    if any(kw in title_lower for kw in ("capex", "growth", "saas", "rotation",
-                                         "stimulus", "fiscal", "market")):
-        if "sp500" in macro_data:
-            snapshot["sp500"] = macro_data["sp500"]
-        if "vix" in macro_data:
-            snapshot["vix"] = macro_data["vix"]
-
-    # If nothing matched, include everything — let Opus decide relevance
-    if not snapshot:
-        snapshot = {k: v for k, v in macro_data.items()
-                    if k not in ("fetched_at", "date")}
-
-    return snapshot
+    The macro dataset is only ~6 indicators — token cost of including all is
+    negligible. Previous keyword-based filtering caused blind spots (e.g.,
+    missing tariff impact on growth theses, trade policy effects on rate
+    expectations). Let Opus decide what's relevant.
+    """
+    return {k: v for k, v in macro_data.items() if k not in ("fetched_at", "date")}
 
 
 def _match_news_to_thesis(thesis_title: str, affected_tickers: list[str],
                           news_signals: list[dict]) -> list[dict]:
-    """Find news signals relevant to a macro thesis."""
+    """Find news signals relevant to a macro thesis.
+
+    Matching priority:
+    1. Keyword match — thesis title words appear in headline (most specific)
+    2. Ticker overlap — signal tickers intersect with thesis tickers
+    3. Broad macro fallback — only category="macro" articles get blanket-matched
+       to all theses. Geopolitical/regulatory require keyword or ticker match
+       to avoid diluting every thesis with irrelevant news.
+    """
     title_lower = thesis_title.lower()
-    keywords = title_lower.split()
+    keywords = [w for w in title_lower.split() if len(w) > 3]
     matched = []
 
     for signal in news_signals:
         try:
-            headline = signal.get("headline", "").lower()
-            signal_tickers = signal.get("tickers", [])
-            category = signal.get("category", "").lower()
+            headline = (signal.get("headline") or signal.get("title", "")).lower()
+            signal_tickers = signal.get("tickers") or signal.get("affected_tickers") or []
+            category = (signal.get("category") or "").lower()
 
-            # Match by keyword overlap
-            keyword_match = any(kw in headline for kw in keywords if len(kw) > 3)
+            match_reason = None
 
-            # Match by ticker overlap
-            ticker_match = bool(
-                set(t.upper() for t in signal_tickers) &
-                set(t.upper() for t in affected_tickers)
-            ) if affected_tickers and signal_tickers else False
+            # Priority 1: Keyword match from thesis title (most specific)
+            if any(kw in headline for kw in keywords):
+                match_reason = "keyword"
 
-            # Match by category
-            category_match = any(kw in category for kw in keywords if len(kw) > 3)
+            # Priority 2: Ticker overlap
+            elif affected_tickers and signal_tickers:
+                if set(t.upper() for t in affected_tickers) & set(t.upper() for t in signal_tickers):
+                    match_reason = "ticker"
 
-            if keyword_match or ticker_match or category_match:
+            # Priority 3: Category keyword match
+            elif any(kw in category for kw in keywords):
+                match_reason = "category"
+
+            # Priority 4: Broad macro fallback — only truly broad market news
+            # (category="macro") gets blanket-matched. Geopolitical/regulatory
+            # require keyword or ticker relevance to prevent thesis dilution.
+            elif category == "macro":
+                match_reason = "macro_broad"
+
+            if match_reason:
                 matched.append({
-                    "headline": signal.get("headline", ""),
+                    "headline": signal.get("headline") or signal.get("title", ""),
                     "source": signal.get("source", ""),
                     "tickers": signal_tickers,
-                    "match_reason": "keyword" if keyword_match
-                                    else "ticker" if ticker_match
-                                    else "category",
+                    "match_reason": match_reason,
                 })
         except Exception:
             log.exception("Failed to match news signal to thesis")
 
-    return matched[:10]  # Cap at 10 most relevant
+    return matched[:15]

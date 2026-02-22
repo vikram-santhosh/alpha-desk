@@ -234,8 +234,36 @@ async def run() -> dict[str, Any]:
         log.exception("Failed to run superinvestor tracking")
         superinvestor_data = {}
 
-    # Update macro theses with new data
-    news_signals = news_desk_result.get("signals", [])
+    # Update macro theses with new data — include macro_event signals from bus
+    # Use top_articles (full analyzed articles with all fields) instead of signals
+    # (which only contains tracking metadata: {id, type, title} — missing category,
+    # tickers, etc. needed by _match_news_to_thesis and holdings_monitor)
+    news_signals: list[dict[str, Any]] = []
+    for article in news_desk_result.get("top_articles", []):
+        news_signals.append({
+            "headline": article.get("title", ""),
+            "source": article.get("source", ""),
+            "tickers": article.get("related_tickers", []),
+            "ticker": article.get("related_tickers", [""])[0] if article.get("related_tickers") else "",
+            "category": article.get("category", ""),
+            "sentiment": article.get("sentiment", 0),
+            "summary": article.get("summary", ""),
+        })
+    # Enrich with macro_event signals from the agent bus so trade/policy/geopolitical
+    # events reach the thesis matching even if they came from a previous run
+    for bus_signal in agent_bus_signals:
+        if bus_signal.get("signal_type") == "macro_event":
+            payload = bus_signal.get("payload", {})
+            affected = payload.get("affected_tickers", [])
+            news_signals.append({
+                "headline": payload.get("title", ""),
+                "source": payload.get("source", ""),
+                "tickers": affected,
+                "ticker": affected[0] if affected else "",
+                "category": payload.get("category", "macro"),
+                "sentiment": payload.get("sentiment", 0),
+                "summary": payload.get("summary", ""),
+            })
     try:
         updated_theses = update_macro_theses(macro_data, news_signals)
     except Exception:

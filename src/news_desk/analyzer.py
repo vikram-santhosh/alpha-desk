@@ -21,20 +21,42 @@ MODEL = "claude-opus-4-6"
 BATCH_SIZE = 15
 MAX_TOKENS = 4096
 
-# System prompt for the news analyzer
-ANALYSIS_SYSTEM_PROMPT = """You are a financial news analyst for a personal stock portfolio intelligence system called AlphaDesk.
+# System prompt template — portfolio context is injected at runtime
+_ANALYSIS_SYSTEM_PROMPT_TEMPLATE = """You are a financial news analyst for AlphaDesk, a personal stock portfolio intelligence system.
 
-Your job is to analyze news articles and score each one on multiple dimensions relevant to an individual investor.
+Analyze news articles and score each one on multiple dimensions relevant to an individual investor.
 
-For each article, provide:
-1. **relevance** (0-10): How relevant is this to an equity investor? 10 = directly affects stock price, 0 = completely irrelevant.
-2. **sentiment** (-2 to +2): Market sentiment implied. -2 = very bearish, -1 = bearish, 0 = neutral, +1 = bullish, +2 = very bullish.
-3. **urgency** ("low", "med", "high"): How time-sensitive is this? "high" = breaking news or imminent market-moving event.
-4. **affected_tickers** (list of strings): Stock ticker symbols directly affected. Use standard US ticker symbols. Empty list if no specific stocks.
-5. **category** (string): One of "earnings", "macro", "sector", "company", "regulatory", "geopolitical", "market_sentiment", "other".
+PORTFOLIO CONTEXT (use this to assess direct AND indirect impact):
+{portfolio_context}
+
+SCORING RULES:
+1. **relevance** (0-10): How relevant to this investor's portfolio and market outlook?
+   - 9-10: Directly affects a portfolio holding or triggers immediate action
+   - 7-8: Affects portfolio sector, macro thesis, or market environment significantly
+   - 5-6: Relevant market/economic context worth tracking
+   - 3-4: Tangentially related
+   - 0-2: Not relevant
+   IMPORTANT: Macro-economic events (trade policy, tariffs, sanctions, central bank decisions,
+   fiscal policy, geopolitical developments, regulation changes) that affect broad market sectors
+   should score 7+ even if no specific tickers are mentioned. An investor with a tech-heavy
+   portfolio NEEDS to know about semiconductor tariffs even if "NVDA" isn't in the headline.
+2. **sentiment** (-2 to +2): Market sentiment implied. -2 = very bearish, +2 = very bullish.
+3. **urgency** ("low", "med", "high"): "high" = breaking/market-moving. Policy changes, trade
+   deals, Fed decisions, major earnings surprises, geopolitical escalations are HIGH urgency.
+4. **affected_tickers** (list of strings): Tickers directly affected. Also infer indirectly
+   affected tickers from the portfolio context (e.g., tariff news → semiconductor holdings).
+   Use standard US ticker symbols. Empty list if truly no stocks affected.
+5. **category** (string): One of "earnings", "macro", "sector", "company", "regulatory",
+   "geopolitical", "market_sentiment", "other".
 6. **summary** (string): A concise 1-2 sentence summary focused on the market impact.
 
-Respond with ONLY a JSON array of objects, one per article, in the same order as provided. Each object must have the keys: relevance, sentiment, urgency, affected_tickers, category, summary."""
+Respond with ONLY a JSON array of objects, one per article, in the same order as provided.
+Each object must have the keys: relevance, sentiment, urgency, affected_tickers, category, summary."""
+
+# Fallback when portfolio context is unavailable
+ANALYSIS_SYSTEM_PROMPT = _ANALYSIS_SYSTEM_PROMPT_TEMPLATE.format(
+    portfolio_context="No portfolio context available. Score based on general equity investor relevance."
+)
 
 
 def _prepare_batch_prompt(articles: list[dict[str, Any]]) -> str:
@@ -145,6 +167,7 @@ def _clamp(value: int | float, min_val: int | float, max_val: int | float) -> in
 def analyze_batch(
     client: anthropic.Anthropic,
     articles: list[dict[str, Any]],
+    system_prompt: str | None = None,
 ) -> list[dict[str, Any]]:
     """Analyze a single batch of articles using Claude Opus 4.6.
 
@@ -154,6 +177,8 @@ def analyze_batch(
     Args:
         client: Initialized Anthropic client.
         articles: Batch of normalized article dicts (up to BATCH_SIZE).
+        system_prompt: Optional system prompt with portfolio context injected.
+            Falls back to ANALYSIS_SYSTEM_PROMPT if not provided.
 
     Returns:
         List of analysis result dicts, one per article. Returns empty list
@@ -170,12 +195,13 @@ def analyze_batch(
         return []
 
     user_prompt = _prepare_batch_prompt(articles)
+    prompt_to_use = system_prompt or ANALYSIS_SYSTEM_PROMPT
 
     try:
         response = client.messages.create(
             model=MODEL,
             max_tokens=MAX_TOKENS,
-            system=ANALYSIS_SYSTEM_PROMPT,
+            system=prompt_to_use,
             messages=[{"role": "user", "content": user_prompt}],
         )
 
@@ -213,6 +239,55 @@ def analyze_batch(
         return []
 
 
+def _build_portfolio_context() -> str:
+    """Build portfolio context string for the analysis prompt.
+
+    Loads holdings and watchlist to give Claude awareness of the investor's
+    positions, sectors, and macro exposure — so it can score indirect impact
+    (e.g., tariff news → semiconductor holdings).
+
+    Returns:
+        Formatted context string describing the portfolio.
+    """
+    try:
+        from src.shared.config_loader import load_portfolio, load_watchlist
+
+        portfolio = load_portfolio()
+        watchlist = load_watchlist()
+
+        holdings = portfolio.get("holdings", [])
+        watchlist_tickers = watchlist.get("tickers", [])
+
+        if not holdings and not watchlist_tickers:
+            return "No portfolio data available."
+
+        lines = []
+        if holdings:
+            holding_parts = []
+            for h in holdings:
+                ticker = h.get("ticker", "???")
+                category = h.get("category", "")
+                thesis = h.get("thesis", "")
+                part = f"{ticker} ({category})"
+                if thesis:
+                    part += f" — {thesis}"
+                holding_parts.append(part)
+            lines.append(f"Holdings: {', '.join(h.get('ticker', '?') for h in holdings)}")
+            lines.append("Details:")
+            for part in holding_parts:
+                lines.append(f"  - {part}")
+
+        if watchlist_tickers:
+            lines.append(f"Watchlist: {', '.join(watchlist_tickers)}")
+
+        lines.append("Portfolio is tech/AI-heavy. Semiconductor, cloud, and AI infrastructure exposure is significant.")
+        return "\n".join(lines)
+
+    except Exception as e:
+        log.warning("Failed to build portfolio context: %s", e)
+        return "Portfolio context unavailable."
+
+
 def analyze_news(
     articles: list[dict[str, Any]],
     anthropic_key: str,
@@ -223,6 +298,9 @@ def analyze_news(
     Each article is enriched with analysis fields (relevance, sentiment,
     urgency, affected_tickers, category, summary). Articles with
     relevance >= 5 or urgency == "high" are kept; others are filtered out.
+
+    Portfolio context is injected into the system prompt so the LLM can
+    infer indirect impact (e.g., tariff news → semiconductor holdings).
 
     Args:
         articles: List of normalized article dicts from news_fetcher.
@@ -244,6 +322,11 @@ def analyze_news(
     client = anthropic.Anthropic(api_key=anthropic_key)
     analyzed: list[dict[str, Any]] = []
 
+    # Build portfolio-aware system prompt
+    portfolio_context = _build_portfolio_context()
+    system_prompt = _ANALYSIS_SYSTEM_PROMPT_TEMPLATE.format(portfolio_context=portfolio_context)
+    log.info("Portfolio context injected into analysis prompt (%d chars)", len(portfolio_context))
+
     # Process in batches
     total_batches = (len(articles) + BATCH_SIZE - 1) // BATCH_SIZE
     log.info("Analyzing %d articles in %d batches", len(articles), total_batches)
@@ -254,7 +337,7 @@ def analyze_news(
 
         log.info("Processing batch %d/%d (%d articles)", batch_num, total_batches, len(batch))
 
-        results = analyze_batch(client, batch)
+        results = analyze_batch(client, batch, system_prompt=system_prompt)
 
         if not results:
             log.warning("Batch %d returned no results; skipping", batch_num)
@@ -296,10 +379,11 @@ def analyze_news(
 def publish_signals(articles: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Publish relevant signals to the agent bus based on analyzed articles.
 
-    Publishes three types of signals:
+    Publishes four types of signals:
     - "breaking_news": High-urgency articles (urgency == "high")
     - "earnings_approaching": Articles with category "earnings"
     - "sector_news": Articles with category "sector" and relevance >= 7
+    - "macro_event": Macro/geopolitical/regulatory articles with relevance >= 6
 
     Args:
         articles: List of analyzed and filtered article dicts.
@@ -372,6 +456,29 @@ def publish_signals(articles: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 })
             except Exception as e:
                 log.error("Failed to publish sector_news signal: %s", e)
+
+        # Macro/geopolitical/regulatory events: broad market impact
+        # Publish if relevance >= 6 OR urgency is high (e.g., emergency Fed action
+        # or geopolitical escalation that might score relevance 5 but is urgent)
+        if category in ("macro", "geopolitical", "regulatory") and (relevance >= 6 or urgency == "high"):
+            payload = {
+                "title": article.get("title", ""),
+                "url": article.get("url", ""),
+                "summary": article.get("summary", ""),
+                "sentiment": article.get("sentiment", 0),
+                "affected_tickers": article.get("related_tickers", []),
+                "source": article.get("source", ""),
+                "category": category,
+            }
+            try:
+                signal_id = publish("macro_event", AGENT_NAME, payload)
+                signals.append({
+                    "id": signal_id,
+                    "type": "macro_event",
+                    "title": article.get("title", ""),
+                })
+            except Exception as e:
+                log.error("Failed to publish macro_event signal: %s", e)
 
     log.info("Published %d signals to agent bus", len(signals))
     return signals
