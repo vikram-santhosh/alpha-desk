@@ -163,16 +163,8 @@ def _find_candidate(ticker: str, candidates: list[dict]) -> dict | None:
 
 
 def _remove_moonshot(ticker: str, reason: str) -> None:
-    """Remove a moonshot by setting status to removed in DB."""
-    conn = memory._get_db()
-    now = __import__("datetime").datetime.now().isoformat()
-    conn.execute(
-        "UPDATE moonshot_list SET status = 'removed', updated_at = ? WHERE ticker = ? AND status = 'active'",
-        (now, ticker),
-    )
-    conn.commit()
-    conn.close()
-    log.info("Removed moonshot %s: %s", ticker, reason)
+    """Remove a moonshot by setting status to removed."""
+    memory.remove_moonshot(ticker, reason)
 
 
 def _has_asymmetric_profile(candidate: dict) -> bool:

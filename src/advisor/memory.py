@@ -219,8 +219,18 @@ def get_all_holdings() -> list[dict[str, Any]]:
     return [dict(zip(cols, row)) for row in rows]
 
 
+_HOLDING_FIELDS = frozenset({
+    "tracking_since", "entry_price", "thesis", "thesis_status",
+    "category", "notes", "updated_at",
+})
+
+
 def update_holding(ticker: str, **kwargs) -> None:
-    """Update a holding's fields."""
+    """Update a holding's fields. Only whitelisted field names are accepted."""
+    # Validate field names to prevent SQL injection
+    invalid = set(kwargs.keys()) - _HOLDING_FIELDS - {"updated_at"}
+    if invalid:
+        raise ValueError(f"Invalid holding fields: {invalid}. Allowed: {_HOLDING_FIELDS}")
     conn = _get_db()
     kwargs["updated_at"] = datetime.now().isoformat()
     sets = ", ".join(f"{k} = ?" for k in kwargs)
@@ -431,6 +441,19 @@ def upsert_moonshot(ticker: str, conviction: str, thesis: str,
               key_milestone, max_position_pct, now))
     conn.commit()
     conn.close()
+
+
+def remove_moonshot(ticker: str, reason: str = "") -> None:
+    """Remove a moonshot from the active list."""
+    conn = _get_db()
+    now = datetime.now().isoformat()
+    conn.execute(
+        "UPDATE moonshot_list SET status = 'removed', updated_at = ? WHERE ticker = ? AND status = 'active'",
+        (now, ticker),
+    )
+    conn.commit()
+    conn.close()
+    log.info("Removed moonshot %s: %s", ticker, reason)
 
 
 # ═══════════════════════════════════════════════════════

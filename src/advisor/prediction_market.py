@@ -138,7 +138,7 @@ def _fetch_polymarket() -> list[dict]:
                         markets.append({
                             "platform": "polymarket",
                             "title": title,
-                            "probability": prob,
+                            "probability": max(0.0, min(1.0, prob)),
                             "volume_usd": volume,
                             "category": _categorize_market(title),
                             "affected_tickers": _map_affected_tickers(title),
@@ -172,7 +172,7 @@ def _fetch_polymarket() -> list[dict]:
                             markets.append({
                                 "platform": "polymarket",
                                 "title": mkt_title,
-                                "probability": prob,
+                                "probability": max(0.0, min(1.0, prob)),
                                 "volume_usd": volume,
                                 "category": _categorize_market(mkt_title),
                                 "affected_tickers": _map_affected_tickers(mkt_title),

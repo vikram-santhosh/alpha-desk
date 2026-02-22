@@ -252,20 +252,23 @@ def _build_holding_report(
         except Exception:
             log.debug("Could not parse earnings date for %s", ticker)
 
-    # Record today's snapshot to memory
-    try:
-        key_event_str = "; ".join(key_events) if key_events else None
-        record_snapshot(
-            ticker=ticker,
-            price=price if price is not None else 0.0,
-            change_pct=change_pct,
-            cumulative_return_pct=cumulative_return_pct,
-            thesis_status=thesis_status,
-            daily_narrative=None,  # Opus fills this in during synthesis
-            key_event=key_event_str,
-        )
-    except Exception:
-        log.exception("Failed to record snapshot for %s", ticker)
+    # Record today's snapshot to memory — skip if price data is missing
+    if price is not None:
+        try:
+            key_event_str = "; ".join(key_events) if key_events else None
+            record_snapshot(
+                ticker=ticker,
+                price=price,
+                change_pct=change_pct,
+                cumulative_return_pct=cumulative_return_pct,
+                thesis_status=thesis_status,
+                daily_narrative=None,  # Opus fills this in during synthesis
+                key_event=key_event_str,
+            )
+        except Exception:
+            log.exception("Failed to record snapshot for %s", ticker)
+    else:
+        log.warning("Skipping snapshot for %s — no price data", ticker)
 
     return {
         "ticker": ticker,

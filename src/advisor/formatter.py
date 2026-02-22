@@ -136,27 +136,32 @@ def format_holdings_section(holdings_reports: list[dict[str, Any]]) -> str:
 
     for h in holdings_reports:
         ticker = sanitize_html(h.get("ticker", "???"))
-        price = h.get("price", 0)
-        change_pct = h.get("change_pct", 0)
+        price = h.get("price")
+        change_pct = h.get("change_pct")
         cumul = h.get("cumulative_return_pct")
         thesis = h.get("thesis", "")
         thesis_status = h.get("thesis_status", "intact")
-        category = h.get("category", "core")
         recent_trend = h.get("recent_trend", "")
         key_events = h.get("key_events", [])
 
-        emoji = _pnl_emoji(change_pct)
+        emoji = _pnl_emoji(change_pct if change_pct is not None else 0)
         status_e = _status_emoji(thesis_status)
 
-        lines.append(f"  {emoji} <b>{ticker}</b>  ${price:,.2f}  {change_pct:+.1f}% today")
+        # Build price line with null guards
+        price_str = f"${price:,.2f}" if price is not None else "N/A"
+        chg_str = f"{change_pct:+.1f}% today" if change_pct is not None else ""
+        lines.append(f"  {emoji} <b>{ticker}</b>  {price_str}  {chg_str}")
         if cumul is not None:
             tracking = h.get("tracking_since", "")
-            lines.append(f"     {cumul:+.1f}% since tracking ({tracking})")
+            tracking_str = f" ({tracking})" if tracking else ""
+            lines.append(f"     {cumul:+.1f}% since tracking{tracking_str}")
         lines.append(f"     Thesis: {sanitize_html(thesis)} {status_e}")
         if recent_trend:
             lines.append(f"     {sanitize_html(recent_trend)}")
-        for event in key_events[:2]:
+        for event in key_events[:3]:
             lines.append(f"     \u2022 {sanitize_html(event)}")
+        if len(key_events) > 3:
+            lines.append(f"     <i>...and {len(key_events) - 3} more</i>")
         lines.append("")
 
     return "\n".join(lines)

@@ -107,10 +107,12 @@ def fetch_macro_data() -> dict:
     yf_data = _fetch_yfinance_data()
     macro.update(yf_data)
 
-    # Derived metrics
-    if "treasury_10y" in macro and "treasury_2y" in macro:
+    # Derived metrics — only compute if FRED spread is missing
+    if "yield_curve_spread" not in macro and "treasury_10y" in macro and "treasury_2y" in macro:
         spread = macro["treasury_10y"]["value"] - macro["treasury_2y"]["value"]
         macro["yield_curve_spread_calculated"] = round(spread, 4)
+    elif "yield_curve_spread" in macro:
+        macro["yield_curve_spread_calculated"] = macro["yield_curve_spread"].get("value")
 
     macro["fetched_at"] = datetime.now().isoformat()
     macro["date"] = date.today().isoformat()

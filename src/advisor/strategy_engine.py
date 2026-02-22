@@ -48,21 +48,24 @@ def should_trim(
 
     # Valuation stretch check
     if valuation and not valuation.get("insufficient_data"):
-        pe_current = valuation.get("pe_trailing") or valuation.get("pe_forward")
-        pe_historical = valuation.get("pe_historical_avg")
-
-        # Use implied_cagr as a proxy — if CAGR is very negative, valuation is stretched
+        # Use implied_cagr — if CAGR is very negative, valuation is stretched
         cagr = valuation.get("implied_cagr", 0)
         if cagr < 0:
             reasons.append(
                 f"Negative implied CAGR ({cagr:.1f}%): overvalued at current price"
             )
 
-        # If we have P/E data in the valuation dict
-        if pe_current and pe_historical and pe_current > 2 * pe_historical:
+        # Check margin of safety — if negative, currently above target
+        mos = valuation.get("margin_of_safety", 0)
+        if mos < -20:
             reasons.append(
-                f"P/E {pe_current:.1f} > 2x historical avg {pe_historical:.1f}"
+                f"Trading {abs(mos):.0f}% above target price (${valuation.get('target_price', 0):,.0f})"
             )
+
+        # If we have P/E data (enriched by main.py), flag extreme multiples
+        pe_current = valuation.get("pe_trailing") or valuation.get("pe_forward")
+        if pe_current is not None and pe_current > 80:
+            reasons.append(f"Extreme P/E: {pe_current:.1f}")
 
     # Thesis check
     thesis_status = holding.get("thesis_status", "intact")

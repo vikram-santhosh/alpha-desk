@@ -31,11 +31,14 @@ FMP_BASE = "https://financialmodelingprep.com/api/v3"
 def _current_quarter() -> tuple[int, int]:
     """Return (year, quarter_number) for the most recently completed quarter."""
     today = date.today()
-    # The most recently *completed* quarter
-    q = (today.month - 1) // 3
-    if q == 0:
+    month = today.month
+    # Current calendar quarter (1-4)
+    current_q = (month - 1) // 3 + 1
+    # Most recently *completed* quarter is one before current
+    completed_q = current_q - 1
+    if completed_q == 0:
         return today.year - 1, 4
-    return today.year, q
+    return today.year, completed_q
 
 
 def _quarter_label(year: int, quarter: int) -> str:

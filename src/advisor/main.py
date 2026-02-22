@@ -228,14 +228,65 @@ async def run() -> dict[str, Any]:
         try:
             fund = fundamentals.get(ticker, {})
             earn = earnings_data.get("per_ticker", {}).get(ticker) if isinstance(earnings_data, dict) else None
-            valuation_data[ticker] = compute_target_price(ticker, fund, earn)
+            val_result = compute_target_price(ticker, fund, earn)
+            # Enrich with P/E data from fundamentals for strategy engine
+            if not val_result.get("insufficient_data"):
+                val_result["pe_trailing"] = fund.get("pe_trailing")
+                val_result["pe_forward"] = fund.get("pe_forward")
+            valuation_data[ticker] = val_result
         except Exception:
             log.debug("Failed to compute valuation for %s", ticker)
+
+    # Source candidates from Alpha Scout for conviction/moonshot pipeline
+    discovery_candidates = []
+    try:
+        from src.alpha_scout.candidate_sourcer import source_all_candidates
+        from src.alpha_scout.screener import screen_candidates
+
+        discovery_candidates = source_all_candidates(
+            existing_tickers=all_tickers,
+            holdings=[{"ticker": t} for t in holding_tickers],
+            config=config,
+        )
+        if discovery_candidates:
+            # Fetch data for candidates and screen them
+            cand_tickers = [c["ticker"] for c in discovery_candidates[:20]]
+            cand_fundamentals = await asyncio.to_thread(
+                fetch_all_fundamentals, cand_tickers
+            )
+            cand_historical = await asyncio.to_thread(
+                fetch_all_historical, cand_tickers
+            )
+            cand_technicals = run_technical_analysis(cand_tickers, cand_historical)
+
+            discovery_candidates = screen_candidates(
+                candidates=discovery_candidates[:20],
+                technicals=cand_technicals,
+                fundamentals=cand_fundamentals,
+                portfolio_tickers=holding_tickers,
+                portfolio_fundamentals=fundamentals,
+                weights=config.get("conviction_weights", {
+                    "technical": 0.30, "fundamental": 0.30,
+                    "sentiment": 0.20, "diversification": 0.20,
+                }),
+            )
+            # Compute valuations for top candidates
+            for cand in discovery_candidates[:10]:
+                t = cand["ticker"]
+                try:
+                    cand_fund = cand_fundamentals.get(t, {})
+                    valuation_data[t] = compute_target_price(t, cand_fund)
+                except Exception:
+                    pass
+
+            log.info("Sourced %d discovery candidates for conviction pipeline", len(discovery_candidates))
+    except Exception:
+        log.exception("Failed to source discovery candidates")
 
     # Update conviction list
     try:
         conviction_result = update_conviction_list(
-            candidates=[],  # Alpha Scout candidates can be added here later
+            candidates=discovery_candidates,
             superinvestor_data=superinvestor_data,
             earnings_data=earnings_data if isinstance(earnings_data, dict) else {},
             prediction_data=prediction_data,
@@ -248,7 +299,7 @@ async def run() -> dict[str, Any]:
 
     # Update moonshot list
     try:
-        moonshot_result = update_moonshot_list(candidates=[], config=config)
+        moonshot_result = update_moonshot_list(candidates=discovery_candidates, config=config)
     except Exception:
         log.exception("Failed to update moonshot list")
         moonshot_result = {"current_list": memory["moonshot_list"], "added": [], "removed": []}
@@ -352,6 +403,29 @@ async def run() -> dict[str, Any]:
     }
 
 
+def _macro_val(macro_data: dict, key: str) -> str:
+    """Extract a value from macro_data (handles nested dicts)."""
+    v = macro_data.get(key)
+    if v is None:
+        return "N/A"
+    if isinstance(v, dict):
+        val = v.get("value")
+        return f"{val:.2f}" if val is not None else "N/A"
+    if isinstance(v, (int, float)):
+        return f"{v:.2f}"
+    return str(v)
+
+
+def _macro_chg(macro_data: dict, key: str) -> str:
+    """Extract change_pct from macro_data."""
+    v = macro_data.get(key)
+    if isinstance(v, dict):
+        chg = v.get("change_pct")
+        if chg is not None:
+            return f"{chg:+.1f}%"
+    return "N/A"
+
+
 def _synthesize_brief(
     memory: dict[str, Any],
     macro_data: dict[str, Any],
@@ -415,10 +489,11 @@ INVESTOR PROFILE:
 ## TODAY'S DATA
 
 ### MACRO
-S&P 500: {macro_data.get('sp500_price', 'N/A')} ({macro_data.get('sp500_change_pct', 'N/A')}%)
-VIX: {macro_data.get('vix', 'N/A')}
-10Y Yield: {macro_data.get('dgs10', 'N/A')}%
-Fed Rate: {macro_data.get('fed_funds', 'N/A')}%
+S&P 500: {_macro_val(macro_data, 'sp500')} ({_macro_chg(macro_data, 'sp500')})
+VIX: {_macro_val(macro_data, 'vix')}
+10Y Yield: {_macro_val(macro_data, 'treasury_10y')}%
+Fed Rate: {_macro_val(macro_data, 'fed_funds_rate')}%
+Yield Curve: {macro_data.get('yield_curve_spread_calculated', 'N/A')}
 
 ### MACRO THESES STATUS
 {macro_ctx}

@@ -170,9 +170,7 @@ def _fmt_pct(val: float | None) -> str:
 
 def _determine_conviction(sources_passing: int) -> str:
     """Map evidence count to conviction level."""
-    if sources_passing >= 5:
-        return "high"
-    elif sources_passing >= 4:
+    if sources_passing >= 4:
         return "high"
     elif sources_passing >= 3:
         return "medium"
