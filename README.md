@@ -1,60 +1,51 @@
 # AlphaDesk
 
-Multi-agent investment intelligence system. Five AI agents scan Reddit, news, your portfolio, the broader market, and macro/conviction signals, then synthesize a daily briefing delivered via Telegram.
+**Multi-agent investment intelligence that replaces 2 hours of daily research with a single Telegram briefing.**
 
-## Architecture
+Five AI agents scan Reddit, news, your portfolio, the broader market, and macro/conviction signals — then an analyst committee synthesizes everything into an actionable daily brief delivered via Telegram and email.
 
+## How It Works
+
+```mermaid
+graph LR
+    SE[Street Ear<br/>Reddit Intel] --> AS[Alpha Scout<br/>Discovery]
+    ND[News Desk<br/>Market News] --> AS
+    AS --> PA[Portfolio Analyst<br/>Holdings Check-in]
+    PA --> ADV[Advisor<br/>Decision Engine +<br/>Analyst Committee]
+    ADV --> TG[Telegram<br/>Condensed Brief]
+    ADV --> EM[Email<br/>Verbose Report]
 ```
-Phase 1 (parallel):  Street Ear + News Desk     (Reddit + news scanning, signal publishing)
-Phase 2:             Alpha Scout                 (ticker discovery, screening, recommendations)
-Phase 3:             Portfolio Analyst            (technicals, fundamentals, risk, signal consumption)
-Phase 4:             Advisor                      (memory-driven conviction, macro, moonshots, actions)
-Phase 5:             Morning Brief synthesis      (Opus 4.6 cross-agent synthesis + Telegram delivery)
-```
 
-### Agents
+**Phase 1** — Street Ear + News Desk scan Reddit and news in parallel, publishing signals to the agent bus.
+**Phase 2** — Alpha Scout discovers new tickers via multi-dimensional screening.
+**Phase 3** — Portfolio Analyst runs technicals, fundamentals, and risk analysis on your holdings.
+**Phase 4** — Advisor synthesizes everything through a decision engine (conviction, moonshot, strategy) and a 4-analyst committee (Growth, Value, Risk, CIO Editor).
+**Phase 5** — Delivery: condensed brief to Telegram, full verbose report to email.
 
-| Agent | What it does |
-|-------|-------------|
-| **Street Ear** | Scans Reddit (WSB, r/investing, etc.) for ticker mentions, sentiment, and narratives |
-| **News Desk** | Fetches market news from Finnhub + NewsAPI, scores relevance and urgency |
-| **Alpha Scout** | Discovers new tickers via screening across technical, fundamental, sentiment, and diversification dimensions; generates buy/watch recommendations with investment theses |
-| **Portfolio Analyst** | Runs technical + fundamental analysis on your holdings, computes risk metrics, integrates cross-agent signals |
-| **Advisor** | Memory-driven personal investment advisor — tracks conviction list, macro theses, earnings intelligence, prediction markets, and moonshot ideas with persistent state |
+## Agents
 
-Agents communicate through a SQLite-based **agent bus** — each agent publishes signals that downstream agents consume and cross-reference.
+| Agent | Role | Data Sources | Key Output |
+|-------|------|-------------|------------|
+| **Street Ear** | Reddit intelligence | r/wallstreetbets, r/investing, r/stocks | Unusual mentions, sentiment reversals, narrative formation |
+| **News Desk** | Market news analysis | Finnhub, NewsAPI | Scored headlines, macro events, sector news |
+| **Alpha Scout** | Ticker discovery | All agents + screening | Buy/watch recommendations with investment theses |
+| **Portfolio Analyst** | Holdings analysis | yfinance, agent bus signals | Technicals, fundamentals, risk metrics |
+| **Advisor** | Investment synthesis | All of the above + memory | 5-section daily brief with actions |
 
-### Advisor Decision Engines
+### v2 Sub-Agents (Analyst Committee)
 
-The Advisor runs five specialized engines:
+| Sub-Agent | Perspective | Produces |
+|-----------|------------|----------|
+| **Growth Analyst** | Revenue acceleration, TAM, competitive moats | Growth scores, catalysts, moat assessment |
+| **Value Analyst** | Valuation, margin of safety, capital allocation | Value scores, regime classification, fair value |
+| **Risk Officer** | Correlation, concentration, drawdown scenarios | Risk flags, max drawdown scenario, correlation warnings |
+| **Skeptic Agent** | Adversarial challenge to every recommendation | Confidence modifier, invalidation conditions, base rates |
+| **Delta Engine** | Day-over-day change detection | High/medium/low significance changes |
+| **Catalyst Tracker** | Event calendar (FOMC, CPI, earnings) | Next 30 days of catalysts with impact estimates |
 
-| Engine | Data sources | Purpose |
-|--------|-------------|---------|
-| **Conviction Manager** | Guidance, crowd sentiment, smart money, fundamentals, analyst consensus | Evaluates tickers against 5 evidence sources with a 25% CAGR gate for promotion |
-| **Macro Analyst** | FRED (fed funds, yield curve, inflation), yfinance | Tests macro theses against real data, tracks regime changes |
-| **Earnings Analyzer** | Financial Modeling Prep transcripts | Tracks earnings calls, management guidance, cross-company mentions |
-| **Prediction Market** | Polymarket, Kalshi | Monitors Fed policy odds, recession probability, trade/fiscal outcomes |
-| **Moonshot Manager** | Agent bus signals, thematic screens | Manages small-cap disruptors, catalyst plays, turnarounds (max 3% allocation) |
+## Quick Start
 
-## Prerequisites
-
-- Python 3.11+
-- An [Anthropic API key](https://console.anthropic.com/) (powers Claude Opus 4.6 synthesis)
-- A [Telegram bot token](https://core.telegram.org/bots#how-do-i-create-a-bot) + your chat ID
-
-Optional API keys (for full coverage):
-
-| Key | Source | What it powers |
-|-----|--------|---------------|
-| Finnhub | [finnhub.io](https://finnhub.io/) | Company news per ticker |
-| NewsAPI | [newsapi.org](https://newsapi.org/) | Market headlines |
-| FRED | [fred.stlouisfed.org](https://fred.stlouisfed.org/docs/api/api_key.html) | Macro indicators (rates, yield curve, inflation) |
-| FMP | [financialmodelingprep.com](https://site.financialmodelingprep.com/developer/docs) | Earnings call transcripts + guidance |
-| Kalshi | [kalshi.com](https://kalshi.com/) | Prediction market data |
-
-## Setup
-
-### 1. Clone and install dependencies
+### 1. Clone and install
 
 ```bash
 git clone <your-repo-url> alphadesk
@@ -62,7 +53,7 @@ cd alphadesk
 pip install -r requirements.txt
 ```
 
-### 2. Configure environment variables
+### 2. Configure environment
 
 ```bash
 cp .env.example .env
@@ -76,7 +67,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
 TELEGRAM_CHAT_ID=your_numeric_chat_id
 
-# News & market data (at least one recommended)
+# News (at least one recommended)
 FINNHUB_API_KEY=your_finnhub_key
 NEWSAPI_KEY=your_newsapi_key
 
@@ -85,93 +76,94 @@ FRED_API_KEY=your_fred_key
 FMP_API_KEY=your_fmp_key
 KALSHI_API_KEY=your_kalshi_key
 
-# Optional: daily API spend cap in USD (default: $20)
-DAILY_COST_CAP=20.00
+# Email delivery (optional)
+# SMTP_HOST=smtp.gmail.com
+# SMTP_PORT=587
+# SMTP_USER=your_email@gmail.com
+# SMTP_PASS=your_app_password
+# REPORT_EMAIL_TO=recipient@example.com
 ```
-
-**Getting your Telegram chat ID:** Send any message to your bot, then visit `https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates` — your chat ID is in the response under `message.chat.id`.
 
 ### 3. Configure your portfolio
 
-Edit `config/portfolio.yaml`:
+Edit `config/advisor.yaml` with your holdings, macro theses, and strategy parameters. You can also create `private/portfolio.yaml` to keep holdings out of version control:
 
 ```yaml
 holdings:
-  - ticker: AAPL
+  - ticker: NVDA
+    category: core
+    thesis: "AI CapEx beneficiary — dominant GPU franchise"
     shares: 100
-    cost_basis: 150.00
-  - ticker: GOOG
-    shares: 30
-    cost_basis: 142.20
+    entry_price: 95.00
+  - ticker: AMZN
+    category: core
+    thesis: "AWS re-acceleration + retail margin expansion"
+    shares: 50
+    entry_price: 160.00
 ```
 
-Edit `config/watchlist.yaml`:
-
-```yaml
-tickers: [NVDA, META, AVGO, TSLA]
-```
-
-### 4. Configure the Advisor
-
-Edit `config/advisor.yaml` to set your holdings with investment theses, macro theses, superinvestors to track, strategy parameters (hold periods, position limits, CAGR gates), and moonshot archetypes. Defaults work well out of the box.
-
-### 5. (Optional) Customize Alpha Scout
-
-Edit `config/scout.yaml` to adjust screening parameters, scoring weights, sector peer maps, and source toggles. Defaults work well out of the box.
-
-## Running
-
-### Full daily briefing (one-shot)
-
-Runs all 5 agents, synthesizes, and prints the result:
+### 4. First run
 
 ```bash
-python -m src.shared.morning_brief
-```
+# Full advisor brief (one-shot)
+python -c "import asyncio; from src.advisor.main import run; asyncio.run(run())"
 
-### Telegram bot (long-running with daily schedule)
-
-Starts the bot, listens for commands, and automatically sends the Advisor briefing every day at 7:00 AM:
-
-```bash
+# Or start the Telegram bot (long-running with daily schedule)
 python -m src.shared.telegram_bot
 ```
 
-### Docker
+## Configuration
 
-```bash
-docker compose up -d
+| File | Purpose |
+|------|---------|
+| `config/advisor.yaml` | Holdings, macro theses, strategy params, v2 settings |
+| `config/portfolio.yaml` | Holdings with shares and cost basis |
+| `config/watchlist.yaml` | Additional tickers to track |
+| `config/scout.yaml` | Alpha Scout screening parameters |
+| `config/subreddits.yaml` | Reddit sources for Street Ear |
+| `private/portfolio.yaml` | Private holdings override (git-ignored) |
+| `.env` | API keys and secrets (git-ignored) |
+
+## Sample Output
+
+```
+☀️ ALPHADESK DAILY BRIEF — Feb 22, 2026
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**SECTION 1 - WHAT CHANGED TODAY**
+Quiet day — VIX at 14.5, 10Y at 4.25%. NVDA up 2.3% on
+continued CapEx guidance from MSFT earnings call. No thesis
+changes.
+
+**SECTION 2 - ANALYST CONSENSUS & DISAGREEMENTS**
+• Growth and Value agree: NVDA remains best risk-reward in semis
+• Risk Officer flags 65% portfolio exposure to AI CapEx narrative
+• Value Analyst says AVGO is stretched at 38x forward P/E
+
+**SECTION 3 - ACTIONS**
+No action. All theses intact.
+
+**SECTION 4 - WHAT TO WATCH THIS WEEK**
+• FOMC minutes Wednesday — watch for rate cut language
+• NVDA earnings Thursday — CapEx thesis validation
+
+**SECTION 5 - PORTFOLIO HEALTH**
+Risk score: 42/100. Concentration in semis/AI remains primary concern.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AlphaDesk v2.0 | $3.42 today
 ```
 
-This builds the image, mounts `data/` and `config/` as volumes, and runs the Telegram bot with auto-restart.
+## Cost Estimate
 
-### Individual agents
+| Mode | Estimated Cost | What It Does |
+|------|---------------|--------------|
+| Full daily brief | ~$3-5/day | All agents + analyst committee + synthesis |
+| Individual command | ~$0.10 | Single section (e.g., `/holdings`, `/macro`) |
+| Backtest (5 days) | ~$3-4 | Full pipeline replay with real LLM calls |
+| Backtest (skip committee) | ~$0.10-0.50 | Rule-based engines only, near-zero API cost |
+| Weekly retrospective | ~$0.50 | Self-assessment + pattern analysis |
 
-```bash
-# Portfolio analysis only
-python -c "
-import asyncio
-from src.portfolio_analyst.main import run
-result = asyncio.run(run())
-print(result['formatted'])
-"
-
-# Alpha Scout discovery only
-python -c "
-import asyncio
-from src.alpha_scout.main import run
-result = asyncio.run(run())
-print(result['formatted'])
-"
-
-# Advisor only
-python -c "
-import asyncio
-from src.advisor.main import run
-result = asyncio.run(run())
-print(result['formatted'])
-"
-```
+Default daily cap: **$20** (configurable via `DAILY_COST_CAP` in `.env`). When exceeded, synthesis steps are skipped and raw data is delivered.
 
 ## Telegram Commands
 
@@ -179,19 +171,28 @@ print(result['formatted'])
 
 | Command | Description |
 |---------|-------------|
-| `/advisor` | Full 5-section advisor brief |
-| `/holdings` | Portfolio check-in |
+| `/advisor` | Full daily brief (analyst committee + all sections) |
+| `/holdings` | Portfolio check-in with P&L |
 | `/macro` | Macro & market context |
 | `/conviction` | Conviction list (top 3-5 names) |
-| `/moonshot` | Moonshot ideas |
+| `/moonshot` | Moonshot ideas (1-2 asymmetric bets) |
 | `/action` | Strategy actions (add/trim/hold) |
+
+### v2 Intelligence
+
+| Command | Description |
+|---------|-------------|
+| `/delta` | What changed since yesterday |
+| `/catalysts` | Upcoming catalysts (30d calendar) |
+| `/scorecard` | Recommendation track record |
+| `/retro` | Weekly retrospective & self-assessment |
+| `/report` | Latest verbose report file path |
 
 ### Core Agents
 
 | Command | Description |
 |---------|-------------|
 | `/brief` | Full morning briefing (all agents + synthesis) |
-| `/refresh` | Same as /brief — refresh all data |
 | `/portfolio` | Portfolio analysis only |
 | `/news` | Market news only |
 | `/trending` | Reddit intelligence only |
@@ -203,80 +204,76 @@ print(result['formatted'])
 |---------|-------------|
 | `/cost` | API cost report for today |
 | `/status` | System status and recent signals |
-| `/help` | List available commands |
+| `/help` | List all available commands |
 
-## Running on a Schedule
+## Backtesting
 
-### Option A: Built-in scheduler (recommended)
-
-Run the Telegram bot — it includes a scheduler that fires the Advisor briefing daily at 07:00:
+Replay the full pipeline against historical data to validate signal quality:
 
 ```bash
-# Run in the background
-nohup python -m src.shared.telegram_bot > data/bot.log 2>&1 &
+# Quick backtest (skip LLM calls, near-zero cost)
+python -m src.backtest --days 5 --skip-committee
+
+# Full backtest with analyst committee (~$3-4)
+python -m src.backtest --days 5
+
+# Custom portfolio
+python -m src.backtest --days 10 --portfolio private/portfolio.yaml
+
+# Dry run (show config, estimate cost)
+python -m src.backtest --days 30 --dry-run
 ```
 
-### Option B: Docker (recommended for servers)
+Output: `backtests/{date}/results.json`, `summary.md`, `signals.csv` with per-agent hit rates, confusion matrices, and forward-looking returns.
+
+## Email Reports
+
+Full verbose investment memos delivered via email with sparkline charts and color-coded tables:
 
 ```bash
-docker compose up -d
+# Preview today's report in browser
+python -m src.report --preview
+
+# Send via email
+python -m src.report --channel email
+
+# Send a specific date
+python -m src.report --channel email --date 2026-02-22
 ```
 
-The container auto-restarts on failure and persists data via volume mounts.
-
-### Option C: systemd service (Linux)
-
-Create `/etc/systemd/system/alphadesk.service`:
-
-```ini
-[Unit]
-Description=AlphaDesk Telegram Bot
-After=network.target
-
-[Service]
-Type=simple
-User=your_user
-WorkingDirectory=/path/to/alphadesk
-ExecStart=/path/to/python -m src.shared.telegram_bot
-Restart=on-failure
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-sudo systemctl enable alphadesk
-sudo systemctl start alphadesk
-```
+Verbose reports are auto-generated on every `/advisor` run and saved to `reports/{date}/full_report.md` + `full_report.html`.
 
 ## Project Structure
 
 ```
 alphadesk/
 ├── config/
-│   ├── portfolio.yaml          # Your holdings (shares + cost basis)
-│   ├── watchlist.yaml          # Tickers to track
-│   ├── subreddits.yaml         # Reddit sources for Street Ear
+│   ├── advisor.yaml            # Holdings, theses, strategy, v2 settings
+│   ├── portfolio.yaml          # Holdings with shares + cost basis
+│   ├── watchlist.yaml          # Additional tickers to track
 │   ├── scout.yaml              # Alpha Scout screening config
-│   └── advisor.yaml            # Advisor config (holdings, macro theses, strategy)
-├── data/                       # Runtime data (SQLite DBs, logs)
-│   ├── agent_bus.db            # Inter-agent signal bus
-│   ├── street_ear_tracker.db   # Reddit mention history
-│   ├── cost_tracker.db         # API cost tracking
-│   ├── advisor_memory.db       # Advisor persistent memory
-│   └── alphadesk.log           # Application log
+│   └── subreddits.yaml         # Reddit sources for Street Ear
 ├── src/
-│   ├── shared/                 # Shared infrastructure
-│   │   ├── agent_bus.py        # SQLite pub/sub for inter-agent signals
-│   │   ├── config_loader.py    # YAML config loading
-│   │   ├── cost_tracker.py     # API cost tracking with budget cap
-│   │   ├── morning_brief.py    # Master orchestrator
-│   │   ├── security.py         # Env validation, input sanitization
-│   │   └── telegram_bot.py     # Bot commands + scheduling
-│   ├── utils/
-│   │   ├── logger.py           # Structured logging
-│   │   └── cleanup.py          # Data cleanup utilities
+│   ├── advisor/                # Investment advisor (24 modules)
+│   │   ├── main.py             # Pipeline orchestrator
+│   │   ├── memory.py           # SQLite persistent memory
+│   │   ├── formatter.py        # Telegram output formatter
+│   │   ├── verbose_formatter.py # Full investment memo generator
+│   │   ├── analyst_committee.py # Growth + Value + Risk + CIO synthesis
+│   │   ├── skeptic_agent.py    # Adversarial recommendation testing
+│   │   ├── delta_engine.py     # Day-over-day change detection
+│   │   ├── catalyst_tracker.py # Event calendar (FOMC, CPI, earnings)
+│   │   ├── conviction_manager.py # 5-source evidence-based conviction list
+│   │   ├── moonshot_manager.py # Asymmetric bet tracking
+│   │   ├── strategy_engine.py  # Add/trim/hold recommendations
+│   │   ├── valuation_engine.py # DCF-based target prices
+│   │   ├── macro_analyst.py    # FRED macro indicators + thesis testing
+│   │   ├── holdings_monitor.py # Daily holdings check-in with memory
+│   │   ├── earnings_analyzer.py # Earnings calls + management guidance
+│   │   ├── prediction_market.py # Polymarket + Kalshi crowd sentiment
+│   │   ├── superinvestor_tracker.py # 13F filings + insider activity
+│   │   ├── outcome_scorer.py   # Recommendation track record
+│   │   └── retrospective.py    # Weekly self-assessment
 │   ├── street_ear/             # Reddit intelligence agent
 │   │   ├── main.py
 │   │   ├── reddit_fetcher.py
@@ -301,38 +298,117 @@ alphadesk/
 │   │   ├── screener.py
 │   │   ├── synthesizer.py
 │   │   └── formatter.py
-│   └── advisor/                # Personal investment advisor
-│       ├── main.py
-│       ├── memory.py           # SQLite persistent memory
-│       ├── conviction_manager.py
-│       ├── macro_analyst.py
-│       ├── earnings_analyzer.py
-│       ├── prediction_market.py
-│       ├── moonshot_manager.py
-│       ├── holdings_monitor.py
-│       ├── strategy_engine.py
-│       ├── valuation_engine.py
-│       ├── superinvestor_tracker.py
-│       └── formatter.py
+│   ├── backtest/               # Backtesting framework
+│   │   ├── __main__.py         # CLI: python -m src.backtest
+│   │   ├── runner.py           # Multi-day orchestrator
+│   │   ├── data_replay.py      # Historical data provider
+│   │   ├── signal_capture.py   # Pipeline signal hooks
+│   │   ├── outcome_tracker.py  # Forward-looking return computation
+│   │   ├── report_generator.py # JSON + Markdown + CSV output
+│   │   └── db_isolation.py     # Temp DB context for safe replay
+│   ├── report/                 # Report delivery CLI
+│   │   └── __main__.py         # CLI: python -m src.report
+│   ├── shared/                 # Cross-agent infrastructure
+│   │   ├── agent_bus.py        # SQLite pub/sub for inter-agent signals
+│   │   ├── config_loader.py    # YAML config loading
+│   │   ├── cost_tracker.py     # API cost tracking with budget cap
+│   │   ├── morning_brief.py    # Legacy orchestrator
+│   │   ├── telegram_bot.py     # Bot commands + scheduling
+│   │   ├── email_reporter.py   # SMTP email delivery
+│   │   ├── report_generator.py # HTML report with sparklines
+│   │   ├── security.py         # Env validation, input sanitization
+│   │   └── schemas.py          # Shared data schemas
+│   └── utils/
+│       ├── logger.py           # Structured logging
+│       └── cleanup.py          # Data cleanup utilities
+├── tests/
+│   ├── backtest_historic.py    # Full pipeline backtest (5 days)
+│   ├── simulate_week.py        # Week simulation test
+│   └── test_full_pipeline_simulation.py
 ├── Dockerfile
 ├── docker-compose.yaml
-└── requirements.txt
+├── requirements.txt
+├── .env.example
+└── README.md
 ```
 
-## Cost Management
+## API Keys
 
-AlphaDesk tracks API costs in real time. Claude Opus 4.6 pricing: $15/MTok input, $75/MTok output.
+| Key | Required | Source | What It Powers |
+|-----|----------|--------|---------------|
+| `ANTHROPIC_API_KEY` | Yes | [console.anthropic.com](https://console.anthropic.com/) | All Claude Opus 4.6 analysis |
+| `TELEGRAM_BOT_TOKEN` | Yes | [BotFather](https://t.me/BotFather) | Daily brief delivery |
+| `TELEGRAM_CHAT_ID` | Yes | See setup guide | Message routing |
+| `FINNHUB_API_KEY` | Recommended | [finnhub.io](https://finnhub.io/) | Company news per ticker |
+| `NEWSAPI_KEY` | Recommended | [newsapi.org](https://newsapi.org/) | Market headlines |
+| `FRED_API_KEY` | Recommended | [fred.stlouisfed.org](https://fred.stlouisfed.org/docs/api/api_key.html) | Macro indicators (rates, yield curve) |
+| `FMP_API_KEY` | Optional | [financialmodelingprep.com](https://site.financialmodelingprep.com/) | Earnings transcripts + guidance |
+| `KALSHI_API_KEY` | Optional | [kalshi.com](https://kalshi.com/) | Prediction market data |
+| `SMTP_USER` | Optional | Your email provider | Email report delivery |
+| `SMTP_PASS` | Optional | Your email provider | Email report delivery |
+| `REPORT_EMAIL_TO` | Optional | — | Email recipient address |
 
-- Default daily cap: **$20** (configurable via `DAILY_COST_CAP` in `.env`)
-- When the cap is hit, synthesis steps are skipped and raw agent outputs are delivered instead
-- Check spend anytime with `/cost` in Telegram
+## Running on a Schedule
 
-A typical full briefing costs ~$0.30-0.50 depending on market activity and number of tickers.
+### Option A: Telegram bot (recommended)
 
-## Logs
-
-All logs go to both stdout and `data/alphadesk.log`:
+The built-in scheduler fires the Advisor briefing daily at 07:00 and sends email reports when configured:
 
 ```bash
-tail -f data/alphadesk.log
+python -m src.shared.telegram_bot
 ```
+
+### Option B: Docker
+
+```bash
+docker compose up -d
+```
+
+### Option C: systemd (Linux)
+
+```ini
+[Unit]
+Description=AlphaDesk Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=your_user
+WorkingDirectory=/path/to/alphadesk
+ExecStart=/path/to/python -m src.shared.telegram_bot
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+## Roadmap
+
+### Built
+
+- [x] 5 AI agents with SQLite agent bus
+- [x] Analyst committee (Growth + Value + Risk + CIO Editor)
+- [x] Delta engine (day-over-day change detection)
+- [x] Catalyst tracker (FOMC, CPI, earnings calendar)
+- [x] Skeptic agent (adversarial recommendation testing)
+- [x] Conviction pipeline (5-source evidence testing + 25% CAGR gate)
+- [x] Moonshot manager (disruptors, catalyst plays, turnarounds)
+- [x] Outcome tracking + weekly retrospective
+- [x] Backtesting framework with per-agent metrics
+- [x] Verbose investment memos (Markdown + HTML)
+- [x] Email delivery with sparkline charts
+- [x] Prediction market integration (Polymarket + Kalshi)
+- [x] Superinvestor tracking (13F filings)
+
+### Planned
+
+- [ ] Correlation risk analysis (portfolio-level thesis concentration)
+- [ ] Position sizing guidance (target weight recommendations)
+- [ ] Tax-lot awareness (hold period before trim recs)
+- [ ] Substack + YouTube integration
+- [ ] Web dashboard for report browsing
+
+## License
+
+MIT

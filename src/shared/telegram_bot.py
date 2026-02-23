@@ -290,6 +290,26 @@ async def handle_command(command: str, chat_id: str) -> None:
             log.exception("Retrospective command failed")
             send_message(chat_id, f"Retrospective failed: {e}")
 
+    elif cmd == "/report":
+        try:
+            from pathlib import Path
+            from datetime import date as _date
+            report_dir = Path("reports") / _date.today().isoformat()
+            html_path = report_dir / "full_report.html"
+            md_path = report_dir / "full_report.md"
+            if html_path.exists():
+                send_message(chat_id,
+                    f"<b>Latest Verbose Report</b>\n\n"
+                    f"HTML: <code>{html_path}</code>\n"
+                    f"Markdown: <code>{md_path}</code>\n\n"
+                    f"Run /advisor first if you need a fresh report.")
+            else:
+                send_message(chat_id,
+                    "No report for today. Run /advisor to generate one.")
+        except Exception as e:
+            log.exception("Report command failed")
+            send_message(chat_id, f"Report lookup failed: {e}")
+
     elif cmd == "/cost":
         report = format_cost_report()
         send_message(chat_id, report)
@@ -329,7 +349,8 @@ async def handle_command(command: str, chat_id: str) -> None:
             "/delta — What changed since yesterday\n"
             "/catalysts — Upcoming catalysts (30d)\n"
             "/scorecard — Recommendation track record\n"
-            "/retro — Weekly retrospective &amp; self-assessment\n\n"
+            "/retro — Weekly retrospective &amp; self-assessment\n"
+            "/report — Latest verbose report path\n\n"
             "<b>System</b>\n"
             "/cost — API cost report\n"
             "/status — System status\n"
@@ -352,6 +373,25 @@ def _run_scheduled_brief() -> None:
         if CHAT_ID:
             send_message(CHAT_ID, result["formatted"])
             log.info("Scheduled advisor brief sent successfully")
+
+        # Also send email if configured
+        try:
+            from src.shared.email_reporter import EmailReporter
+            reporter = EmailReporter()
+            if reporter.is_configured():
+                verbose_path = result.get("verbose_report_dir", "")
+                if verbose_path:
+                    from pathlib import Path
+                    html_path = Path(verbose_path)
+                    md_path = html_path.with_suffix(".md")
+                    reporter.send_report_from_file(
+                        str(html_path),
+                        str(md_path) if md_path.exists() else None,
+                    )
+                    log.info("Scheduled email report sent")
+        except Exception:
+            log.exception("Email delivery failed — Telegram delivery was successful")
+
     except Exception as e:
         log.error("Scheduled advisor brief failed: %s", e, exc_info=True)
         if CHAT_ID:

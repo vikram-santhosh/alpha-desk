@@ -238,6 +238,21 @@ retrospective:
   schedule_day: "sunday"
   lookback_days: 30
 
+# Backtesting
+backtest:
+  default_days: 5
+  skip_agents: [street_ear, news_desk]
+  output_dir: backtests
+  extra_history_days: 30
+
+# Delivery channels
+delivery:
+  telegram:
+    enabled: true
+  email:
+    enabled: false
+    send_verbose: true
+
 # Scoring weights for composite score (must sum to 1.0)
 scoring_weights:
   growth: 0.25

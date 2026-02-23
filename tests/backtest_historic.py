@@ -102,50 +102,10 @@ def get_macro_symbols():
 
 
 # ═══════════════════════════════════════════════════════════════════
-# TEMP DB ISOLATION
+# TEMP DB ISOLATION (imported from shared module)
 # ═══════════════════════════════════════════════════════════════════
 
-class TempDBContext:
-    """Patches all DB_PATH references to temp files. Restores on exit."""
-
-    def __init__(self):
-        self._tmpdir = tempfile.mkdtemp(prefix="alphadesk_backtest_")
-        self._originals = {}
-
-    def __enter__(self):
-        import src.advisor.memory as mem_mod
-        import src.shared.agent_bus as bus_mod
-        import src.shared.cost_tracker as cost_mod
-
-        self._originals = {
-            "memory": mem_mod.DB_PATH,
-            "bus": bus_mod.DB_PATH,
-            "cost": cost_mod.DB_PATH,
-        }
-
-        mem_mod.DB_PATH = Path(self._tmpdir) / "advisor_memory.db"
-        bus_mod.DB_PATH = Path(self._tmpdir) / "agent_bus.db"
-        cost_mod.DB_PATH = Path(self._tmpdir) / "cost_tracker.db"
-
-        print(f"  Temp DB dir: {self._tmpdir}")
-        return self
-
-    def __exit__(self, *args):
-        import src.advisor.memory as mem_mod
-        import src.shared.agent_bus as bus_mod
-        import src.shared.cost_tracker as cost_mod
-
-        mem_mod.DB_PATH = self._originals["memory"]
-        bus_mod.DB_PATH = self._originals["bus"]
-        cost_mod.DB_PATH = self._originals["cost"]
-
-        # Clean up temp files
-        import shutil
-        try:
-            shutil.rmtree(self._tmpdir)
-            print(f"  Cleaned up temp DB dir: {self._tmpdir}")
-        except Exception as e:
-            print(f"  Warning: Could not clean up {self._tmpdir}: {e}")
+from src.backtest.db_isolation import TempDBContext
 
 
 # ═══════════════════════════════════════════════════════════════════

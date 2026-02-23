@@ -749,10 +749,57 @@ async def run() -> dict[str, Any]:
         formatted = "<b>AlphaDesk Advisor</b>\n\nError formatting daily brief."
 
     total_time = time.time() - pipeline_start
+
+    # ── Step 10: Generate verbose report ─────────────────────────────
+    verbose_report_dir = ""
+    try:
+        from src.advisor.verbose_formatter import VerboseFormatter, save_verbose_report
+
+        # Fetch scorecard for track record section (lightweight)
+        _scorecard = {}
+        try:
+            from src.advisor.memory import get_recommendation_scorecard
+            _scorecard = get_recommendation_scorecard(lookback_days=30)
+        except Exception:
+            log.debug("Could not fetch scorecard for verbose report")
+
+        formatter = VerboseFormatter(
+            holdings_reports=holdings_reports,
+            fundamentals=fundamentals,
+            technicals=technicals,
+            macro_data=macro_data,
+            strategy=strategy,
+            conviction_result=conviction_result,
+            moonshot_result=moonshot_result,
+            delta_report=delta_report,
+            catalyst_data=catalyst_data,
+            committee_result=synthesis.get("committee_result") or {},
+            updated_theses=updated_theses,
+            prediction_shifts=prediction_shifts,
+            news_signals=news_signals,
+            top_articles=top_articles,
+            earnings_data=earnings_data,
+            superinvestor_data=superinvestor_data,
+            scorecard=_scorecard,
+            reddit_mood=reddit_mood,
+            reddit_themes=reddit_themes,
+            daily_cost=daily_cost,
+            total_time=total_time,
+        )
+        md_report = formatter.generate_markdown()
+        html_report = formatter.generate_html(md_report)
+        paths = save_verbose_report(md_report, html_report)
+        verbose_report_dir = paths.get("html", "")
+        log.info("Verbose report generated: %d chars MD, %d chars HTML",
+                 len(md_report), len(html_report))
+    except Exception:
+        log.exception("Failed to generate verbose report — continuing without it")
+
     log.info("Advisor pipeline completed in %.1fs", total_time)
 
     return {
         "formatted": formatted,
+        "verbose_report_dir": verbose_report_dir,
         "signals": agent_bus_signals,
         "stats": {
             "total_time_s": round(total_time, 1),

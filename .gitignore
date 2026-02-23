@@ -34,6 +34,10 @@ private/
 # Runtime logs
 logs/
 
+# Generated reports & backtests
+reports/
+backtests/
+
 # Virtual environments
 venv/
 .venv/
