@@ -6,6 +6,8 @@ sources:
   supply_chain: true
   thematic_scanner: true
   superinvestor_13f: true
+  reddit_moonshot: true
+  filing_scanner: true
 
 yfinance_screeners: [undervalued_growth_stocks, most_actives]
 

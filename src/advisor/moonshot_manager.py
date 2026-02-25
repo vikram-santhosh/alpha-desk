@@ -139,6 +139,9 @@ def update_moonshot_list(
                 valuation_data.get(ticker) if valuation_data else None,
             )
 
+            # Build discovery source description
+            discovery_source = _build_discovery_narrative(candidate)
+
             memory.upsert_moonshot(
                 ticker=ticker,
                 conviction="medium",
@@ -147,6 +150,7 @@ def update_moonshot_list(
                 downside_case=downside_case,
                 key_milestone=key_milestone,
                 max_position_pct=moonshot_max_pct,
+                source=discovery_source,
             )
 
             added.append({"ticker": ticker, "thesis": thesis, "archetype": archetype})
@@ -311,6 +315,58 @@ def _build_seed_candidates(moonshot_config: dict) -> list[dict]:
 
 
 # ═══════════════════════════════════════════════════════
+# DISCOVERY NARRATIVE
+# ═══════════════════════════════════════════════════════
+
+def _build_discovery_narrative(candidate: dict) -> str:
+    """Build a human-readable discovery narrative from candidate signal_data.
+
+    Translates signal_data into readable text explaining WHY this stock surfaced.
+    """
+    signal_type = candidate.get("signal_type", "")
+    signal_data = candidate.get("signal_data", {})
+    source = candidate.get("source", "")
+
+    if signal_type == "reddit_moonshot":
+        mention_count = signal_data.get("mention_count", 0)
+        top_subs = signal_data.get("top_subreddits", [])
+        subs_str = ", ".join(f"r/{s}" for s in top_subs[:3])
+        return f"Mentioned {mention_count} times on {subs_str} in the last 24h"
+
+    elif signal_type == "superinvestor_new_position":
+        fund_name = signal_data.get("fund_name", "Unknown fund")
+        value = signal_data.get("position_value")
+        if value and value > 0:
+            return f"{fund_name} initiated ${value / 1e6:.0f}M position"
+        return f"{fund_name} initiated new position"
+
+    elif signal_type == "screener_hit":
+        screener = signal_data.get("screener", "")
+        return f"Hit {screener} screen on yfinance"
+
+    elif signal_type == "sector_peer":
+        sector = signal_data.get("sector", "")
+        return f"Sector peer in {sector}"
+
+    elif signal_type == "pre_ipo_proxy":
+        exposure = signal_data.get("exposure", "")
+        return f"Pre-IPO exposure: {exposure}"
+
+    elif signal_type == "commodity_thematic":
+        exposure = signal_data.get("exposure", "")
+        return f"Commodity play: {exposure}"
+
+    elif signal_type == "thematic_sector":
+        theme = signal_data.get("sector_theme", "").replace("_", " ").title()
+        return f"Thematic sector play: {theme}"
+
+    elif source:
+        return f"Sourced from {source}"
+
+    return "Discovery candidate"
+
+
+# ═══════════════════════════════════════════════════════
 # OPUS THESIS GENERATION
 # ═══════════════════════════════════════════════════════
 
@@ -354,6 +410,11 @@ def _generate_moonshot_thesis(
     if sector_theme:
         extra_ctx = f"\nTHEMATIC SECTOR: {sector_theme.replace('_', ' ').title()}"
 
+    # Discovery context for the prompt
+    discovery_narrative = _build_discovery_narrative(candidate)
+    discovery_ctx = f"\nDISCOVERY CONTEXT: {candidate.get('source', 'N/A')}"
+    discovery_ctx += f"\nWHY THIS SURFACED: {discovery_narrative}"
+
     prompt = f"""You are analyzing {ticker} as a potential moonshot (asymmetric bet) for a long-term investor.
 
 ARCHETYPE: {archetype.replace('_', ' ').title()}
@@ -362,7 +423,7 @@ REVENUE GROWTH: {fund.get('revenue_growth', 'N/A')}
 PCT FROM 52W HIGH: {fund.get('pct_from_52w_high', 'N/A')}%
 SECTOR: {fund.get('sector', 'N/A')}
 VALUATION: {valuation_ctx or 'N/A'}
-SOURCE: {candidate.get('source', 'N/A')}{extra_ctx}
+SOURCE: {candidate.get('source', 'N/A')}{extra_ctx}{discovery_ctx}
 
 Generate four fields as a JSON object:
 1. "thesis": 2-3 sentence investment thesis for WHY this is an asymmetric bet. Cite specific numbers or catalysts.

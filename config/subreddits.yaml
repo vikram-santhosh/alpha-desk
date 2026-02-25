@@ -1,6 +1,15 @@
 primary: [wallstreetbets, investing, stocks]
 secondary: [options, SecurityAnalysis, ValueInvesting, StockMarket]
 thematic: [semiconductor, artificial]
+moonshot:
+  - smallstreetbets
+  - pennystocks
+  - valueinvesting
+  - SecurityAnalysis
+  - Biotechplays
+  - spacs
+  - thecorporation
+  - undervaluedstonks
 settings:
   min_score: 10
   min_comments: 5

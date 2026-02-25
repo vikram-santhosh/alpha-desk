@@ -531,10 +531,12 @@ def update_conviction_list(
                 ticker, earn_data, crowd, si_data, fund_data, val_data,
             )
 
-            if sources_passing < min_evidence:
+            # Relaxed threshold for discovery candidates (new names)
+            min_evidence_discovery = max(min_evidence - 1, 2)
+            if sources_passing < min_evidence_discovery:
                 log.debug(
-                    "Skipping %s: only %d/%d evidence sources",
-                    ticker, sources_passing, min_evidence,
+                    "Skipping %s: only %d/%d evidence sources (discovery threshold)",
+                    ticker, sources_passing, min_evidence_discovery,
                 )
                 continue
 
@@ -543,12 +545,24 @@ def update_conviction_list(
                 ticker, candidate, descriptions, valuation=valuation_data.get(ticker),
             )
 
+            # Build source description from candidate data
+            cand_source = candidate.get("source", "")
+            if candidate.get("signal_type") == "superinvestor_new_position":
+                fund = candidate.get("signal_data", {}).get("fund_name", candidate.get("signal_data", {}).get("investor", ""))
+                val = candidate.get("signal_data", {}).get("position_value", candidate.get("signal_data", {}).get("value_usd"))
+                cand_source = f"{fund} initiated ${val/1e6:.0f}M position" if val else f"{fund} new position"
+            elif candidate.get("signal_type") == "reddit_moonshot":
+                mc = candidate.get("signal_data", {}).get("mention_count", 0)
+                subs = candidate.get("signal_data", {}).get("top_subreddits", [])
+                cand_source = f"{mc} Reddit mentions across {', '.join(subs[:2])}"
+
             memory.upsert_conviction(
                 ticker=ticker,
                 conviction=conviction,
                 thesis=thesis,
                 pros=[d for d in descriptions if d.startswith("PASS")][:5],
                 cons=[d for d in descriptions if d.startswith("FAIL")][:5],
+                source=cand_source or candidate.get("source"),
             )
 
             added.append({
@@ -604,13 +618,40 @@ def _build_crowd_data(
     crowd: dict = {}
 
     # Reddit sentiment from candidate signal data
+    # First check the candidate with matching ticker
     for c in candidates:
         if c.get("ticker") == ticker:
             signal = c.get("signal_data", {})
             sentiment = signal.get("sentiment") or signal.get("avg_sentiment")
             if sentiment is not None:
                 crowd["reddit_sentiment"] = sentiment
+                mentions = signal.get("mentions")
+                if mentions is not None:
+                    crowd["mentions"] = mentions
             break
+
+    # If no direct match, scan all candidates for any signal_data mentioning this ticker
+    if "reddit_sentiment" not in crowd:
+        for c in candidates:
+            signal = c.get("signal_data", {})
+            if not signal:
+                continue
+            # Check if this candidate's signal data references our ticker
+            mentioned_tickers = signal.get("tickers", [])
+            if ticker in mentioned_tickers:
+                sentiment = signal.get("sentiment") or signal.get("avg_sentiment")
+                if sentiment is not None:
+                    crowd["reddit_sentiment"] = sentiment
+                    mentions = signal.get("mentions")
+                    if mentions is not None:
+                        crowd["mentions"] = mentions
+                    break
+            # Also accept if the candidate itself has sentiment and matches loosely
+            if c.get("ticker") == ticker:
+                sentiment = signal.get("sentiment") or signal.get("avg_sentiment")
+                if sentiment is not None:
+                    crowd["reddit_sentiment"] = sentiment
+                    break
 
     # Prediction market probability
     pred = prediction_by_ticker.get(ticker)

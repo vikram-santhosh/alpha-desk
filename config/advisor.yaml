@@ -86,7 +86,7 @@ strategy:
   moonshot_max_pct: 3
   min_cagr_pct: 25
   min_margin_of_safety_pct: 15
-  min_evidence_sources: 3
+  min_evidence_sources: 2
 
 # Earnings intelligence
 earnings:

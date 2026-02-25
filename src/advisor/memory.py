@@ -397,27 +397,36 @@ def get_conviction_list(active_only: bool = True) -> list[dict[str, Any]]:
 
 def upsert_conviction(ticker: str, conviction: str, thesis: str,
                       pros: list[str] | None = None, cons: list[str] | None = None,
-                      superinvestor_activity: str | None = None) -> None:
+                      superinvestor_activity: str | None = None,
+                      source: str | None = None) -> None:
     """Add or update a conviction list entry."""
     conn = _get_db()
     now = datetime.now().isoformat()
     today = date.today().isoformat()
+
+    # Gracefully add source column if it doesn't exist yet
+    try:
+        conn.execute("SELECT source FROM conviction_list LIMIT 0")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE conviction_list ADD COLUMN source TEXT")
+        conn.commit()
+
     existing = conn.execute("SELECT id FROM conviction_list WHERE ticker = ?", (ticker,)).fetchone()
     if existing:
         conn.execute("""
             UPDATE conviction_list SET conviction = ?, thesis = ?, pros = ?, cons = ?,
-            superinvestor_activity = ?, status = 'active', removal_reason = NULL,
+            superinvestor_activity = ?, source = ?, status = 'active', removal_reason = NULL,
             removal_date = NULL, updated_at = ? WHERE ticker = ?
         """, (conviction, thesis, json.dumps(pros or []), json.dumps(cons or []),
-              superinvestor_activity, now, ticker))
+              superinvestor_activity, source, now, ticker))
     else:
         conn.execute("""
             INSERT INTO conviction_list
             (ticker, date_added, weeks_on_list, conviction, thesis, pros, cons,
-             superinvestor_activity, status, updated_at)
-            VALUES (?, ?, 1, ?, ?, ?, ?, ?, 'active', ?)
+             superinvestor_activity, source, status, updated_at)
+            VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, 'active', ?)
         """, (ticker, today, conviction, thesis, json.dumps(pros or []),
-              json.dumps(cons or []), superinvestor_activity, now))
+              json.dumps(cons or []), superinvestor_activity, source, now))
     conn.commit()
     conn.close()
 
@@ -462,26 +471,35 @@ def get_moonshot_list(active_only: bool = True) -> list[dict[str, Any]]:
 
 def upsert_moonshot(ticker: str, conviction: str, thesis: str,
                     upside_case: str | None = None, downside_case: str | None = None,
-                    key_milestone: str | None = None, max_position_pct: float = 3.0) -> None:
+                    key_milestone: str | None = None, max_position_pct: float = 3.0,
+                    source: str | None = None) -> None:
     """Add or update a moonshot entry."""
     conn = _get_db()
     now = datetime.now().isoformat()
     today = date.today().isoformat()
+
+    # Gracefully add source column if it doesn't exist yet
+    try:
+        conn.execute("SELECT source FROM moonshot_list LIMIT 0")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE moonshot_list ADD COLUMN source TEXT")
+        conn.commit()
+
     existing = conn.execute("SELECT id FROM moonshot_list WHERE ticker = ?", (ticker,)).fetchone()
     if existing:
         conn.execute("""
             UPDATE moonshot_list SET conviction = ?, thesis = ?, upside_case = ?,
-            downside_case = ?, key_milestone = ?, max_position_pct = ?, updated_at = ?
+            downside_case = ?, key_milestone = ?, max_position_pct = ?, source = ?, updated_at = ?
             WHERE ticker = ?
-        """, (conviction, thesis, upside_case, downside_case, key_milestone, max_position_pct, now, ticker))
+        """, (conviction, thesis, upside_case, downside_case, key_milestone, max_position_pct, source, now, ticker))
     else:
         conn.execute("""
             INSERT INTO moonshot_list
             (ticker, date_added, conviction, thesis, upside_case, downside_case,
-             key_milestone, max_position_pct, status, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+             key_milestone, max_position_pct, source, status, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
         """, (ticker, today, conviction, thesis, upside_case, downside_case,
-              key_milestone, max_position_pct, now))
+              key_milestone, max_position_pct, source, now))
     conn.commit()
     conn.close()
 

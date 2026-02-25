@@ -55,9 +55,14 @@ def monitor_holdings(
 
     news_by_ticker: dict[str, list[dict]] = {}
     for ns in news_signals:
+        # Index by primary ticker
         t = ns.get("ticker") or ns.get("payload", {}).get("ticker", "")
         if t:
             news_by_ticker.setdefault(t, []).append(ns)
+        # Also index by all tickers mentioned in the article's tickers list
+        for extra_t in ns.get("tickers", []):
+            if extra_t and extra_t != t:
+                news_by_ticker.setdefault(extra_t, []).append(ns)
 
     for holding in holdings:
         ticker = holding.get("ticker", "")
@@ -250,15 +255,20 @@ def _build_holding_report(
         if msg:
             key_events.append(f"Signal: {msg}")
 
-    # Check news signals
+    # Check news signals — extract clean headlines
     ticker_news = news_by_ticker.get(ticker, [])
+    seen_headlines: set[str] = set()
     for ns in ticker_news:
         headline = (
             ns.get("headline")
+            or ns.get("title", "")
             or ns.get("payload", {}).get("headline", "")
         )
         if headline:
-            key_events.append(f"News: {headline}")
+            headline_clean = headline.strip()
+            if headline_clean.lower() not in seen_headlines:
+                seen_headlines.add(headline_clean.lower())
+                key_events.append(headline_clean)
 
     # Fundamentals data
     fund_data = fundamentals.get(ticker, {})

@@ -214,6 +214,19 @@ def source_all_candidates(
     if sources_config.get("agent_bus", True):
         all_candidates.extend(_source_from_agent_bus())
 
+    # Reddit moonshot candidates (small-cap/value subs)
+    if sources_config.get("reddit_moonshot", True):
+        try:
+            from src.alpha_scout.reddit_moonshot_sourcer import source_moonshot_candidates
+            moonshot_exclude = set(existing_tickers) | {h["ticker"] for h in holdings}
+            moonshot_candidates = source_moonshot_candidates(
+                exclude_tickers=moonshot_exclude,
+                config=None,  # Will use default subreddits
+            )
+            all_candidates.extend(moonshot_candidates)
+        except Exception:
+            log.exception("Reddit moonshot sourcing failed")
+
     # Supply chain (v2 — high quality, before sector peers)
     if sources_config.get("supply_chain", True):
         try:
@@ -256,6 +269,16 @@ def source_all_candidates(
             log.debug("get_new_positions_as_candidates not available yet")
         except Exception:
             log.exception("Superinvestor 13F candidate sourcing failed")
+
+    # Filing scanner — enriched 13F new position detection
+    if sources_config.get("filing_scanner", True):
+        try:
+            from src.alpha_scout.filing_scanner import scan_new_positions
+            filing_exclude = set(existing_tickers) | {h["ticker"] for h in holdings}
+            filing_candidates = scan_new_positions(config, exclude_tickers=filing_exclude)
+            all_candidates.extend(filing_candidates)
+        except Exception:
+            log.exception("Filing scanner failed")
 
     # yfinance screeners
     if sources_config.get("yfinance_screener", True):

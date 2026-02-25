@@ -105,22 +105,35 @@ def format_macro_section(macro_data: dict[str, Any], theses: list[dict[str, Any]
         lines.append(f"  {' | '.join(market_parts)}")
         lines.append("")
 
-    # Active theses — only show those with evidence or non-intact status
     if theses:
         lines.append("<b>Active Theses:</b>")
         for i, t in enumerate(theses, 1):
-            status = t.get("status", "intact")
+            status = t.get("current_status", t.get("status", "intact"))
             emoji = _status_emoji(status)
             title = sanitize_html(t.get("title", ""))
             affected = t.get("affected_tickers", [])
-            ticker_str = f" ({', '.join(affected[:4])})" if affected else ""
-            lines.append(f"  {i}. {title}{ticker_str} {emoji}")
-            # Only show evidence if something changed
-            evidence_log = t.get("evidence_log", [])
-            if evidence_log:
-                latest = evidence_log[-1]
-                lines.append(f"     {sanitize_html(latest.get('evidence', ''))}")
-        lines.append("")
+
+            lines.append(f"  {i}. {title} [{status.upper()}] {emoji}")
+            if affected:
+                lines.append(f"     Tickers: {', '.join(affected[:6])}")
+
+            # Show relevant news headlines (deduplicated, max 2)
+            relevant_news = t.get("relevant_news", [])
+            seen_headlines = set()
+            headline_count = 0
+            for news in relevant_news:
+                if headline_count >= 2:
+                    break
+                reason = news.get("match_reason", "")
+                if reason == "macro_broad":
+                    continue  # Skip broad matches
+                headline = news.get("headline", "").strip()
+                if not headline or headline.lower() in seen_headlines:
+                    continue
+                seen_headlines.add(headline.lower())
+                lines.append(f"     \U0001f4f0 {sanitize_html(headline)}")
+                headline_count += 1
+            lines.append("")
 
     # Prediction market shifts
     if prediction_shifts:
@@ -188,17 +201,48 @@ def format_holdings_section(holdings_reports: list[dict[str, Any]]) -> str:
     # Split into detailed (>threshold) and summary (<threshold or ETFs)
     detailed = []
     summarized = []
+
+    # Group holdings into 3 categories
+    moving_on_news = []
+    thesis_intact = []
+    watch_list = []
+
     for h in sorted_holdings:
         cat = h.get("category", "core")
         pct = h.get("position_pct") or 0
         if cat == "etf" or pct < _DETAIL_THRESHOLD_PCT:
+            # Small positions still go to summary
             summarized.append(h)
-        else:
-            detailed.append(h)
+            continue
 
-    # Detailed holdings
-    for h in detailed:
-        _format_holding_detail(h, lines)
+        detailed.append(h)
+
+        key_events = h.get("key_events", [])
+        earnings_approaching = h.get("earnings_approaching", False)
+        thesis_status = h.get("thesis_status", "intact")
+        change_pct = h.get("change_pct") or 0
+
+        if key_events or earnings_approaching:
+            moving_on_news.append(h)
+        elif thesis_status in ("weakening", "invalidated") or (abs(change_pct) > 3):
+            watch_list.append(h)
+        else:
+            thesis_intact.append(h)
+
+    if moving_on_news:
+        lines.append("  \u26a1 <b>MOVING ON NEWS:</b>")
+        for h in moving_on_news:
+            _format_holding_detail(h, lines)
+
+    if thesis_intact:
+        lines.append("  \U0001f4c8 <b>THESIS INTACT, NO ACTION:</b>")
+        for h in thesis_intact:
+            _format_holding_detail(h, lines)
+
+    if watch_list:
+        lines.append("  \u26a0\ufe0f <b>WATCH:</b>")
+        for h in watch_list:
+            _format_holding_detail(h, lines)
 
     # Collapsed summary for small positions + ETFs
     if summarized:
@@ -256,13 +300,23 @@ def _format_holding_detail(h: dict, lines: list[str]) -> None:
     if thesis_status not in ("intact",):
         lines.append(f"     Thesis: {sanitize_html(thesis)} {status_e}")
 
-    # Line 4: Trend (only if meaningful — 3+ days of data)
-    if recent_trend and "first day" not in recent_trend.lower() and "0 of last 1" not in recent_trend:
-        lines.append(f"     {sanitize_html(recent_trend)}")
-
-    # Key events (signals, news)
+    # Priority 1: Key events (news headlines) — max 2
+    news_shown = 0
     for event in key_events[:2]:
-        lines.append(f"     \u2022 {sanitize_html(event)}")
+        lines.append(f"     \U0001f4cc {sanitize_html(event)}")
+        news_shown += 1
+
+    # Priority 2: Upcoming earnings
+    earnings_approaching = h.get("earnings_approaching", False)
+    earnings_date = h.get("earnings_date")
+    earnings_days_out = h.get("earnings_days_out")
+    if earnings_approaching and earnings_date:
+        lines.append(f"     \U0001f4c5 Earnings: {earnings_date} \u2014 {earnings_days_out} days out")
+
+    # Priority 3: Trend narrative ONLY as fallback when no news context
+    if news_shown == 0 and not earnings_approaching:
+        if recent_trend and "first day" not in recent_trend.lower():
+            lines.append(f"     {sanitize_html(recent_trend)}")
 
     lines.append("")
 
@@ -370,9 +424,12 @@ def format_conviction_section(conviction_list: list[dict[str, Any]]) -> str:
         conviction = entry.get("conviction", "medium")
         weeks = entry.get("weeks_on_list", 1)
         thesis = sanitize_html(entry.get("thesis", ""))
+        source = entry.get("source", "")
         badge = _conviction_badge(conviction)
 
         lines.append(f"  {i}. <b>{ticker}</b> \u2014 W{weeks} [{badge}]")
+        if source:
+            lines.append(f"     \U0001f4e1 Source: {sanitize_html(source)}")
         if thesis:
             lines.append(f"     {_truncate(thesis, 180)}")
         lines.append("")
@@ -400,9 +457,12 @@ def format_moonshot_section(moonshot_list: list[dict[str, Any]]) -> str:
         upside = entry.get("upside_case", "")
         downside = entry.get("downside_case", "")
         milestone = entry.get("key_milestone", "")
+        source = entry.get("source", "")
         badge = _conviction_badge(conviction)
 
         lines.append(f"  {i}. <b>{ticker}</b> \u2014 M{months} [{badge}]")
+        if source:
+            lines.append(f"     \U0001f4e1 Why this surfaced: {sanitize_html(source)}")
         if thesis:
             lines.append(f"     {_truncate(thesis, 200)}")
         if upside:
@@ -419,6 +479,29 @@ def format_moonshot_section(moonshot_list: list[dict[str, Any]]) -> str:
 # ═══════════════════════════════════════════════════════
 # ASSEMBLY
 # ═══════════════════════════════════════════════════════
+
+def format_catalyst_calendar(catalyst_data: dict[str, Any]) -> str:
+    """Format upcoming catalysts for the next 7 days."""
+    catalysts = catalyst_data.get("catalysts", [])
+    if not catalysts:
+        return ""
+
+    lines = ["\U0001f4c5 <b>THIS WEEK</b>", ""]
+    shown = 0
+    for cat in catalysts:
+        if shown >= 5:
+            break
+        date_str = cat.get("date", "")
+        description = sanitize_html(cat.get("description", cat.get("event", "")))
+        ticker = cat.get("ticker", "")
+        if description:
+            prefix = f"  {date_str}: " if date_str else "  "
+            ticker_str = f"<b>{sanitize_html(ticker)}</b> \u2014 " if ticker else ""
+            lines.append(f"{prefix}{ticker_str}{description}")
+            shown += 1
+
+    return "\n".join(lines) if shown > 0 else ""
+
 
 def format_key_headlines(top_articles: list[dict[str, Any]], max_headlines: int = 3) -> str:
     """Format top macro/geopolitical news headlines for the advisor brief.
@@ -467,6 +550,7 @@ def format_daily_brief(
     key_headlines_section: str = "",
     reddit_mood: str = "",
     reddit_themes: list[str] | None = None,
+    catalyst_section: str = "",
 ) -> str:
     """Assemble the complete daily brief with Opus synthesis lead."""
     today = datetime.now().strftime("%b %d, %Y")
@@ -500,6 +584,10 @@ def format_daily_brief(
             safe_themes = ", ".join(sanitize_html(t) for t in reddit_themes[:2])
             theme_suffix = f" \u2014 {safe_themes}"
         sections.append(f"  \U0001f4e3 Reddit mood: <b>{sanitize_html(reddit_mood)}</b>{theme_suffix}")
+
+    # Catalyst calendar
+    if catalyst_section:
+        sections.extend(["", catalyst_section])
 
     sections.extend([
         "",

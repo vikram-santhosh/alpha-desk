@@ -402,6 +402,19 @@ async def run() -> dict[str, Any]:
             )
             cand_technicals = run_technical_analysis(cand_tickers, cand_historical)
 
+            # Fetch superinvestor data for top candidates too
+            try:
+                cand_si_tickers = [c["ticker"] for c in discovery_candidates[:10]]
+                cand_si_data = await asyncio.to_thread(
+                    run_superinvestor_tracking, cand_si_tickers, config
+                )
+                # Merge candidate smart money summaries into main superinvestor_data
+                for t, summary in cand_si_data.get("smart_money_summaries", {}).items():
+                    if t not in superinvestor_data:
+                        superinvestor_data[t] = summary
+            except Exception:
+                log.exception("Failed to fetch superinvestor data for candidates")
+
             discovery_candidates = screen_candidates(
                 candidates=discovery_candidates[:20],
                 technicals=cand_technicals,
@@ -622,6 +635,7 @@ async def run() -> dict[str, Any]:
             reddit_themes=_reddit_themes,
             delta_prompt_section=delta_prompt_section,
             catalyst_prompt_section=catalyst_prompt_section,
+            news_signals=news_signals,
         )
 
     # ── Step 8: Save memory state ──────────────────────────────────────
@@ -919,6 +933,7 @@ def _synthesize_brief(
     reddit_themes: list[str] | None = None,
     delta_prompt_section: str = "",
     catalyst_prompt_section: str = "",
+    news_signals: list[dict] | None = None,
 ) -> dict[str, Any]:
     """Use Opus 4.6 to enhance the daily brief with narrative and judgment."""
     within_budget, spent, cap = check_budget()
@@ -953,6 +968,14 @@ Conviction changes: {len(yesterday.get('conviction_changes', []))}
     holdings_ctx = "\n".join(
         _fmt_holding(h) for h in holdings_reports
     ) if holdings_reports else "No holdings data."
+
+    # Build top headlines context
+    top_headlines = []
+    for ns in (news_signals or [])[:10]:
+        headline = ns.get("headline") or ns.get("title", "")
+        if headline:
+            top_headlines.append(headline)
+    headlines_ctx = "\n".join(f"- {h}" for h in top_headlines[:5]) if top_headlines else "No headlines."
 
     # Build conviction context
     conviction_ctx = "\n".join(
@@ -1033,6 +1056,9 @@ Yield Curve: {macro_data.get('yield_curve_spread_calculated', 'N/A')}
 Mood: {reddit_mood or 'N/A'}
 Top themes: {', '.join((reddit_themes or [])[:3]) or 'N/A'}
 
+### TOP NEWS HEADLINES
+{headlines_ctx}
+
 ### STRATEGY ENGINE OUTPUT
 {actions_ctx}
 
@@ -1052,7 +1078,7 @@ Top themes: {', '.join((reddit_themes or [])[:3]) or 'N/A'}
 Write TWO sections:
 
 **SECTION 1 - WHAT CHANGED TODAY (2-3 sentences)**
-Lead with the single most important thing for THIS portfolio today. Was it a macro shift, an earnings report, a thesis change, a price move? If nothing material changed, say "Quiet day" and explain why that's fine. Do NOT just summarize the data -- interpret it.
+Lead with the specific event that matters most for THIS portfolio today — name the headline, not just the data. Reference the actual news catalyst (tariff hike, earnings report, etc.). If nothing material changed, say "Quiet day" and explain why that's fine. Do NOT just summarize the data -- interpret it.
 
 **SECTION 2 - ADVISOR NOTES (2-4 bullet points)**
 Specific, actionable observations. Examples of what belongs here:

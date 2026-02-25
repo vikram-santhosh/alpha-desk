@@ -243,11 +243,9 @@ def _match_news_to_thesis(thesis_title: str, affected_tickers: list[str],
             elif any(kw in category for kw in keywords):
                 match_reason = "category"
 
-            # Priority 4: Broad macro fallback — only truly broad market news
-            # (category="macro") gets blanket-matched. Geopolitical/regulatory
-            # require keyword or ticker relevance to prevent thesis dilution.
-            elif category == "macro":
-                match_reason = "macro_broad"
+            # macro_broad fallback removed — it caused every macro article to
+            # appear under every thesis, creating duplicate headline spam.
+            # Only keyword, ticker, and category matches are specific enough.
 
             if match_reason:
                 matched.append({
@@ -259,4 +257,4 @@ def _match_news_to_thesis(thesis_title: str, affected_tickers: list[str],
         except Exception:
             log.exception("Failed to match news signal to thesis")
 
-    return matched[:15]
+    return matched[:5]
