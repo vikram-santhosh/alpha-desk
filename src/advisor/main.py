@@ -155,14 +155,33 @@ async def run() -> dict[str, Any]:
     moonshot_tickers = [m["ticker"] for m in memory["moonshot_list"]]
     all_tickers = list(dict.fromkeys(holding_tickers + conviction_tickers + moonshot_tickers))
 
-    # ── Step 2: Run Street Ear + News Desk in parallel ────────────────
+    # ── Step 2: Run Street Ear + News Desk + Substack Ear + YouTube Ear in parallel
     from src.street_ear.main import run as run_street_ear
     from src.news_desk.main import run as run_news_desk
 
-    log.info("Step 2: Running Street Ear + News Desk")
-    street_ear_result, news_desk_result = await asyncio.gather(
+    # Lazy-import helpers for new ear agents (graceful degradation)
+    async def _safe_run_substack():
+        try:
+            from src.substack_ear.main import run as run_sub
+            return await run_sub()
+        except Exception:
+            log.debug("Substack Ear not available or failed")
+            return {"formatted": "", "signals": [], "stats": {}}
+
+    async def _safe_run_youtube():
+        try:
+            from src.youtube_ear.main import run as run_yt
+            return await run_yt()
+        except Exception:
+            log.debug("YouTube Ear not available or failed")
+            return {"formatted": "", "signals": [], "stats": {}}
+
+    log.info("Step 2: Running Street Ear + News Desk + Substack Ear + YouTube Ear")
+    street_ear_result, news_desk_result, substack_result, youtube_result = await asyncio.gather(
         _run_agent("Street Ear", run_street_ear),
         _run_agent("News Desk", run_news_desk),
+        _run_agent("Substack Ear", _safe_run_substack),
+        _run_agent("YouTube Ear", _safe_run_youtube),
     )
 
     # Read signals without consuming (Portfolio Analyst needs them later)

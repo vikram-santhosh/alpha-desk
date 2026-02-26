@@ -44,6 +44,7 @@ async def _run_agent(name: str, run_fn) -> dict[str, Any]:
             "formatted": f"<b>{name}</b>\n<i>Agent error: {e}</i>",
             "signals": [],
             "stats": {"error": str(e)},
+            "analysis": {},
         }
 
 
@@ -52,6 +53,8 @@ def _synthesize_brief(
     portfolio: dict[str, Any],
     news_desk: dict[str, Any],
     alpha_scout: dict[str, Any] | None = None,
+    substack_result: dict[str, Any] | None = None,
+    youtube_result: dict[str, Any] | None = None,
 ) -> str:
     """Use Opus 4.6 to synthesize key takeaways and action items.
 
@@ -75,6 +78,10 @@ def _synthesize_brief(
     )
     if alpha_scout:
         all_signals.extend(alpha_scout.get("signals", []))
+    if substack_result:
+        all_signals.extend(substack_result.get("signals", []))
+    if youtube_result:
+        all_signals.extend(youtube_result.get("signals", []))
 
     stats = {
         "street_ear": street_ear.get("stats", {}),
@@ -95,6 +102,24 @@ def _synthesize_brief(
 {alpha_scout.get('formatted', 'No data available')}
 """
 
+    # Build Substack Ear section for the synthesis prompt
+    substack_section = ""
+    if substack_result and substack_result.get("formatted"):
+        substack_section = f"""
+
+## SUBSTACK EAR (Expert Newsletters)
+{substack_result['formatted']}
+"""
+
+    # Build YouTube Ear section for the synthesis prompt
+    youtube_section = ""
+    if youtube_result and youtube_result.get("formatted"):
+        youtube_section = f"""
+
+## YOUTUBE EAR (Video Analysis)
+{youtube_result['formatted']}
+"""
+
     prompt = f"""You are an expert investment analyst synthesizing a morning briefing.
 
 Today is {date.today().strftime('%B %d, %Y')}.
@@ -109,7 +134,7 @@ Here are the outputs from the research agents:
 
 ## NEWS DESK (Market News)
 {news_desk.get('formatted', 'No data available')}
-{alpha_scout_section}
+{alpha_scout_section}{substack_section}{youtube_section}
 ## ACTIVE SIGNALS
 {_format_signals_for_synthesis(all_signals)}
 
@@ -197,6 +222,8 @@ def _assemble_briefing(
     news_desk_formatted: str,
     daily_cost: float,
     alpha_scout_formatted: str = "",
+    substack_formatted: str = "",
+    youtube_formatted: str = "",
 ) -> str:
     """Assemble the complete morning briefing."""
     today = datetime.now().strftime("%b %d, %Y")
@@ -222,6 +249,24 @@ def _assemble_briefing(
         f"\U0001f4f0 <b>NEWS DESK \u2014 Market Intelligence</b>",
         news_desk_formatted,
     ]
+
+    # Substack Ear section (if available)
+    if substack_formatted:
+        sections.extend([
+            "",
+            separator,
+            "",
+            substack_formatted,
+        ])
+
+    # YouTube Ear section (if available)
+    if youtube_formatted:
+        sections.extend([
+            "",
+            separator,
+            "",
+            youtube_formatted,
+        ])
 
     # Alpha Scout section (if available)
     if alpha_scout_formatted:
@@ -258,6 +303,29 @@ async def run() -> dict[str, Any]:
     pipeline_start = time.time()
     log.info("Morning Brief pipeline starting")
 
+    # Lazy-import helpers for new ear agents (graceful degradation)
+    async def _run_substack_ear():
+        try:
+            from src.substack_ear.main import run as run_substack
+            return await run_substack()
+        except ImportError:
+            log.warning("Substack Ear not available — skipping")
+            return {"formatted": "", "signals": [], "stats": {}, "analysis": {}}
+        except Exception:
+            log.exception("Substack Ear failed")
+            return {"formatted": "", "signals": [], "stats": {}, "analysis": {}}
+
+    async def _run_youtube_ear():
+        try:
+            from src.youtube_ear.main import run as run_youtube
+            return await run_youtube()
+        except ImportError:
+            log.warning("YouTube Ear not available — skipping")
+            return {"formatted": "", "signals": [], "stats": {}, "analysis": {}}
+        except Exception:
+            log.exception("YouTube Ear failed")
+            return {"formatted": "", "signals": [], "stats": {}, "analysis": {}}
+
     # Run all agents: Street Ear + News Desk in parallel first,
     # then Alpha Scout (reads signals without consuming),
     # then Portfolio Analyst (consumes signals).
@@ -266,11 +334,13 @@ async def run() -> dict[str, Any]:
     from src.alpha_scout.main import run as run_alpha_scout
     from src.portfolio_analyst.main import run as run_portfolio
 
-    # Phase 1: Run Street Ear and News Desk in parallel
-    log.info("Phase 1: Running Street Ear and News Desk in parallel")
-    street_ear_result, news_desk_result = await asyncio.gather(
+    # Phase 1: Run Street Ear, News Desk, Substack Ear, YouTube Ear in parallel
+    log.info("Phase 1: Running Street Ear, News Desk, Substack Ear, YouTube Ear in parallel")
+    street_ear_result, news_desk_result, substack_result, youtube_result = await asyncio.gather(
         _run_agent("Street Ear", run_street_ear),
         _run_agent("News Desk", run_news_desk),
+        _run_agent("Substack Ear", _run_substack_ear),
+        _run_agent("YouTube Ear", _run_youtube_ear),
     )
 
     # Phase 2: Run Alpha Scout (reads signals without consuming them)
@@ -286,6 +356,7 @@ async def run() -> dict[str, Any]:
     synthesis_start = time.time()
     synthesis = _synthesize_brief(
         street_ear_result, portfolio_result, news_desk_result, alpha_scout_result,
+        substack_result=substack_result, youtube_result=youtube_result,
     )
     log.info("Synthesis took %.1fs", time.time() - synthesis_start)
 
@@ -298,6 +369,8 @@ async def run() -> dict[str, Any]:
         news_desk_formatted=news_desk_result.get("formatted", ""),
         daily_cost=daily_cost,
         alpha_scout_formatted=alpha_scout_result.get("formatted", ""),
+        substack_formatted=substack_result.get("formatted", ""),
+        youtube_formatted=youtube_result.get("formatted", ""),
     )
 
     # Collect all signals
@@ -306,6 +379,8 @@ async def run() -> dict[str, Any]:
         + portfolio_result.get("signals", [])
         + news_desk_result.get("signals", [])
         + alpha_scout_result.get("signals", [])
+        + substack_result.get("signals", [])
+        + youtube_result.get("signals", [])
     )
 
     total_time = time.time() - pipeline_start
@@ -318,6 +393,8 @@ async def run() -> dict[str, Any]:
             "portfolio": portfolio_result,
             "news_desk": news_desk_result,
             "alpha_scout": alpha_scout_result,
+            "substack_ear": substack_result,
+            "youtube_ear": youtube_result,
         },
         "signals": all_signals,
         "stats": {
@@ -338,6 +415,10 @@ async def run_single_agent(agent_name: str) -> dict[str, Any]:
         from src.news_desk.main import run as agent_run
     elif agent_name == "alpha_scout":
         from src.alpha_scout.main import run as agent_run
+    elif agent_name == "substack_ear":
+        from src.substack_ear.main import run as agent_run
+    elif agent_name == "youtube_ear":
+        from src.youtube_ear.main import run as agent_run
     else:
         return {"formatted": f"Unknown agent: {agent_name}", "signals": []}
 

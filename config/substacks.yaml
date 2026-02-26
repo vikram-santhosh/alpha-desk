@@ -1,0 +1,27 @@
+newsletters:
+  macro:
+    - name: "Kyla Scanlon"
+      slug: "kyla"
+    - name: "Apricitas Economics"
+      slug: "apricitas"
+    - name: "The Diff"
+      slug: "thediff"
+
+  sector:
+    - name: "Doomberg"
+      slug: "doomberg"
+    - name: "Net Interest"
+      slug: "netinterest"
+    - name: "Fabricated Knowledge"
+      slug: "fabricatedknowledge"
+
+  investing:
+    - name: "Yet Another Value Blog"
+      slug: "yetanothervalueblog"
+    - name: "Mostly Borrowed Ideas"
+      slug: "mbi"
+
+settings:
+  max_article_age_hours: 72
+  max_article_chars: 8000
+  max_articles_per_newsletter: 3

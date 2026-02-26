@@ -36,6 +36,17 @@ SIGNAL_TYPES = {
     # Alpha Scout signals
     "discovery_recommendation",
     "new_candidate",
+    # Narrative Tracker signals
+    "thesis_propagation",
+    "thesis_confirmed",
+    "source_quality_update",
+    # Substack Ear signals
+    "expert_thesis",
+    "macro_framework",
+    "sector_rotation_call",
+    # YouTube Ear signals
+    "expert_analysis",            # Deep analysis from finance YouTuber
+    "narrative_amplification",    # Thesis gaining traction (views spiking)
 }
 
 

@@ -1,0 +1,21 @@
+channels:
+  macro:
+    - name: "Patrick Boyle"
+      channel_id: "UCfSVfJYyDZODsKtqqh3INPA"
+      focus: "macro analysis, hedge fund perspective"
+    - name: "The Plain Bagel"
+      channel_id: "UCFCEuCsyWP0YkP3CZ3Mr01Q"
+      focus: "investing fundamentals, market analysis"
+  analysis:
+    - name: "Joseph Carlson"
+      channel_id: "UCbta0n8i6Rljh0obO7HzG9A"
+      focus: "portfolio management, stock analysis"
+    - name: "Everything Money"
+      channel_id: "UCKMjY8y8j5D7U2jOiJiNz9g"
+      focus: "stock valuations, fundamental analysis"
+settings:
+  max_video_age_hours: 48
+  max_transcript_chars: 6000
+  max_videos_per_channel: 3
+  min_view_count: 1000
+  youtube_api_key_env: "YOUTUBE_API_KEY"

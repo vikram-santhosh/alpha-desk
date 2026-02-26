@@ -8,3 +8,6 @@ ta
 schedule
 fredapi
 matplotlib
+feedparser
+youtube-transcript-api
+google-api-python-client

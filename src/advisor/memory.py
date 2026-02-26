@@ -216,6 +216,16 @@ def _get_db() -> sqlite3.Connection:
             UNIQUE(ticker, recommendation_date, action)
         );
 
+        CREATE TABLE IF NOT EXISTS thesis_actions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            thesis_id INTEGER,
+            action_date TEXT NOT NULL,
+            action_type TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            outcome_30d TEXT,
+            notes TEXT
+        );
+
         CREATE INDEX IF NOT EXISTS idx_snapshots_ticker_date ON holding_snapshots(ticker, date);
         CREATE INDEX IF NOT EXISTS idx_daily_snapshots_date ON daily_snapshots(date);
         CREATE INDEX IF NOT EXISTS idx_rec_outcomes_ticker ON recommendation_outcomes(ticker);
@@ -1050,3 +1060,83 @@ def get_recommendation_scorecard(lookback_days: int = 30) -> dict:
         "best_recommendation": {"ticker": best["ticker"], "return_pct": best["return_1m_pct"]} if best else None,
         "worst_recommendation": {"ticker": worst["ticker"], "return_pct": worst["return_1m_pct"]} if worst else None,
     }
+
+
+# ═══════════════════════════════════════════════════════
+# THESIS ACTIONS
+# ═══════════════════════════════════════════════════════
+
+def record_thesis_action(
+    thesis_id: int | None,
+    action_type: str,
+    ticker: str,
+    notes: str = "",
+) -> None:
+    """Record an action taken on an investment thesis.
+
+    Args:
+        thesis_id: ID from substack_tracker.theses or narrative_tracker.
+        action_type: One of 'added_to_watchlist', 'bought', 'increased', 'ignored'.
+        ticker: The ticker symbol acted upon.
+        notes: Optional notes about the action.
+    """
+    conn = _get_db()
+    today = date.today().isoformat()
+    conn.execute(
+        "INSERT INTO thesis_actions (thesis_id, action_date, action_type, ticker, notes) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (thesis_id, today, action_type, ticker.upper(), notes),
+    )
+    conn.commit()
+    conn.close()
+    log.info("Recorded thesis action: %s %s (thesis_id=%s)", action_type, ticker, thesis_id)
+
+
+def get_thesis_actions(lookback_days: int = 30) -> list[dict[str, Any]]:
+    """Get recent thesis actions for performance review.
+
+    Args:
+        lookback_days: Number of days to look back.
+
+    Returns:
+        List of thesis action dicts.
+    """
+    conn = _get_db()
+    cutoff = date.today().isoformat()
+    rows = conn.execute("""
+        SELECT id, thesis_id, action_date, action_type, ticker, outcome_30d, notes
+        FROM thesis_actions
+        WHERE action_date >= date(?, '-' || ? || ' days')
+        ORDER BY action_date DESC
+    """, (cutoff, lookback_days)).fetchall()
+    conn.close()
+
+    return [
+        {
+            "id": r[0],
+            "thesis_id": r[1],
+            "action_date": r[2],
+            "action_type": r[3],
+            "ticker": r[4],
+            "outcome_30d": r[5],
+            "notes": r[6],
+        }
+        for r in rows
+    ]
+
+
+def update_thesis_outcome(action_id: int, outcome_30d: str) -> None:
+    """Update the 30-day outcome of a thesis action.
+
+    Args:
+        action_id: The thesis_actions row ID.
+        outcome_30d: One of 'profitable', 'loss', 'flat'.
+    """
+    conn = _get_db()
+    conn.execute(
+        "UPDATE thesis_actions SET outcome_30d = ? WHERE id = ?",
+        (outcome_30d, action_id),
+    )
+    conn.commit()
+    conn.close()
+    log.info("Updated thesis action %d outcome: %s", action_id, outcome_30d)
