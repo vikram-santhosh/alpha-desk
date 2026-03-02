@@ -1,9 +1,9 @@
-"""Morning Brief Orchestrator — runs all agents and synthesizes with Opus 4.6.
+"""Morning Brief Orchestrator — runs all agents and synthesizes with Gemini.
 
 This is the master orchestrator that:
 1. Runs Street Ear, Portfolio Analyst, and News Desk agents
 2. Collects their outputs and signals
-3. Uses Claude Opus 4.6 to synthesize key takeaways and action items
+3. Uses Gemini to synthesize key takeaways and action items
 4. Assembles the complete morning briefing for Telegram delivery
 """
 
@@ -12,7 +12,7 @@ import time
 from datetime import date, datetime
 from typing import Any
 
-import anthropic
+from src.shared import gemini_compat as anthropic
 
 from src.shared.agent_bus import get_recent_signals
 from src.shared.cost_tracker import (
@@ -56,7 +56,7 @@ def _synthesize_brief(
     substack_result: dict[str, Any] | None = None,
     youtube_result: dict[str, Any] | None = None,
 ) -> str:
-    """Use Opus 4.6 to synthesize key takeaways and action items.
+    """Use Gemini to synthesize key takeaways and action items.
 
     Takes the raw outputs from all agents and produces
     the KEY TAKEAWAYS and ACTION ITEMS sections of the morning brief.
@@ -290,7 +290,7 @@ def _assemble_briefing(
 async def run() -> dict[str, Any]:
     """Run the complete morning brief pipeline.
 
-    Executes all three agents, synthesizes with Opus 4.6,
+    Executes all three agents, synthesizes with Gemini,
     and assembles the full briefing.
 
     Returns:
@@ -351,8 +351,8 @@ async def run() -> dict[str, Any]:
     log.info("Phase 3: Running Portfolio Analyst")
     portfolio_result = await _run_agent("Portfolio Analyst", run_portfolio)
 
-    # Phase 4: Synthesize with Opus 4.6
-    log.info("Phase 4: Synthesizing with Opus 4.6")
+    # Phase 4: Synthesize with Gemini
+    log.info("Phase 4: Synthesizing with Gemini")
     synthesis_start = time.time()
     synthesis = _synthesize_brief(
         street_ear_result, portfolio_result, news_desk_result, alpha_scout_result,

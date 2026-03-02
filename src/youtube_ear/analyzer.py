@@ -1,17 +1,17 @@
-"""Claude analysis of YouTube video transcripts for YouTube Ear.
+"""Gemini analysis of YouTube video transcripts for YouTube Ear.
 
-Batches video transcripts and sends them to Claude Haiku for extraction of
+Batches video transcripts and sends them to Gemini for extraction of
 ticker mentions, sentiment, confidence, themes, theses, and macro signals.
 Aggregates results across batches into per-ticker summaries.
 
-Uses Haiku for cost efficiency — transcripts are long but extraction is
+Uses the lightweight Gemini path for cost efficiency — transcripts are long but extraction is
 structured, not creative reasoning.
 """
 
 import json
 from typing import Any
 
-import anthropic
+from src.shared import gemini_compat as anthropic
 
 from src.shared.config_loader import get_all_tickers
 from src.shared.cost_tracker import check_budget, record_usage
@@ -201,7 +201,7 @@ def _analyze_batch(
     Args:
         videos: Batch of video dicts to analyze.
         known_tickers: List of known portfolio/watchlist tickers.
-        client: Anthropic API client.
+        client: Gemini compatibility client.
 
     Returns:
         Parsed analysis results dict.
@@ -236,7 +236,7 @@ def _analyze_batch(
             messages=[{"role": "user", "content": prompt}],
         )
     except anthropic.APIError as e:
-        log.error("Anthropic API error: %s", e)
+        log.error("Gemini API error: %s", e)
         return {
             "tickers": [],
             "theses": [],

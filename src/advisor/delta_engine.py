@@ -667,7 +667,7 @@ def generate_delta_summary(delta_report: DeltaReport, anthropic_client=None) -> 
 
 
 def _llm_summary(delta_report: DeltaReport, client) -> str:
-    """Use Claude Haiku for a concise summary."""
+    """Use Gemini for a concise summary."""
     from src.shared.cost_tracker import record_usage
 
     high_items = "\n".join(f"- {d.narrative}" for d in delta_report.high_significance[:10])

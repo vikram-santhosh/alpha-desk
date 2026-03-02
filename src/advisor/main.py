@@ -1,7 +1,7 @@
 """Main orchestrator for the AlphaDesk Advisor.
 
 Runs the full pipeline: loads memory, runs existing agents, fetches
-advisor-specific data, synthesizes with Opus 4.6, saves memory state,
+advisor-specific data, synthesizes with Gemini, saves memory state,
 and returns the 5-section daily brief.
 """
 
@@ -10,7 +10,7 @@ import time
 from datetime import date
 from typing import Any
 
-import anthropic
+from src.shared import gemini_compat as anthropic
 
 from src.shared.agent_bus import consume
 from pathlib import Path
@@ -81,7 +81,7 @@ async def run() -> dict[str, Any]:
         4. Fetch advisor-specific data (macro, earnings, prediction markets, superinvestors)
         5. Monitor holdings (daily snapshots with memory)
         6. Run decision engine (conviction, moonshot, strategy)
-        7. Opus 4.6 synthesis → 5-section brief
+        7. Gemini synthesis → 5-section brief
         8. Save memory state
         9. Format and return
 
@@ -954,10 +954,10 @@ def _synthesize_brief(
     catalyst_prompt_section: str = "",
     news_signals: list[dict] | None = None,
 ) -> dict[str, Any]:
-    """Use Opus 4.6 to enhance the daily brief with narrative and judgment."""
+    """Use Gemini to enhance the daily brief with narrative and judgment."""
     within_budget, spent, cap = check_budget()
     if not within_budget:
-        log.warning("Budget exceeded ($%.2f/$%.2f) — skipping Opus synthesis", spent, cap)
+        log.warning("Budget exceeded ($%.2f/$%.2f) — skipping Gemini synthesis", spent, cap)
         return {"macro_summary": "Budget exceeded — synthesis skipped."}
 
     # Build yesterday's context
@@ -1133,7 +1133,7 @@ Respond with ONLY the two sections."""
         return {"macro_summary": full_text}
 
     except Exception:
-        log.exception("Opus synthesis failed")
+        log.exception("Gemini synthesis failed")
         return {"macro_summary": "Synthesis unavailable — review sections below."}
 
 

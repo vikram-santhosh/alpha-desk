@@ -14,7 +14,7 @@ import os
 from datetime import date, datetime
 from typing import Any
 
-import anthropic
+from src.shared import gemini_compat as anthropic
 import requests
 import yfinance as yf
 

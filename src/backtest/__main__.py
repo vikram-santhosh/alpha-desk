@@ -59,8 +59,8 @@ Examples:
     args = parser.parse_args()
 
     # Validate
-    if not os.getenv("ANTHROPIC_API_KEY"):
-        print("ERROR: ANTHROPIC_API_KEY not set. Add it to .env or environment.")
+    if not os.getenv("GEMINI_API_KEY"):
+        print("ERROR: GEMINI_API_KEY not set. Add it to .env or environment.")
         sys.exit(1)
 
     if args.portfolio and not Path(args.portfolio).exists():

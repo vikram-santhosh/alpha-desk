@@ -2,13 +2,13 @@
 
 Challenges every recommendation by finding flaws, assessing what's priced in,
 providing base rate reasoning, and generating specific invalidation conditions.
-Uses Claude Opus for high-quality contrarian analysis.
+Uses Gemini for high-quality contrarian analysis.
 """
 
 import json
 from typing import Any
 
-import anthropic
+from src.shared import gemini_compat as anthropic
 
 from src.shared.cost_tracker import check_budget, record_usage
 from src.utils.logger import get_logger

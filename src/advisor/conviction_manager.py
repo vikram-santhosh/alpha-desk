@@ -7,7 +7,7 @@ Names persist until evidence weakens, not because something new appeared.
 
 from datetime import date
 
-import anthropic
+from src.shared import gemini_compat as anthropic
 
 from src.advisor import memory
 from src.advisor.valuation_engine import compute_target_price, passes_investment_gate

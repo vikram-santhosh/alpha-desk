@@ -14,7 +14,7 @@ import asyncio
 import json
 from typing import Any
 
-import anthropic
+from src.shared import gemini_compat as anthropic
 
 from src.shared.cost_tracker import check_budget, record_usage
 from src.utils.logger import get_logger

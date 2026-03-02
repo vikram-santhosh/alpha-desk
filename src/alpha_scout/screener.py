@@ -6,7 +6,7 @@ Scores candidates across four dimensions:
 - Sentiment (0-100): Reddit and news sentiment from agent bus signals
 - Diversification (0-100): Sector weight relative to current portfolio
 
-Produces a weighted composite score used to rank candidates for Opus 4.6 synthesis.
+Produces a weighted composite score used to rank candidates for Gemini synthesis.
 """
 
 from typing import Any

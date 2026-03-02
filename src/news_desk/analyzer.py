@@ -1,17 +1,18 @@
-"""News analysis using Anthropic Claude for AlphaDesk News Desk.
+"""News analysis using Gemini for AlphaDesk News Desk.
 
 Analyzes fetched news articles in batches, scoring each for relevance,
 sentiment, urgency, and categorization. Publishes signals to the agent bus
 for inter-agent coordination.
 
-Uses Sonnet for classification tasks (relevance/sentiment scoring) rather
-than Opus, since this is structured extraction, not creative reasoning.
+Uses a Gemini-backed compatibility layer for classification tasks
+(relevance/sentiment scoring), since this is structured extraction.
 """
 
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
-import anthropic
+from src.shared import gemini_compat as anthropic
 
 from src.shared.agent_bus import publish
 from src.shared.cost_tracker import check_budget, record_usage
@@ -93,13 +94,13 @@ def _prepare_batch_prompt(articles: list[dict[str, Any]]) -> str:
 
 
 def _parse_analysis_response(response_text: str, batch_size: int) -> list[dict[str, Any]]:
-    """Parse Claude's JSON response into a list of analysis dicts.
+    """Parse the model's JSON response into a list of analysis dicts.
 
     Handles edge cases where the response may contain markdown code fences
     or other non-JSON content.
 
     Args:
-        response_text: Raw text response from Claude.
+        response_text: Raw text response from the model.
         batch_size: Expected number of articles in the batch, for validation.
 
     Returns:
@@ -174,13 +175,13 @@ def analyze_batch(
     articles: list[dict[str, Any]],
     system_prompt: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Analyze a single batch of articles using Claude.
+    """Analyze a single batch of articles using Gemini.
 
-    Sends the batch to Claude for scoring and parses the structured response.
+    Sends the batch for scoring and parses the structured response.
     Tracks API costs and checks budget before making the call.
 
     Args:
-        client: Initialized Anthropic client.
+        client: Initialized Gemini compatibility client.
         articles: Batch of normalized article dicts (up to BATCH_SIZE).
         system_prompt: Optional system prompt with portfolio context injected.
             Falls back to ANALYSIS_SYSTEM_PROMPT if not provided.
@@ -235,10 +236,10 @@ def analyze_batch(
         return results
 
     except anthropic.APIStatusError as e:
-        log.error("Anthropic API error during analysis: %s (status %d)", e.message, e.status_code)
+        log.error("Gemini API error during analysis: %s (status %d)", e.message, e.status_code)
         return []
     except anthropic.APIConnectionError as e:
-        log.error("Anthropic connection error during analysis: %s", e)
+        log.error("Gemini connection error during analysis: %s", e)
         return []
     except Exception as e:
         log.error("Unexpected error during news analysis: %s", e, exc_info=True)
@@ -248,7 +249,7 @@ def analyze_batch(
 def _build_portfolio_context() -> str:
     """Build portfolio context string for the analysis prompt.
 
-    Loads holdings and watchlist to give Claude awareness of the investor's
+    Loads holdings and watchlist to give the model awareness of the investor's
     positions, sectors, and macro exposure — so it can score indirect impact
     (e.g., tariff news → semiconductor holdings).
 
@@ -296,9 +297,10 @@ def _build_portfolio_context() -> str:
 
 def analyze_news(
     articles: list[dict[str, Any]],
-    anthropic_key: str,
+    gemini_key: str,
+    max_concurrent: int = 10,
 ) -> list[dict[str, Any]]:
-    """Analyze all news articles in batches using Claude.
+    """Analyze all news articles in batches using Gemini.
 
     Articles are processed in batches of ~15 to optimize API usage.
     Each article is enriched with analysis fields (relevance, sentiment,
@@ -310,7 +312,7 @@ def analyze_news(
 
     Args:
         articles: List of normalized article dicts from news_fetcher.
-        anthropic_key: Anthropic API key for Claude access.
+        gemini_key: Gemini API key for model access.
 
     Returns:
         List of analyzed and filtered article dicts, sorted by relevance
@@ -321,44 +323,53 @@ def analyze_news(
         log.info("No articles to analyze")
         return []
 
-    if not anthropic_key:
-        log.error("Anthropic API key not provided; cannot analyze news")
+    if not gemini_key:
+        log.error("GEMINI_API_KEY not provided; cannot analyze news")
         return []
 
-    client = anthropic.Anthropic(api_key=anthropic_key)
-    analyzed: list[dict[str, Any]] = []
+    client = anthropic.Anthropic(api_key=gemini_key)
 
     # Build portfolio-aware system prompt
     portfolio_context = _build_portfolio_context()
     system_prompt = _ANALYSIS_SYSTEM_PROMPT_TEMPLATE.format(portfolio_context=portfolio_context)
     log.info("Portfolio context injected into analysis prompt (%d chars)", len(portfolio_context))
 
-    # Process in batches
-    total_batches = (len(articles) + BATCH_SIZE - 1) // BATCH_SIZE
-    log.info("Analyzing %d articles in %d batches", len(articles), total_batches)
+    # Split articles into batches up-front so we can process them concurrently
+    batches = [articles[i : i + BATCH_SIZE] for i in range(0, len(articles), BATCH_SIZE)]
+    total_batches = len(batches)
+    log.info(
+        "Analyzing %d articles in %d batches (max_concurrent=%d)",
+        len(articles),
+        total_batches,
+        max_concurrent,
+    )
 
-    for batch_idx in range(0, len(articles), BATCH_SIZE):
-        batch = articles[batch_idx : batch_idx + BATCH_SIZE]
-        batch_num = (batch_idx // BATCH_SIZE) + 1
+    # Results keyed by batch index so we can merge in original article order
+    batch_results: dict[int, list[dict[str, Any]]] = {}
 
-        log.info("Processing batch %d/%d (%d articles)", batch_num, total_batches, len(batch))
+    def _run_batch(idx: int, batch: list[dict[str, Any]]) -> tuple[int, list[dict[str, Any]]]:
+        log.info("Processing batch %d/%d (%d articles)", idx + 1, total_batches, len(batch))
+        return idx, analyze_batch(client, batch, system_prompt=system_prompt)
 
-        results = analyze_batch(client, batch, system_prompt=system_prompt)
+    with ThreadPoolExecutor(max_workers=max_concurrent) as pool:
+        futures = {pool.submit(_run_batch, i, b): i for i, b in enumerate(batches)}
+        for future in as_completed(futures):
+            idx, results = future.result()
+            batch_results[idx] = results
 
+    # Merge results back into article dicts, preserving original order
+    analyzed: list[dict[str, Any]] = []
+    for idx, batch in enumerate(batches):
+        results = batch_results.get(idx, [])
         if not results:
-            log.warning("Batch %d returned no results; skipping", batch_num)
+            log.warning("Batch %d returned no results; skipping", idx + 1)
             continue
-
-        # Merge analysis into article dicts
         for article, analysis in zip(batch, results):
             enriched = {**article, **analysis}
-
-            # Merge affected_tickers with existing related_tickers
             existing_tickers = article.get("related_tickers", [])
             analysis_tickers = analysis.get("affected_tickers", [])
             merged_tickers = list(dict.fromkeys(existing_tickers + analysis_tickers))
             enriched["related_tickers"] = merged_tickers
-
             analyzed.append(enriched)
 
     # Filter: keep articles with relevance >= 5 or urgency == "high"

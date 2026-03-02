@@ -753,7 +753,7 @@ class VerboseFormatter:
             sources.add("SEC EDGAR (13F filings)")
         if self.prediction_shifts:
             sources.add("Polymarket / Kalshi (prediction markets)")
-        sources.add("Anthropic Claude Opus 4.6 (analysis)")
+        sources.add("Google Gemini 3 Pro Preview (analysis)")
 
         for s in sorted(sources):
             lines.append(f"- {s}")

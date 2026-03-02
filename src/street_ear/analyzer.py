@@ -11,7 +11,7 @@ than Opus, since this is structured extraction, not creative reasoning.
 import json
 from typing import Any
 
-import anthropic
+from src.shared import gemini_compat as anthropic
 
 from src.shared.config_loader import get_all_tickers
 from src.shared.cost_tracker import check_budget, record_usage
@@ -173,12 +173,12 @@ def _analyze_batch(
     known_tickers: list[str],
     client: anthropic.Anthropic,
 ) -> dict[str, Any]:
-    """Analyze a single batch of posts using Claude.
+    """Analyze a single batch of posts using Gemini.
 
     Args:
         posts: Batch of post dicts to analyze.
         known_tickers: List of known portfolio/watchlist tickers.
-        client: Anthropic API client.
+        client: Gemini compatibility client.
 
     Returns:
         Parsed analysis results dict.
@@ -208,7 +208,7 @@ def _analyze_batch(
             messages=[{"role": "user", "content": prompt}],
         )
     except anthropic.APIError as e:
-        log.error("Anthropic API error: %s", e)
+        log.error("Gemini API error: %s", e)
         return {"tickers": [], "overall_themes": [], "market_mood": "unknown"}
 
     # Track costs

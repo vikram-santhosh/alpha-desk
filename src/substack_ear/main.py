@@ -1,7 +1,7 @@
 """Substack Ear — expert newsletter intelligence pipeline orchestrator.
 
 Runs the full pipeline: fetch articles from Substack RSS, analyze with
-Claude Haiku, track theses and macro signals, publish signals to the
+Gemini, track theses and macro signals, publish signals to the
 agent bus, and format output for Telegram delivery.
 """
 
@@ -21,7 +21,7 @@ async def run() -> dict[str, Any]:
 
     Steps:
         1. Fetch articles from configured Substack newsletters
-        2. Analyze articles with Claude Haiku
+        2. Analyze articles with Gemini
         3. Track theses and macro signals
         4. Publish signals to agent bus
         5. Format output for Telegram
@@ -56,8 +56,8 @@ async def run() -> dict[str, Any]:
         stats["articles_fetched"] = 0
         stats["fetch_error"] = str(e)
 
-    # Step 2: Analyze articles with Claude Haiku
-    log.info("Step 2/5: Analyzing articles with Claude")
+    # Step 2: Analyze articles with Gemini
+    log.info("Step 2/5: Analyzing articles with Gemini")
     step_start = time.monotonic()
     try:
         if articles:

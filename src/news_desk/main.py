@@ -3,7 +3,7 @@
 Orchestrates the full news intelligence pipeline:
 1. Load tickers from portfolio and watchlist configuration
 2. Fetch news from Finnhub (per-ticker) and NewsAPI (headlines + market search)
-3. Analyze articles with Claude for relevance, sentiment, urgency
+3. Analyze articles with Gemini for relevance, sentiment, urgency
 4. Publish signals to the agent bus for inter-agent coordination
 5. Format output as Telegram HTML digest
 
@@ -51,12 +51,12 @@ def _load_api_keys() -> dict[str, str | None]:
     returned as None so callers can gracefully degrade.
 
     Returns:
-        Dict with keys: anthropic_key, finnhub_key, newsapi_key.
+        Dict with keys: gemini_key, finnhub_key, newsapi_key.
     """
     load_dotenv()
 
     keys = {
-        "anthropic_key": os.getenv("ANTHROPIC_API_KEY"),
+        "gemini_key": os.getenv("GEMINI_API_KEY"),
         "finnhub_key": os.getenv("FINNHUB_API_KEY"),
         "newsapi_key": os.getenv("NEWSAPI_KEY"),
     }
@@ -66,8 +66,8 @@ def _load_api_keys() -> dict[str, str | None]:
 
     log.info("API keys loaded: %s available, %s missing", available, missing)
 
-    if not keys["anthropic_key"]:
-        log.error("ANTHROPIC_API_KEY is required for news analysis")
+    if not keys["gemini_key"]:
+        log.error("GEMINI_API_KEY is required for news analysis")
 
     return keys
 
@@ -149,14 +149,14 @@ async def run() -> dict[str, Any]:
         stats["timing"]["total"] = round(time.time() - pipeline_start, 2)
         return result
 
-    # Step 4: Analyze with Claude
+    # Step 4: Analyze with Gemini
     step_start = time.time()
     analyzed_articles: list[dict[str, Any]] = []
-    if keys.get("anthropic_key"):
+    if keys.get("gemini_key"):
         try:
             analyzed_articles = await asyncio.get_event_loop().run_in_executor(
                 None,
-                lambda: analyze_news(raw_articles, keys["anthropic_key"]),
+                lambda: analyze_news(raw_articles, keys["gemini_key"]),
             )
             stats["analyzed_articles"] = len(raw_articles)
             stats["filtered_articles"] = len(analyzed_articles)
@@ -166,7 +166,7 @@ async def run() -> dict[str, Any]:
             log.error(error_msg, exc_info=True)
             stats["errors"].append(error_msg)
     else:
-        error_msg = "Skipping analysis: ANTHROPIC_API_KEY not available"
+        error_msg = "Skipping analysis: GEMINI_API_KEY not available"
         log.warning(error_msg)
         stats["errors"].append(error_msg)
     stats["timing"]["analyze"] = round(time.time() - step_start, 2)

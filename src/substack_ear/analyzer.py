@@ -1,14 +1,14 @@
-"""Claude analysis of Substack articles for Substack Ear.
+"""Gemini analysis of Substack articles for Substack Ear.
 
 Analyzes expert newsletter articles individually or in small batches
-using Claude Haiku for cost-efficient extraction of investment theses,
+using Gemini for cost-efficient extraction of investment theses,
 macro signals, and ticker mentions.
 """
 
 import json
 from typing import Any
 
-import anthropic
+from src.shared import gemini_compat as anthropic
 
 from src.shared.config_loader import get_all_tickers
 from src.shared.cost_tracker import check_budget, record_usage
@@ -200,7 +200,7 @@ def _analyze_batch(
             messages=[{"role": "user", "content": prompt}],
         )
     except anthropic.APIError as e:
-        log.error("Anthropic API error: %s", e)
+        log.error("Gemini API error: %s", e)
         return {
             "tickers": [], "theses": [], "macro_signals": [],
             "overall_themes": [], "market_mood": "unknown",
@@ -309,7 +309,7 @@ def _aggregate_results(
 def analyze_articles(articles: list[dict[str, Any]]) -> dict[str, Any]:
     """Analyze Substack articles using Claude for investment intelligence.
 
-    Batches articles into small groups and sends each batch to Claude Haiku
+    Batches articles into small groups and sends each batch to Gemini
     for extraction of theses, macro signals, and ticker mentions.
 
     Args:

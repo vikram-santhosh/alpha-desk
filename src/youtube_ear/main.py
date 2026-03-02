@@ -1,7 +1,7 @@
 """YouTube Ear — finance video intelligence pipeline orchestrator.
 
 Runs the full pipeline: fetch videos from YouTube, analyze transcripts with
-Claude Haiku, track mentions and theses, detect view spikes and convergence,
+Gemini, track mentions and theses, detect view spikes and convergence,
 publish signals to the agent bus, and format output for Telegram delivery.
 """
 
@@ -21,7 +21,7 @@ async def run() -> dict[str, Any]:
 
     Steps:
         1. Fetch videos from all configured YouTube channels
-        2. Analyze transcripts with Claude Haiku
+        2. Analyze transcripts with Gemini
         3. Track mentions and theses
         4. Publish signals to agent bus
         5. Format output for Telegram
@@ -61,8 +61,8 @@ async def run() -> dict[str, Any]:
         stats["videos_fetched"] = 0
         stats["fetch_error"] = str(e)
 
-    # Step 2: Analyze transcripts with Claude Haiku
-    log.info("Step 2/5: Analyzing transcripts with Claude")
+    # Step 2: Analyze transcripts with Gemini
+    log.info("Step 2/5: Analyzing transcripts with Gemini")
     step_start = time.monotonic()
     try:
         if videos:

@@ -1,6 +1,6 @@
-"""Opus 4.6 synthesis for Alpha Scout.
+"""Gemini synthesis for Alpha Scout.
 
-Takes the top-N screened candidates and uses Claude to:
+Takes the top-N screened candidates and uses Gemini to:
 - Rank them with investment context
 - Generate 2-3 sentence thesis per ticker
 - Categorize as "portfolio" (buy) vs "watchlist" (monitor)
@@ -11,7 +11,7 @@ import json
 from datetime import date
 from typing import Any
 
-import anthropic
+from src.shared import gemini_compat as anthropic
 
 from src.shared.cost_tracker import check_budget, record_usage
 from src.shared.schemas import (
@@ -92,11 +92,11 @@ def synthesize_recommendations(
     max_portfolio: int = 5,
     max_watchlist: int = 10,
 ) -> dict[str, Any]:
-    """Use Opus 4.6 to synthesize ranked recommendations.
+    """Use Gemini to synthesize ranked recommendations.
 
     Args:
         scored_candidates: Candidates sorted by composite score.
-        top_n: Number of top candidates to send to Opus.
+        top_n: Number of top candidates to send to Gemini.
         max_portfolio: Max portfolio (buy) recommendations.
         max_watchlist: Max watchlist (monitor) recommendations.
 
@@ -104,7 +104,7 @@ def synthesize_recommendations(
         Dict with:
             portfolio_recs: List of portfolio recommendation dicts.
             watchlist_recs: List of watchlist recommendation dicts.
-            raw_synthesis: Raw text from Opus.
+            raw_synthesis: Raw text from Gemini.
     """
     if not scored_candidates:
         return {"portfolio_recs": [], "watchlist_recs": [], "raw_synthesis": ""}
@@ -171,12 +171,12 @@ Respond ONLY with valid JSON in this exact format:
         return _parse_synthesis(raw_text, scored_candidates)
 
     except Exception:
-        log.exception("Opus synthesis failed — falling back to score-based ranking")
+        log.exception("Gemini synthesis failed — falling back to score-based ranking")
         return _fallback_recommendations(scored_candidates, max_portfolio, max_watchlist)
 
 
 def _parse_synthesis(raw_text: str, scored_candidates: list[dict[str, Any]]) -> dict[str, Any]:
-    """Parse the JSON output from Opus 4.6."""
+    """Parse the JSON output from Gemini."""
     # Try to extract JSON from the response
     text = raw_text.strip()
 
@@ -236,7 +236,7 @@ def _fallback_recommendations(
     max_portfolio: int,
     max_watchlist: int,
 ) -> dict[str, Any]:
-    """Generate recommendations based purely on composite scores (no Opus)."""
+    """Generate recommendations based purely on composite scores (no LLM call)."""
     portfolio_recs = []
     watchlist_recs = []
 

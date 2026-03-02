@@ -1,4 +1,4 @@
-anthropic
+google-genai
 pyyaml
 python-dotenv
 requests
@@ -11,3 +11,4 @@ matplotlib
 feedparser
 youtube-transcript-api
 google-api-python-client
+pytest

@@ -1,6 +1,6 @@
 """Street Ear — Reddit intelligence pipeline orchestrator.
 
-Runs the full pipeline: fetch posts from Reddit, analyze with Claude Opus 4.6,
+Runs the full pipeline: fetch posts from Reddit, analyze with Gemini,
 track mentions and detect anomalies, publish signals to the agent bus, and
 format output for Telegram delivery.
 """
@@ -21,7 +21,7 @@ async def run() -> dict[str, Any]:
 
     Steps:
         1. Fetch posts from all configured subreddits
-        2. Analyze posts with Claude Opus 4.6
+        2. Analyze posts with Gemini
         3. Track mentions and detect anomalies
         4. Publish signals to agent bus
         5. Format output for Telegram
@@ -56,8 +56,8 @@ async def run() -> dict[str, Any]:
         stats["posts_fetched"] = 0
         stats["fetch_error"] = str(e)
 
-    # Step 2: Analyze posts with Claude Opus 4.6
-    log.info("Step 2/5: Analyzing posts with Claude")
+    # Step 2: Analyze posts with Gemini
+    log.info("Step 2/5: Analyzing posts with Gemini")
     step_start = time.monotonic()
     try:
         if posts:

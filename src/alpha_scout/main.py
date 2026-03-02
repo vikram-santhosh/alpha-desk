@@ -1,7 +1,7 @@
 """Main orchestrator for the AlphaDesk Alpha Scout agent.
 
 Runs the full discovery pipeline: candidate sourcing, market data
-fetching, multi-dimensional screening, Opus 4.6 synthesis, and
+fetching, multi-dimensional screening, Gemini synthesis, and
 Telegram-formatted output.
 """
 
@@ -31,7 +31,7 @@ async def run() -> dict[str, Any]:
         2. Source candidates from all channels.
         3. Fetch market data for candidates.
         4. Multi-dimensional screening.
-        5. Opus 4.6 synthesis (top N).
+        5. Gemini synthesis (top N).
         6. Publish discovery signals to agent bus.
         7. Format Telegram output.
 
@@ -175,7 +175,7 @@ async def run() -> dict[str, Any]:
 
     log.info("Step 4 (screening) completed in %.2fs", time.time() - step_start)
 
-    # ── Step 5: Opus 4.6 synthesis ────────────────────────────────────
+    # ── Step 5: Gemini synthesis ──────────────────────────────────────
     step_start = time.time()
     top_n = screening_config.get("top_n_for_synthesis", 20)
     output_config = config.get("output", {})

@@ -15,7 +15,7 @@ Six moonshot archetypes:
 
 import json
 
-import anthropic
+from src.shared import gemini_compat as anthropic
 
 from src.advisor import memory
 from src.shared.cost_tracker import check_budget, record_usage

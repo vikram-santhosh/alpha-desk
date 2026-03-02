@@ -1,6 +1,6 @@
 """API cost tracking with daily cap enforcement.
 
-Tracks Anthropic API usage costs per day and enforces the daily spending cap.
+Tracks LLM API usage costs per day and enforces the daily spending cap.
 Costs are stored in a SQLite database for persistence across runs.
 """
 
@@ -17,12 +17,20 @@ DB_PATH = Path("data/cost_tracker.db")
 
 # Pricing per million tokens by model family
 MODEL_PRICING = {
+    # Gemini models
+    "gemini-2.5-pro": {"input": 1.25, "output": 10.0},
+    "gemini-2.5-flash": {"input": 0.075, "output": 0.30},
+    "gemini-1.5-pro": {"input": 1.25, "output": 5.0},
+    "gemini-1.5-flash": {"input": 0.075, "output": 0.30},
+    "gemini-2.0-flash": {"input": 0.10, "output": 0.40},
+    # Legacy names retained for historical DB entries
+    "gemini-3-pro-preview": {"input": 1.25, "output": 10.0},
     "claude-opus-4-6": {"input": 15.0, "output": 75.0},
     "claude-sonnet-4-6": {"input": 3.0, "output": 15.0},
     "claude-haiku-4-5": {"input": 0.80, "output": 4.0},
 }
-# Default to Opus pricing for unknown models (conservative estimate)
-DEFAULT_PRICING = {"input": 15.0, "output": 75.0}
+# Default to gemini-2.5-pro pricing for unknown models
+DEFAULT_PRICING = {"input": 1.25, "output": 10.0}
 
 DEFAULT_DAILY_CAP = 20.0
 

@@ -9,7 +9,7 @@ import json
 from datetime import date, datetime
 from typing import Any
 
-import anthropic
+from src.shared import gemini_compat as anthropic
 
 from src.advisor.memory import get_recommendation_scorecard
 from src.advisor.outcome_scorer import score_all_outcomes, format_scorecard
