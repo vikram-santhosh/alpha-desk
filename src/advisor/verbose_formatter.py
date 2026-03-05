@@ -1,43 +1,38 @@
-"""Verbose investment memo formatter for AlphaDesk Advisor.
+"""Compact daily investment brief for AlphaDesk Advisor.
 
-Generates a comprehensive multi-section investment report as both Markdown
-and HTML. Designed for email delivery and archival — separate from the
-condensed Telegram formatter.
+Generates a scannable, exception-based report designed to be read on
+a phone in 30 seconds.  7 sections (down from 13), card-based HTML,
+mobile-first layout.
 
 Sections:
-  1. Executive Summary
-  2. Market Context
-  3. Holdings Deep Dive
-  4. Strategy Memo
-  5. Thesis Exposure Analysis
-  6. Conviction List Deep Dive
-  7. Moonshot Analysis
-  8. Analyst Committee Transcript
-  9. Delta Report
-  10. Catalyst Calendar
-  11. Track Record / Scorecard
-  12. Sources Used
-  13. Cost Breakdown
+  1. Header Banner (portfolio value, P&L, headline)
+  2. What Changed Today (CIO synthesis)
+  3. Market Pulse (macro one-liner + active theses)
+  4. Portfolio (tiered: movers get cards, steady gets a table)
+  5. Actions & Risks (strategy + risk officer top concern)
+  6. Watchlist (conviction + moonshots)
+  7. Upcoming (catalysts next 7 days)
+  Footer (sources, cost, timestamp)
 """
 
-from datetime import datetime
+import re
+from datetime import datetime, date
 from typing import Any
 
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
 
-SEPARATOR_MD = "---"
+# ── helpers ──────────────────────────────────────────────────────
+
+MOVER_THRESHOLD = 2.0  # |change%| above this → full card
 
 
 def _safe(val: Any, fmt: str = "", default: str = "N/A") -> str:
-    """Safely format a value, returning default if None."""
     if val is None:
         return default
     try:
-        if fmt:
-            return f"{val:{fmt}}"
-        return str(val)
+        return f"{val:{fmt}}" if fmt else str(val)
     except (ValueError, TypeError):
         return default
 
@@ -45,9 +40,7 @@ def _safe(val: Any, fmt: str = "", default: str = "N/A") -> str:
 def _pct(val: float | None, signed: bool = False) -> str:
     if val is None:
         return "N/A"
-    if signed:
-        return f"{val:+.1f}%"
-    return f"{val:.1f}%"
+    return f"{val:+.1f}%" if signed else f"{val:.1f}%"
 
 
 def _dollar(val: float | None) -> str:
@@ -62,18 +55,44 @@ def _dollar(val: float | None) -> str:
     return f"${val:,.2f}"
 
 
-def _status_indicator(status: str) -> str:
-    if status in ("strengthening", "intact"):
-        return "[INTACT]"
-    if status in ("evolving", "monitoring"):
-        return "[EVOLVING]"
-    if status in ("weakening", "invalidated"):
-        return "[WEAKENING]"
-    return "[UNKNOWN]"
+def _color(val: float | None) -> str:
+    """Return CSS color for a numeric value."""
+    if val is None or val == 0:
+        return "#64748b"
+    return "#16a34a" if val > 0 else "#dc2626"
 
+
+def _status_pill(status: str) -> str:
+    """HTML pill badge for thesis status."""
+    s = status.lower()
+    if s in ("strengthening", "intact"):
+        return '<span style="background:#dcfce7;color:#166534;padding:2px 8px;border-radius:12px;font-size:0.75em;font-weight:600">INTACT</span>'
+    if s in ("evolving", "monitoring"):
+        return '<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:12px;font-size:0.75em;font-weight:600">EVOLVING</span>'
+    if s in ("weakening", "invalidated"):
+        return '<span style="background:#fecaca;color:#991b1b;padding:2px 8px;border-radius:12px;font-size:0.75em;font-weight:600">WEAKENING</span>'
+    return '<span style="background:#e2e8f0;color:#475569;padding:2px 8px;border-radius:12px;font-size:0.75em;font-weight:600">UNKNOWN</span>'
+
+
+def _conviction_pill(conviction: str) -> str:
+    c = conviction.lower()
+    if c == "high":
+        return '<span style="background:#dcfce7;color:#166534;padding:2px 6px;border-radius:8px;font-size:0.7em;font-weight:600">HIGH</span>'
+    if c == "medium":
+        return '<span style="background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:8px;font-size:0.7em;font-weight:600">MED</span>'
+    return '<span style="background:#e2e8f0;color:#475569;padding:2px 6px;border-radius:8px;font-size:0.7em;font-weight:600">LOW</span>'
+
+
+def _esc(text: str) -> str:
+    """Escape HTML entities."""
+    return (text.replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+# ── main class ───────────────────────────────────────────────────
 
 class VerboseFormatter:
-    """Generates full investment memo from pipeline data."""
+    """Generates compact daily brief from pipeline data."""
 
     def __init__(
         self,
@@ -96,6 +115,9 @@ class VerboseFormatter:
         scorecard: dict | None = None,
         reddit_mood: str = "",
         reddit_themes: list[str] | None = None,
+        reddit_signals: list[dict] | None = None,
+        substack_signals: list[dict] | None = None,
+        youtube_signals: list[dict] | None = None,
         daily_cost: float = 0.0,
         total_time: float = 0.0,
     ):
@@ -118,43 +140,60 @@ class VerboseFormatter:
         self.scorecard = scorecard or {}
         self.reddit_mood = reddit_mood
         self.reddit_themes = reddit_themes or []
+        self.reddit_signals = reddit_signals or []
+        self.substack_signals = substack_signals or []
+        self.youtube_signals = youtube_signals or []
         self.daily_cost = daily_cost
         self.total_time = total_time
 
+    # ── public API (same interface as before) ────────────────────
+
     def generate_markdown(self) -> str:
-        """Generate the full verbose report as Markdown."""
+        """Generate a compact plain-text version of the brief."""
         today = datetime.now().strftime("%B %d, %Y")
+        totals = self._compute_totals()
         sections = [
-            f"# AlphaDesk Daily Investment Memo — {today}\n",
-            self._section_executive_summary(),
-            self._section_market_context(),
-            self._section_holdings_deep_dive(),
-            self._section_strategy_memo(),
-            self._section_thesis_exposure(),
-            self._section_conviction_deep_dive(),
-            self._section_moonshot_analysis(),
-            self._section_committee_transcript(),
-            self._section_delta_report(),
-            self._section_catalyst_calendar(),
-            self._section_track_record(),
-            self._section_sources(),
-            self._section_cost_breakdown(),
+            f"AlphaDesk Daily Brief — {today}",
+            "=" * 50,
+            "",
+            self._md_header(totals),
+            self._md_what_changed(),
+            self._md_market_pulse(),
+            self._md_portfolio(totals),
+            self._md_actions_risks(),
+            self._md_signal_intelligence(),
+            self._md_prediction_markets(),
+            self._md_smart_money(),
+            self._md_watchlist(),
+            self._md_upcoming(),
+            self._md_footer(),
         ]
-        return "\n\n".join(s for s in sections if s)
+        return "\n".join(s for s in sections if s)
 
     def generate_html(self, markdown_text: str | None = None) -> str:
-        """Convert the Markdown report to email-safe HTML with inline CSS."""
-        md = markdown_text or self.generate_markdown()
-        return _markdown_to_html(md)
+        """Generate the HTML email directly (ignores markdown_text)."""
+        totals = self._compute_totals()
+        parts = [
+            self._html_head(),
+            '<body><div class="container">',
+            self._html_header(totals),
+            self._html_what_changed(),
+            self._html_market_pulse(),
+            self._html_portfolio(totals),
+            self._html_actions_risks(),
+            self._html_signal_intelligence(),
+            self._html_prediction_markets(),
+            self._html_smart_money(),
+            self._html_watchlist(),
+            self._html_upcoming(),
+            self._html_footer(),
+            '</div></body></html>',
+        ]
+        return "\n".join(p for p in parts if p)
 
-    # ────────────────────────────────────────────────────────
-    # Section 1: Executive Summary
-    # ────────────────────────────────────────────────────────
+    # ── compute totals ───────────────────────────────────────────
 
-    def _section_executive_summary(self) -> str:
-        lines = ["## 1. Executive Summary\n"]
-
-        # Portfolio totals
+    def _compute_totals(self) -> dict:
         total_value = 0.0
         total_daily_pnl = 0.0
         total_unrealized = 0.0
@@ -169,775 +208,1461 @@ class VerboseFormatter:
                 total_daily_pnl += mv * change_pct / 100
                 if entry and entry > 0:
                     total_unrealized += (price - entry) * shares
+        return {
+            "value": total_value,
+            "daily_pnl": total_daily_pnl,
+            "unrealized": total_unrealized,
+            "holdings_count": len(self.holdings_reports),
+        }
 
-        lines.append(f"**Portfolio Value:** {_dollar(total_value)}  ")
-        lines.append(f"**Today's P&L:** {_dollar(total_daily_pnl)}  ")
-        lines.append(f"**Unrealized P&L:** {_dollar(total_unrealized)}  ")
-        lines.append(f"**Holdings:** {len(self.holdings_reports)}  ")
-        lines.append(f"**Conviction Names:** {len(self.conviction_result.get('current_list', []))}  ")
-        lines.append(f"**Moonshots:** {len(self.moonshot_result.get('current_list', []))}  ")
-        lines.append(f"**Strategy Actions:** {len(self.strategy.get('actions', []))}\n")
-
-        # Committee brief as executive summary
+    def _get_headline(self) -> str:
+        """Extract the one-line headline from the CIO brief."""
         brief = self.committee_result.get("formatted_brief", "")
-        if brief:
-            lines.append(brief[:2000])
+        if not brief:
+            return ""
+        # Take the first non-empty, non-header line (skip section titles)
+        for line in brief.strip().splitlines():
+            stripped = line.strip()
+            # Skip section headers like **SECTION 1 - ...**
+            if stripped.startswith("**") and stripped.endswith("**"):
+                continue
+            cleaned = stripped.lstrip("#*- ").rstrip("*")
+            if len(cleaned) > 20:
+                return cleaned[:200]
+        return ""
 
-        return "\n".join(lines)
+    def _get_cio_sections(self) -> dict[str, str]:
+        """Parse CIO brief into named sections."""
+        brief = self.committee_result.get("formatted_brief", "")
+        if not brief:
+            return {}
+        sections = {}
+        current_key = ""
+        current_lines: list[str] = []
+        for line in brief.strip().splitlines():
+            stripped = line.strip()
+            # Detect section headers like "**SECTION 1 - WHAT CHANGED TODAY**"
+            header_match = re.match(r"\*{0,2}(?:SECTION\s+\d+\s*[-—]\s*)?(.+?)\*{0,2}\s*$", stripped)
+            if header_match and stripped.startswith("**"):
+                if current_key:
+                    sections[current_key] = "\n".join(current_lines).strip()
+                current_key = header_match.group(1).strip().lower()
+                current_lines = []
+            else:
+                current_lines.append(line)
+        if current_key:
+            sections[current_key] = "\n".join(current_lines).strip()
+        return sections
 
-    # ────────────────────────────────────────────────────────
-    # Section 2: Market Context
-    # ────────────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════
+    # MARKDOWN (plain-text fallback)
+    # ══════════════════════════════════════════════════════════════
 
-    def _section_market_context(self) -> str:
-        lines = ["## 2. Market Context\n"]
+    def _md_header(self, totals: dict) -> str:
+        pnl = totals["daily_pnl"]
+        sign = "+" if pnl >= 0 else ""
+        lines = [
+            f"Portfolio: {_dollar(totals['value'])}  |  Today: {sign}{_dollar(pnl)}  |  {totals['holdings_count']} holdings",
+        ]
+        headline = self._get_headline()
+        if headline:
+            lines.append(f"\n> {headline}")
+        return "\n".join(lines) + "\n"
 
-        def _mv(key: str) -> tuple[str, str]:
+    def _md_what_changed(self) -> str:
+        cio = self._get_cio_sections()
+        text = cio.get("what changed today", "")
+        if not text:
+            brief = self.committee_result.get("formatted_brief", "")
+            if brief:
+                # Take first paragraph
+                paras = brief.strip().split("\n\n")
+                text = paras[0] if paras else ""
+        if not text:
+            return ""
+        # Strip markdown formatting
+        text = re.sub(r"\*{1,2}(.+?)\*{1,2}", r"\1", text)
+        return f"WHAT CHANGED\n{'-' * 40}\n{text}\n"
+
+    def _md_market_pulse(self) -> str:
+        def _mv(key: str):
             v = self.macro_data.get(key)
             if isinstance(v, dict):
-                val = _safe(v.get("value"), ".2f")
-                chg = _pct(v.get("change_pct"), signed=True)
-                return val, chg
-            return _safe(v, ".2f"), "N/A"
+                return _safe(v.get("value"), ".2f"), v.get("change_pct")
+            return _safe(v, ".2f"), None
+
+        sp_val, sp_chg = _mv("sp500")
+        vix_val, _ = _mv("vix")
+        tnx_val, _ = _mv("treasury_10y")
+        ff_val, _ = _mv("fed_funds_rate")
+
+        sp_str = f"S&P {sp_val}"
+        if sp_chg is not None:
+            sp_str += f" ({sp_chg:+.1f}%)"
+
+        line = f"{sp_str}  |  VIX {vix_val}  |  10Y {tnx_val}%  |  Fed {ff_val}%"
+        lines = [f"MARKET\n{'-' * 40}", line]
+
+        if self.reddit_mood and self.reddit_mood != "unknown":
+            themes = ", ".join(self.reddit_themes[:3]) if self.reddit_themes else ""
+            mood_line = f"Reddit: {self.reddit_mood}"
+            if themes:
+                mood_line += f" — {themes}"
+            lines.append(mood_line)
+
+        return "\n".join(lines) + "\n"
+
+    def _md_portfolio(self, totals: dict) -> str:
+        lines = [f"PORTFOLIO\n{'-' * 40}"]
+        sorted_h = sorted(self.holdings_reports, key=lambda h: abs(h.get("change_pct") or 0), reverse=True)
+
+        movers = [h for h in sorted_h if abs(h.get("change_pct") or 0) >= MOVER_THRESHOLD]
+        steady = [h for h in sorted_h if abs(h.get("change_pct") or 0) < MOVER_THRESHOLD]
+
+        if movers:
+            lines.append("\nMOVERS:")
+            for h in movers:
+                t = h.get("ticker", "?")
+                chg = h.get("change_pct") or 0
+                price = h.get("price")
+                pct = h.get("position_pct") or 0
+                arrow = "+" if chg > 0 else ""
+                lines.append(f"  {t}  ${price}  {arrow}{chg:.1f}%  ({pct:.0f}% of portfolio)")
+                events = h.get("key_events", [])[:2]
+                for e in events:
+                    lines.append(f"    -> {e}")
+
+        if steady:
+            lines.append("\nSTEADY:")
+            for h in steady:
+                t = h.get("ticker", "?")
+                chg = h.get("change_pct") or 0
+                price = h.get("price")
+                pct = h.get("position_pct") or 0
+                lines.append(f"  {t}  ${price}  {chg:+.1f}%  ({pct:.0f}%)")
+
+        return "\n".join(lines) + "\n"
+
+    def _md_actions_risks(self) -> str:
+        actions = self.strategy.get("actions", [])
+        risk = self.committee_result.get("risk_report", {})
+        if not actions and not risk:
+            return ""
+        lines = [f"ACTIONS & RISKS\n{'-' * 40}"]
+        if actions:
+            for a in actions:
+                lines.append(f"  {a.get('action', 'HOLD').upper()} {a.get('ticker', '')} — {a.get('reason', '')}")
+        top_risk = risk.get("top_risk", "")
+        risk_score = risk.get("risk_score_portfolio")
+        if top_risk:
+            score_str = f" (safety: {risk_score}/100)" if risk_score is not None else ""
+            lines.append(f"\n  Top Risk{score_str}: {top_risk}")
+        return "\n".join(lines) + "\n"
+
+    def _md_signal_intelligence(self) -> str:
+        has_reddit = bool(self.reddit_signals)
+        has_substack = bool(self.substack_signals)
+        has_youtube = bool(self.youtube_signals)
+        has_articles = bool(self.top_articles)
+        if not any([has_reddit, has_substack, has_youtube, has_articles]):
+            return ""
+        lines = [f"SIGNAL INTELLIGENCE\n{'-' * 40}"]
+
+        if has_articles:
+            lines.append("\nTop Headlines:")
+            for a in self.top_articles[:5]:
+                title = a.get("title", "")
+                source = a.get("source", "")
+                tickers = a.get("related_tickers") or a.get("affected_tickers", [])
+                ticker_str = f" [{', '.join(tickers[:3])}]" if tickers else ""
+                lines.append(f"  {title}{ticker_str} — {source}")
+
+        if has_reddit:
+            lines.append("\nReddit Threads:")
+            for s in self.reddit_signals[:5]:
+                ticker = s.get("ticker", "")
+                sentiment = s.get("sentiment", "")
+                mentions = s.get("mentions", "")
+                subs = s.get("subreddits", s.get("subreddit", ""))
+                lines.append(f"  {ticker}: sentiment {sentiment}, {mentions} mentions ({subs})")
+
+        if has_substack:
+            lines.append("\nSubstack Newsletters:")
+            for s in self.substack_signals[:5]:
+                title = s.get("title", "")
+                tickers = s.get("tickers", [])
+                ticker_str = f" [{', '.join(tickers[:3])}]" if tickers else ""
+                lines.append(f"  {title}{ticker_str}")
+
+        if has_youtube:
+            lines.append("\nYouTube:")
+            for y in self.youtube_signals[:3]:
+                title = y.get("title", "")
+                channel = y.get("channel", "")
+                lines.append(f"  {title} — {channel}")
+
+        return "\n".join(lines) + "\n"
+
+    def _md_prediction_markets(self) -> str:
+        if not self.prediction_shifts:
+            return ""
+        lines = [f"PREDICTION MARKETS\n{'-' * 40}"]
+        for pm in self.prediction_shifts[:5]:
+            title = pm.get("title", pm.get("market_title", ""))
+            prob = pm.get("probability", 0)
+            delta = pm.get("delta", pm.get("delta_pct", 0))
+            if isinstance(delta, float) and delta < 1:
+                delta = delta * 100  # Convert from 0.15 to 15
+            direction = "UP" if delta > 0 else "DOWN"
+            lines.append(f"  {title}: {prob * 100 if prob < 1 else prob:.0f}% ({delta:+.0f}pp {direction})")
+        return "\n".join(lines) + "\n"
+
+    def _md_smart_money(self) -> str:
+        if not self.superinvestor_data:
+            return ""
+        notable = []
+        for ticker, data in self.superinvestor_data.items():
+            if not isinstance(data, dict):
+                continue
+            insider = data.get("insider_net_buying")
+            supers = data.get("superinvestors_holding", [])
+            activity = data.get("superinvestor_activity", [])
+            if insider or supers or activity:
+                parts = [f"  {ticker}:"]
+                if insider:
+                    parts.append("insider net buying")
+                if supers:
+                    parts.append(f"held by {', '.join(supers[:3])}")
+                if activity:
+                    recent = activity[0]
+                    parts.append(f"{recent.get('investor', '')} {recent.get('action', '')}")
+                notable.append(" | ".join(parts))
+        if not notable:
+            return ""
+        lines = [f"SMART MONEY\n{'-' * 40}"] + notable[:6]
+        return "\n".join(lines) + "\n"
+
+    def _md_watchlist(self) -> str:
+        conviction = self.conviction_result.get("current_list", [])
+        moonshots = self.moonshot_result.get("current_list", [])
+        if not conviction and not moonshots:
+            return ""
+        lines = [f"WATCHLIST\n{'-' * 40}"]
+        for c in conviction:
+            t = c.get("ticker", "?")
+            conv = c.get("conviction", "med").upper()
+            thesis = c.get("thesis", "")
+            source = c.get("source", "")
+            lines.append(f"\n  {t} [{conv}] — W{c.get('weeks_on_list', 1)}")
+            if thesis:
+                lines.append(f"    Thesis: {thesis}")
+            if source:
+                lines.append(f"    Source: {source}")
+            # Cross-reference signals
+            intel = self._gather_ticker_intel(t)
+            for line in intel:
+                lines.append(f"    {line}")
+            # Pros/cons
+            pros = c.get("pros", [])
+            cons = c.get("cons", [])
+            if pros:
+                lines.append(f"    Bull: {'; '.join(str(p) for p in pros[:3])}")
+            if cons:
+                lines.append(f"    Bear: {'; '.join(str(p) for p in cons[:3])}")
+
+        for m in moonshots:
+            t = m.get("ticker", "?")
+            thesis = m.get("thesis", "")
+            upside = m.get("upside_case", "")
+            downside = m.get("downside_case", "")
+            milestone = m.get("key_milestone", "")
+            lines.append(f"\n  {t} [MOONSHOT]")
+            if thesis:
+                lines.append(f"    Thesis: {thesis}")
+            if upside:
+                lines.append(f"    Upside: {upside}")
+            if downside:
+                lines.append(f"    Downside: {downside}")
+            if milestone:
+                lines.append(f"    Milestone: {milestone}")
+            intel = self._gather_ticker_intel(t)
+            for line in intel:
+                lines.append(f"    {line}")
+        return "\n".join(lines) + "\n"
+
+    def _gather_ticker_intel(self, ticker: str) -> list[str]:
+        """Cross-reference a ticker across all signal sources."""
+        intel: list[str] = []
+        # Reddit
+        for s in self.reddit_signals:
+            if s.get("ticker", "").upper() == ticker.upper():
+                sent = s.get("sentiment", s.get("sentiment_score", ""))
+                mentions = s.get("mentions", s.get("mention_count", ""))
+                sub = s.get("subreddit", "")
+                intel.append(f"Reddit: sentiment {sent}, {mentions} mentions ({sub})")
+                break
+        # Substack
+        for s in self.substack_signals:
+            tickers = [t.upper() for t in s.get("tickers", s.get("affected_tickers", []))]
+            if ticker.upper() in tickers:
+                title = s.get("title", "")
+                intel.append(f"Substack: {title}")
+                break
+        # Smart money
+        si = self.superinvestor_data.get(ticker, {})
+        if isinstance(si, dict):
+            supers = si.get("superinvestors_holding", [])
+            insider = si.get("insider_net_buying")
+            parts = []
+            if insider:
+                parts.append("insider buying")
+            if supers:
+                parts.append(f"held by {', '.join(str(s) for s in supers[:3])}")
+            if parts:
+                intel.append(f"Smart money: {', '.join(parts)}")
+        # Fundamentals
+        fund = self.fundamentals.get(ticker, {})
+        if fund:
+            parts = []
+            pe = fund.get("pe_forward")
+            rev = fund.get("revenue_growth")
+            margin = fund.get("net_margin")
+            if pe is not None:
+                parts.append(f"P/E(f) {pe:.1f}")
+            if rev is not None:
+                parts.append(f"Rev +{rev:.0%}")
+            if margin is not None:
+                parts.append(f"Margin {margin:.0%}")
+            if parts:
+                intel.append(f"Fundamentals: {' | '.join(parts)}")
+        return intel
+
+    def _md_upcoming(self) -> str:
+        catalysts = self.catalyst_data.get("catalysts", [])
+        if not catalysts:
+            return ""
+        upcoming = [c for c in catalysts if self._days_away(c) <= 7]
+        if not upcoming:
+            return ""
+        lines = [f"NEXT 7 DAYS\n{'-' * 40}"]
+        for c in upcoming[:8]:
+            dt = self._cat_date(c)
+            desc = self._cat_desc(c)
+            days = self._days_away(c)
+            day_label = "today" if days == 0 else f"in {days}d"
+            lines.append(f"  {dt}  {desc}  ({day_label})")
+        return "\n".join(lines) + "\n"
+
+    def _md_footer(self) -> str:
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+        return f"---\nAlphaDesk v2.0 | ${self.daily_cost:.2f} | {self.total_time:.0f}s | {ts}"
+
+    # ══════════════════════════════════════════════════════════════
+    # HTML EMAIL
+    # ══════════════════════════════════════════════════════════════
+
+    def _html_head(self) -> str:
+        today = datetime.now().strftime("%B %d, %Y")
+        return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AlphaDesk Daily Brief — {today}</title>
+<style>
+  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  body {{
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+    background: #f1f5f9;
+    color: #1e293b;
+    line-height: 1.5;
+    -webkit-text-size-adjust: 100%;
+  }}
+  .container {{
+    max-width: 640px;
+    margin: 0 auto;
+    background: #ffffff;
+  }}
+
+  /* Header banner */
+  .header {{
+    background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 100%);
+    color: #ffffff;
+    padding: 24px 24px 20px;
+  }}
+  .header-title {{
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: #94a3b8;
+    margin-bottom: 4px;
+  }}
+  .header-date {{
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-bottom: 16px;
+  }}
+  .header-stats {{
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+  }}
+  .stat {{
+    text-align: left;
+  }}
+  .stat-label {{
+    font-size: 0.7em;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #94a3b8;
+  }}
+  .stat-value {{
+    font-size: 1.3em;
+    font-weight: 700;
+  }}
+  .headline {{
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(255,255,255,0.15);
+    font-size: 0.95em;
+    color: #cbd5e1;
+    line-height: 1.4;
+  }}
+
+  /* Section */
+  .section {{
+    padding: 20px 24px;
+    border-bottom: 1px solid #e2e8f0;
+  }}
+  .section:last-of-type {{
+    border-bottom: none;
+  }}
+  .section-title {{
+    font-size: 0.7em;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: #94a3b8;
+    margin-bottom: 12px;
+    font-weight: 600;
+  }}
+  .section-body {{
+    font-size: 0.9em;
+    color: #334155;
+  }}
+  .section-body p {{
+    margin-bottom: 8px;
+  }}
+
+  /* Market pulse bar */
+  .market-bar {{
+    display: flex;
+    gap: 0;
+    flex-wrap: wrap;
+    background: #f8fafc;
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 12px;
+  }}
+  .market-item {{
+    flex: 1;
+    min-width: 80px;
+    padding: 10px 12px;
+    text-align: center;
+    border-right: 1px solid #e2e8f0;
+  }}
+  .market-item:last-child {{
+    border-right: none;
+  }}
+  .market-item-label {{
+    font-size: 0.65em;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #94a3b8;
+  }}
+  .market-item-value {{
+    font-size: 0.95em;
+    font-weight: 600;
+    color: #1e293b;
+  }}
+
+  /* Holding card (movers) */
+  .holding-card {{
+    background: #f8fafc;
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin-bottom: 8px;
+    border-left: 4px solid #e2e8f0;
+  }}
+  .holding-card.up {{
+    border-left-color: #16a34a;
+  }}
+  .holding-card.down {{
+    border-left-color: #dc2626;
+  }}
+  .holding-top {{
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 4px;
+  }}
+  .holding-ticker {{
+    font-weight: 700;
+    font-size: 1em;
+    color: #0f172a;
+  }}
+  .holding-change {{
+    font-weight: 700;
+    font-size: 1em;
+  }}
+  .holding-meta {{
+    font-size: 0.8em;
+    color: #64748b;
+    margin-bottom: 6px;
+  }}
+  .holding-events {{
+    font-size: 0.8em;
+    color: #475569;
+    padding-left: 8px;
+    border-left: 2px solid #e2e8f0;
+  }}
+  .holding-events div {{
+    margin-bottom: 2px;
+  }}
+
+  /* Steady holdings table */
+  .steady-table {{
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85em;
+    margin-top: 12px;
+  }}
+  .steady-table th {{
+    text-align: left;
+    font-size: 0.7em;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #94a3b8;
+    padding: 4px 8px;
+    border-bottom: 1px solid #e2e8f0;
+    font-weight: 600;
+  }}
+  .steady-table td {{
+    padding: 6px 8px;
+    color: #334155;
+    border-bottom: 1px solid #f1f5f9;
+  }}
+
+  /* Action card */
+  .action-card {{
+    background: #fffbeb;
+    border: 1px solid #fde68a;
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 8px;
+  }}
+  .action-label {{
+    font-weight: 700;
+    font-size: 0.85em;
+    color: #92400e;
+  }}
+  .action-reason {{
+    font-size: 0.85em;
+    color: #78350f;
+    margin-top: 2px;
+  }}
+
+  /* Risk block */
+  .risk-block {{
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-top: 8px;
+  }}
+  .risk-label {{
+    font-weight: 600;
+    font-size: 0.75em;
+    text-transform: uppercase;
+    color: #991b1b;
+    margin-bottom: 4px;
+  }}
+  .risk-text {{
+    font-size: 0.85em;
+    color: #7f1d1d;
+    line-height: 1.4;
+  }}
+
+  /* Watchlist */
+  .watch-item {{
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 8px 0;
+    border-bottom: 1px solid #f1f5f9;
+    font-size: 0.85em;
+  }}
+  .watch-item:last-child {{
+    border-bottom: none;
+  }}
+  .watch-ticker {{
+    font-weight: 700;
+    color: #0f172a;
+    min-width: 48px;
+  }}
+  .watch-thesis {{
+    color: #475569;
+    flex: 1;
+  }}
+
+  /* Upcoming events */
+  .event-item {{
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 6px 0;
+    font-size: 0.85em;
+    color: #334155;
+  }}
+  .event-date {{
+    font-weight: 600;
+    color: #0f172a;
+    min-width: 60px;
+    font-size: 0.8em;
+  }}
+  .event-days {{
+    font-size: 0.75em;
+    color: #94a3b8;
+    white-space: nowrap;
+  }}
+
+  /* Thesis row */
+  .thesis-row {{
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 6px 0;
+    font-size: 0.85em;
+    border-bottom: 1px solid #f1f5f9;
+  }}
+  .thesis-row:last-child {{
+    border-bottom: none;
+  }}
+  .thesis-name {{
+    font-weight: 600;
+    color: #1e293b;
+  }}
+  .thesis-tickers {{
+    color: #64748b;
+    font-size: 0.85em;
+  }}
+
+  /* Footer */
+  .footer {{
+    padding: 16px 24px;
+    background: #f8fafc;
+    border-top: 1px solid #e2e8f0;
+    font-size: 0.75em;
+    color: #94a3b8;
+    text-align: center;
+  }}
+
+  /* Responsive */
+  @media (max-width: 480px) {{
+    .header {{ padding: 16px; }}
+    .section {{ padding: 16px; }}
+    .header-stats {{ gap: 12px; }}
+    .stat-value {{ font-size: 1.1em; }}
+    .market-item {{ padding: 8px; }}
+  }}
+</style>
+</head>"""
+
+    def _html_header(self, totals: dict) -> str:
+        today = datetime.now().strftime("%B %d, %Y")
+        pnl = totals["daily_pnl"]
+        pnl_color = "#4ade80" if pnl >= 0 else "#f87171"
+        pnl_sign = "+" if pnl >= 0 else ""
+        headline = _esc(self._get_headline())
+
+        headline_html = ""
+        if headline:
+            headline_html = f'<div class="headline">{headline}</div>'
+
+        return f"""
+<div class="header">
+  <div class="header-title">AlphaDesk Daily Brief</div>
+  <div class="header-date">{today}</div>
+  <div class="header-stats">
+    <div class="stat">
+      <div class="stat-label">Portfolio</div>
+      <div class="stat-value">{_dollar(totals['value'])}</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Today</div>
+      <div class="stat-value" style="color:{pnl_color}">{pnl_sign}{_dollar(pnl)}</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Unrealized</div>
+      <div class="stat-value">{_dollar(totals['unrealized'])}</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Holdings</div>
+      <div class="stat-value">{totals['holdings_count']}</div>
+    </div>
+  </div>
+  {headline_html}
+</div>"""
+
+    def _html_what_changed(self) -> str:
+        cio = self._get_cio_sections()
+        text = cio.get("what changed today", "")
+        if not text:
+            brief = self.committee_result.get("formatted_brief", "")
+            if brief:
+                # Take first meaningful paragraph
+                paras = [p.strip() for p in brief.strip().split("\n\n") if len(p.strip()) > 30]
+                text = paras[0] if paras else ""
+        if not text:
+            return ""
+
+        # Clean up markdown formatting for HTML
+        text = re.sub(r"\*{1,2}(.+?)\*{1,2}", r"<strong>\1</strong>", text)
+        # Convert bullet points
+        lines = text.strip().splitlines()
+        html_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("- ") or stripped.startswith("* "):
+                html_lines.append(f"<p style='padding-left:12px'>• {stripped[2:]}</p>")
+            elif stripped:
+                html_lines.append(f"<p>{stripped}</p>")
+        body = "\n".join(html_lines)
+
+        return f"""
+<div class="section">
+  <div class="section-title">What Changed Today</div>
+  <div class="section-body">{body}</div>
+</div>"""
+
+    def _html_market_pulse(self) -> str:
+        def _mv(key: str):
+            v = self.macro_data.get(key)
+            if isinstance(v, dict):
+                return v.get("value"), v.get("change_pct")
+            return v, None
 
         sp_val, sp_chg = _mv("sp500")
         vix_val, vix_chg = _mv("vix")
-        tnx_val, tnx_chg = _mv("treasury_10y")
+        tnx_val, _ = _mv("treasury_10y")
         ff_val, _ = _mv("fed_funds_rate")
 
-        lines.append("### Market Snapshot\n")
-        lines.append("| Indicator | Value | Change |")
-        lines.append("|-----------|-------|--------|")
-        lines.append(f"| S&P 500 | {sp_val} | {sp_chg} |")
-        lines.append(f"| VIX | {vix_val} | {vix_chg} |")
-        lines.append(f"| 10Y Treasury | {tnx_val}% | {tnx_chg} |")
-        lines.append(f"| Fed Funds Rate | {ff_val}% | — |")
-        yc = self.macro_data.get("yield_curve_spread_calculated", "N/A")
-        lines.append(f"| Yield Curve | {yc} | — |")
+        sp_str = _safe(sp_val, ",.0f")
+        sp_chg_html = f'<span style="color:{_color(sp_chg)};font-size:0.8em"> {sp_chg:+.1f}%</span>' if sp_chg is not None else ""
+        vix_str = _safe(vix_val, ".1f")
+        vix_chg_html = f'<span style="color:{_color(vix_chg)};font-size:0.8em"> {vix_chg:+.1f}%</span>' if vix_chg is not None else ""
 
-        # Macro theses
+        market_bar = f"""
+<div class="market-bar">
+  <div class="market-item">
+    <div class="market-item-label">S&amp;P 500</div>
+    <div class="market-item-value">{sp_str}{sp_chg_html}</div>
+  </div>
+  <div class="market-item">
+    <div class="market-item-label">VIX</div>
+    <div class="market-item-value">{vix_str}{vix_chg_html}</div>
+  </div>
+  <div class="market-item">
+    <div class="market-item-label">10Y</div>
+    <div class="market-item-value">{_safe(tnx_val, '.2f')}%</div>
+  </div>
+  <div class="market-item">
+    <div class="market-item-label">Fed</div>
+    <div class="market-item-value">{_safe(ff_val, '.2f')}%</div>
+  </div>
+</div>"""
+
+        # Active theses — only show ones with recent evidence
+        theses_html = ""
         if self.updated_theses:
-            lines.append("\n### Active Macro Theses\n")
+            thesis_items = []
             for t in self.updated_theses:
+                title = _esc(t.get("title", ""))
                 status = t.get("status", "intact")
-                title = t.get("title", "")
-                affected = ", ".join(t.get("affected_tickers", [])[:6])
-                evidence_log = t.get("evidence_log", [])
-                lines.append(f"**{title}** {_status_indicator(status)}")
-                lines.append(f"  - Affected: {affected}")
-                if evidence_log:
-                    latest = evidence_log[-1]
-                    lines.append(f"  - Latest evidence: {latest.get('evidence', '')}")
-                lines.append("")
-
-        # Prediction market shifts
-        if self.prediction_shifts:
-            lines.append("### Prediction Market Shifts\n")
-            for pm in self.prediction_shifts[:5]:
-                title = pm.get("market_title", "")
-                prob = pm.get("probability", 0)
-                delta = pm.get("delta", 0)
-                direction = "UP" if delta > 0 else "DOWN"
-                lines.append(f"- **{title}**: {prob*100:.0f}% ({delta*100:+.0f}pp {direction})")
+                affected = ", ".join(t.get("affected_tickers", [])[:5])
+                thesis_items.append(f"""
+<div class="thesis-row">
+  <span class="thesis-name">{title}</span>
+  {_status_pill(status)}
+  <span class="thesis-tickers">{affected}</span>
+</div>""")
+            if thesis_items:
+                theses_html = "\n".join(thesis_items)
 
         # Reddit mood
+        reddit_html = ""
         if self.reddit_mood and self.reddit_mood != "unknown":
-            themes = ", ".join(self.reddit_themes[:3]) if self.reddit_themes else "none"
-            lines.append(f"\n**Reddit Mood:** {self.reddit_mood} — Top themes: {themes}")
+            themes = ", ".join(self.reddit_themes[:3]) if self.reddit_themes else ""
+            mood_text = f"Reddit mood: <strong>{_esc(self.reddit_mood)}</strong>"
+            if themes:
+                mood_text += f" — {_esc(themes)}"
+            reddit_html = f'<div style="font-size:0.8em;color:#64748b;margin-top:8px">{mood_text}</div>'
 
-        return "\n".join(lines)
+        return f"""
+<div class="section">
+  <div class="section-title">Market Pulse</div>
+  {market_bar}
+  {theses_html}
+  {reddit_html}
+</div>"""
 
-    # ────────────────────────────────────────────────────────
-    # Section 3: Holdings Deep Dive
-    # ────────────────────────────────────────────────────────
-
-    def _section_holdings_deep_dive(self) -> str:
-        lines = ["## 3. Holdings Deep Dive\n"]
-
+    def _html_portfolio(self, totals: dict) -> str:
         if not self.holdings_reports:
-            lines.append("*No holdings data available.*")
-            return "\n".join(lines)
-
-        sorted_holdings = sorted(
-            self.holdings_reports,
-            key=lambda h: (h.get("position_pct") or 0),
-            reverse=True,
-        )
-
-        for h in sorted_holdings:
-            ticker = h.get("ticker", "???")
-            price = h.get("price")
-            shares = h.get("shares") or 0
-            entry = h.get("entry_price")
-            change_pct = h.get("change_pct")
-            cumul = h.get("cumulative_return_pct")
-            position_pct = h.get("position_pct") or 0
-            thesis = h.get("thesis", "")
-            thesis_status = h.get("thesis_status", "intact")
-            category = h.get("category", "core")
-            recent_trend = h.get("recent_trend", "")
-            key_events = h.get("key_events", [])
-            sector = h.get("sector", "")
-
-            lines.append(f"### {ticker} — {_pct(position_pct)} of portfolio\n")
-
-            # Price info
-            lines.append("| Metric | Value |")
-            lines.append("|--------|-------|")
-            lines.append(f"| Current Price | {_dollar(price)} |")
-            lines.append(f"| Today | {_pct(change_pct, signed=True)} |")
-            lines.append(f"| Entry Price | {_dollar(entry)} |")
-            lines.append(f"| Total Return | {_pct(cumul, signed=True)} |")
-            lines.append(f"| Shares | {shares} |")
-            if price and shares:
-                mv = price * shares
-                lines.append(f"| Market Value | {_dollar(mv)} |")
-                if entry and entry > 0:
-                    pnl = (price - entry) * shares
-                    lines.append(f"| Unrealized P&L | {_dollar(pnl)} |")
-            lines.append(f"| Category | {category} |")
-            lines.append(f"| Sector | {sector or 'N/A'} |")
-
-            # Technicals
-            tech = self.technicals.get(ticker, {})
-            if tech:
-                lines.append(f"\n**Technical Setup:**")
-                rsi_data = tech.get("rsi")
-                rsi_val = rsi_data.get("rsi") if isinstance(rsi_data, dict) else rsi_data
-                rsi_signal = rsi_data.get("signal", "") if isinstance(rsi_data, dict) else ""
-                macd = tech.get("macd_signal", "N/A")
-                trend = tech.get("trend", "N/A")
-                support = tech.get("support")
-                resistance = tech.get("resistance")
-                tech_signals = tech.get("signals", [])
-
-                lines.append(f"- RSI: {_safe(rsi_val, '.1f')} ({rsi_signal})")
-                lines.append(f"- MACD: {macd}")
-                lines.append(f"- Trend: {trend}")
-                if support:
-                    lines.append(f"- Support: {_dollar(support)}")
-                if resistance:
-                    lines.append(f"- Resistance: {_dollar(resistance)}")
-                if tech_signals:
-                    lines.append(f"- Signals: {', '.join(str(s) for s in tech_signals[:3])}")
-
-            # Fundamentals
-            fund = self.fundamentals.get(ticker, {})
-            if fund:
-                lines.append(f"\n**Fundamentals:**")
-                lines.append(f"- P/E (trailing): {_safe(fund.get('pe_trailing'), '.1f')}")
-                lines.append(f"- P/E (forward): {_safe(fund.get('pe_forward'), '.1f')}")
-                rev_growth = fund.get("revenue_growth")
-                if rev_growth is not None:
-                    lines.append(f"- Revenue Growth: {rev_growth:.0%}")
-                margin = fund.get("net_margin")
-                if margin is not None:
-                    lines.append(f"- Net Margin: {margin:.0%}")
-                roe = fund.get("roe")
-                if roe is not None:
-                    lines.append(f"- ROE: {roe:.0%}")
-
-            # Thesis
-            lines.append(f"\n**Thesis:** {thesis} {_status_indicator(thesis_status)}")
-
-            # Trend & Events
-            if recent_trend:
-                lines.append(f"\n**Recent Trend:** {recent_trend}")
-            if key_events:
-                lines.append("\n**Key Events:**")
-                for event in key_events[:4]:
-                    lines.append(f"- {event}")
-
-            lines.append("")
-
-        return "\n".join(lines)
-
-    # ────────────────────────────────────────────────────────
-    # Section 4: Strategy Memo
-    # ────────────────────────────────────────────────────────
-
-    def _section_strategy_memo(self) -> str:
-        lines = ["## 4. Strategy Memo\n"]
-
-        actions = self.strategy.get("actions", [])
-        flags = self.strategy.get("flags", []) or self.strategy.get("active_flags", [])
-        summary = self.strategy.get("summary", "")
-
-        if not actions and not flags:
-            lines.append("**No changes recommended.** All theses intact.\n")
-            if summary:
-                lines.append(summary)
-            return "\n".join(lines)
-
-        if actions:
-            lines.append("### Recommended Actions\n")
-            lines.append("| # | Action | Ticker | Urgency | Reason |")
-            lines.append("|---|--------|--------|---------|--------|")
-            for i, a in enumerate(actions, 1):
-                action = a.get("action", "hold").upper()
-                ticker = a.get("ticker", "")
-                urgency = a.get("urgency", "low")
-                reason = a.get("reason", "")
-                lines.append(f"| {i} | {action} | {ticker} | {urgency} | {reason} |")
-            lines.append("")
-
-        if flags:
-            lines.append("### Active Flags\n")
-            for f in flags[:8]:
-                ticker = f.get("ticker", "")
-                flag_type = f.get("flag_type", "").replace("_", " ")
-                desc = f.get("description", f.get("message", ""))
-                lines.append(f"- **{ticker}** — {flag_type}: {desc}")
-            lines.append("")
-
-        if summary:
-            lines.append(f"**Summary:** {summary}")
-
-        return "\n".join(lines)
-
-    # ────────────────────────────────────────────────────────
-    # Section 5: Thesis Exposure
-    # ────────────────────────────────────────────────────────
-
-    def _section_thesis_exposure(self) -> str:
-        thesis_exposure = self.strategy.get("thesis_exposure", [])
-        if not thesis_exposure:
             return ""
 
-        lines = ["## 5. Thesis Exposure Analysis\n"]
+        sorted_h = sorted(self.holdings_reports, key=lambda h: abs(h.get("change_pct") or 0), reverse=True)
+        movers = [h for h in sorted_h if abs(h.get("change_pct") or 0) >= MOVER_THRESHOLD]
+        steady = [h for h in sorted_h if abs(h.get("change_pct") or 0) < MOVER_THRESHOLD]
 
-        lines.append("| Thesis | Exposure | Tickers | Status |")
-        lines.append("|--------|----------|---------|--------|")
-        for entry in thesis_exposure:
-            thesis = entry.get("thesis", "")
-            pct = entry.get("exposure_pct", 0)
-            tickers = ", ".join(entry.get("tickers", [])[:5])
-            status = entry.get("status", "intact")
-            bar = "#" * int(pct / 5)
-            lines.append(f"| {thesis} | {pct:.0f}% `{bar}` | {tickers} | {_status_indicator(status)} |")
+        cards_html = ""
+        if movers:
+            cards = []
+            for h in movers:
+                ticker = _esc(h.get("ticker", "?"))
+                price = h.get("price")
+                chg = h.get("change_pct") or 0
+                pct = h.get("position_pct") or 0
+                thesis = _esc(h.get("thesis", ""))
+                thesis_status = h.get("thesis_status", "intact")
+                direction = "up" if chg > 0 else "down"
+                chg_color = _color(chg)
 
-        # Overlap warnings
-        has_overlap = any(entry.get("overlaps_with") for entry in thesis_exposure)
-        if has_overlap:
-            lines.append("\n### Overlap Warnings\n")
-            for entry in thesis_exposure:
-                overlaps = entry.get("overlaps_with", [])
-                warning = entry.get("warning", "")
-                if overlaps:
-                    lines.append(f"- **{entry.get('thesis', '')}** overlaps with: {', '.join(overlaps[:3])}")
-                if warning:
-                    lines.append(f"  - {warning}")
+                # Key events (top 2)
+                events = h.get("key_events", [])[:2]
+                events_html = ""
+                if events:
+                    ev_items = "".join(f"<div>• {_esc(str(e)[:100])}</div>" for e in events)
+                    events_html = f'<div class="holding-events">{ev_items}</div>'
 
-        return "\n".join(lines)
-
-    # ────────────────────────────────────────────────────────
-    # Section 6: Conviction Deep Dive
-    # ────────────────────────────────────────────────────────
-
-    def _section_conviction_deep_dive(self) -> str:
-        lines = ["## 6. Conviction List Deep Dive\n"]
-
-        current = self.conviction_result.get("current_list", [])
-        added = self.conviction_result.get("added", [])
-        removed = self.conviction_result.get("removed", [])
-
-        if not current:
-            lines.append("*No conviction names currently. Building watchlist.*")
-            return "\n".join(lines)
-
-        for entry in current:
-            ticker = entry.get("ticker", "???")
-            conviction = entry.get("conviction", "medium")
-            weeks = entry.get("weeks_on_list", 1)
-            thesis = entry.get("thesis", "")
-            pros = entry.get("pros", [])
-            cons = entry.get("cons", [])
-
-            lines.append(f"### {ticker} — Week {weeks} [{conviction.upper()}]\n")
-            lines.append(f"**Thesis:** {thesis}\n")
-
-            if pros:
-                lines.append("**Bull Case:**")
-                for p in (pros if isinstance(pros, list) else []):
-                    lines.append(f"- {p}")
-                lines.append("")
-
-            if cons:
-                lines.append("**Bear Case:**")
-                for c in (cons if isinstance(cons, list) else []):
-                    lines.append(f"- {c}")
-                lines.append("")
-
-            # Fundamental data if available
-            fund = self.fundamentals.get(ticker, {})
-            if fund:
-                pe = _safe(fund.get("pe_trailing"), ".1f")
+                # Fundamentals one-liner
+                fund = self.fundamentals.get(h.get("ticker", ""), {})
+                fund_parts = []
+                pe_fwd = fund.get("pe_forward")
+                if pe_fwd is not None:
+                    fund_parts.append(f"P/E(f) {pe_fwd:.1f}")
                 rev = fund.get("revenue_growth")
-                rev_str = f"{rev:.0%}" if rev is not None else "N/A"
-                lines.append(f"**Valuation:** P/E {pe} | Rev Growth {rev_str}\n")
+                if rev is not None:
+                    fund_parts.append(f"Rev +{rev:.0%}")
+                fund_str = " · ".join(fund_parts)
+                fund_html = f'<span style="color:#94a3b8;margin-left:8px">{fund_str}</span>' if fund_str else ""
 
-        if added:
-            lines.append("### New Additions\n")
-            for a in added:
-                lines.append(f"- **{a.get('ticker', '')}**: {a.get('thesis', '')}")
+                cards.append(f"""
+<div class="holding-card {direction}">
+  <div class="holding-top">
+    <span>
+      <span class="holding-ticker">{ticker}</span>
+      <span style="color:#64748b;font-size:0.85em;margin-left:6px">{_dollar(price)}</span>
+      {fund_html}
+    </span>
+    <span class="holding-change" style="color:{chg_color}">{chg:+.1f}%</span>
+  </div>
+  <div class="holding-meta">
+    {pct:.1f}% of portfolio · {thesis} {_status_pill(thesis_status)}
+  </div>
+  {events_html}
+</div>""")
+            cards_html = "\n".join(cards)
 
-        if removed:
-            lines.append("\n### Removed\n")
-            for r in removed:
-                lines.append(f"- **{r.get('ticker', '')}**: {r.get('removal_reason', r.get('reason', ''))}")
+        # Steady table
+        table_html = ""
+        if steady:
+            rows = []
+            for h in steady:
+                ticker = _esc(h.get("ticker", "?"))
+                price = h.get("price")
+                chg = h.get("change_pct") or 0
+                pct = h.get("position_pct") or 0
+                thesis_status = h.get("thesis_status", "intact")
+                chg_color = _color(chg)
+                rows.append(f"""<tr>
+  <td style="font-weight:600">{ticker}</td>
+  <td>{_dollar(price)}</td>
+  <td style="color:{chg_color};font-weight:600">{chg:+.1f}%</td>
+  <td>{pct:.1f}%</td>
+  <td>{_status_pill(thesis_status)}</td>
+</tr>""")
+            rows_html = "\n".join(rows)
+            table_html = f"""
+<table class="steady-table" style="margin-top:12px">
+  <thead>
+    <tr><th>Ticker</th><th>Price</th><th>Change</th><th>Weight</th><th>Thesis</th></tr>
+  </thead>
+  <tbody>{rows_html}</tbody>
+</table>"""
 
-        return "\n".join(lines)
+        movers_label = f'<div style="font-size:0.75em;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;margin-bottom:8px;font-weight:600">Movers</div>' if movers else ""
+        steady_label = f'<div style="font-size:0.75em;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;margin-top:16px;margin-bottom:4px;font-weight:600">Steady</div>' if steady else ""
 
-    # ────────────────────────────────────────────────────────
-    # Section 7: Moonshot Analysis
-    # ────────────────────────────────────────────────────────
+        return f"""
+<div class="section">
+  <div class="section-title">Portfolio</div>
+  {movers_label}
+  {cards_html}
+  {steady_label}
+  {table_html}
+</div>"""
 
-    def _section_moonshot_analysis(self) -> str:
-        lines = ["## 7. Moonshot Analysis\n"]
-
-        current = self.moonshot_result.get("current_list", [])
-        if not current:
-            lines.append("*No moonshot ideas currently.*")
-            return "\n".join(lines)
-
-        for entry in current:
-            ticker = entry.get("ticker", "???")
-            conviction = entry.get("conviction", "medium")
-            thesis = entry.get("thesis", "")
-            upside = entry.get("upside_case", "")
-            downside = entry.get("downside_case", "")
-            milestone = entry.get("key_milestone", "")
-            max_pct = entry.get("max_position_pct", 3.0)
-
-            lines.append(f"### {ticker} [{conviction.upper()}] — Max {max_pct:.0f}% allocation\n")
-            lines.append(f"**Thesis:** {thesis}\n")
-            if upside:
-                lines.append(f"**Upside Scenario:** {upside}\n")
-            if downside:
-                lines.append(f"**Downside Scenario:** {downside}\n")
-            if milestone:
-                lines.append(f"**Key Milestone:** {milestone}\n")
-
-        return "\n".join(lines)
-
-    # ────────────────────────────────────────────────────────
-    # Section 8: Committee Transcript
-    # ────────────────────────────────────────────────────────
-
-    def _section_committee_transcript(self) -> str:
-        lines = ["## 8. Analyst Committee Transcript\n"]
-
-        if not self.committee_result:
-            lines.append("*Committee did not run.*")
-            return "\n".join(lines)
-
-        # Growth report
-        growth = self.committee_result.get("growth_report", {})
-        if growth and "error" not in growth:
-            lines.append("### Growth Analyst\n")
-            top_pick = growth.get("top_growth_pick", "N/A")
-            concern = growth.get("growth_concern", "N/A")
-            lines.append(f"**Top Growth Pick:** {top_pick}  ")
-            lines.append(f"**Growth Concern:** {concern}\n")
-            analyses = growth.get("analyses", {})
-            for ticker, data in list(analyses.items())[:8]:
-                if not isinstance(data, dict):
-                    continue
-                score = data.get("growth_score", "N/A")
-                thesis = data.get("growth_thesis", "")
-                moat = data.get("competitive_moat", "N/A")
-                risk = data.get("key_growth_risk", "")
-                lines.append(f"- **{ticker}** (score: {score}, moat: {moat}): {thesis}")
-                if risk:
-                    lines.append(f"  - Risk: {risk}")
-            lines.append("")
-
-        # Value report
-        value = self.committee_result.get("value_report", {})
-        if value and "error" not in value:
-            lines.append("### Value Analyst\n")
-            best = value.get("best_value", "N/A")
-            expensive = value.get("most_expensive", "N/A")
-            lines.append(f"**Best Value:** {best}  ")
-            lines.append(f"**Most Expensive:** {expensive}\n")
-            analyses = value.get("analyses", {})
-            for ticker, data in list(analyses.items())[:8]:
-                if not isinstance(data, dict):
-                    continue
-                score = data.get("value_score", "N/A")
-                thesis = data.get("value_thesis", "")
-                regime = data.get("current_regime", "N/A")
-                mos = data.get("margin_of_safety_pct", "N/A")
-                lines.append(f"- **{ticker}** (score: {score}, regime: {regime}, MoS: {mos}%): {thesis}")
-            lines.append("")
-
-        # Risk report
+    def _html_actions_risks(self) -> str:
+        actions = self.strategy.get("actions", [])
         risk = self.committee_result.get("risk_report", {})
-        if risk and "error" not in risk:
-            lines.append("### Risk Officer\n")
-            risk_score = risk.get("risk_score_portfolio", "N/A")
-            top_risk = risk.get("top_risk", "N/A")
-            corr = risk.get("correlation_warning", "N/A")
-            lines.append(f"**Portfolio Risk Score:** {risk_score}/100 (higher = safer)  ")
-            lines.append(f"**Top Risk:** {top_risk}  ")
-            lines.append(f"**Correlation Warning:** {corr}\n")
+        top_risk = risk.get("top_risk", "") if isinstance(risk, dict) else ""
+        risk_score = risk.get("risk_score_portfolio") if isinstance(risk, dict) else None
 
-            flags = risk.get("portfolio_risk_flags", [])
-            if flags:
-                lines.append("**Risk Flags:**")
-                for f in flags[:5]:
-                    if isinstance(f, dict):
-                        lines.append(f"- {f.get('flag', '')}")
-                        scenario = f.get("scenario", "")
-                        if scenario:
-                            lines.append(f"  - Scenario: {scenario}")
-                        mitigation = f.get("mitigation", "")
-                        if mitigation:
-                            lines.append(f"  - Mitigation: {mitigation}")
-                lines.append("")
+        if not actions and not top_risk:
+            return ""
 
-            drawdown = risk.get("max_drawdown_scenario", {})
-            if drawdown and isinstance(drawdown, dict):
-                lines.append("**Worst-Case Drawdown Scenario:**")
-                lines.append(f"- Scenario: {drawdown.get('scenario', 'N/A')}")
-                lines.append(f"- Estimated drawdown: {drawdown.get('estimated_portfolio_drawdown_pct', 'N/A')}%")
-                survive = drawdown.get("which_holdings_survive", [])
-                dont = drawdown.get("which_dont", [])
-                if survive:
-                    lines.append(f"- Survivors: {', '.join(str(s) for s in survive)}")
-                if dont:
-                    lines.append(f"- At risk: {', '.join(str(d) for d in dont)}")
+        # Action cards
+        actions_html = ""
+        if actions:
+            action_items = []
+            for a in actions:
+                act = _esc(a.get("action", "hold").upper())
+                ticker = _esc(a.get("ticker", ""))
+                urgency = a.get("urgency", "low")
+                reason = _esc(a.get("reason", ""))
+                urgency_color = "#dc2626" if urgency == "high" else "#d97706" if urgency == "medium" else "#64748b"
+                action_items.append(f"""
+<div class="action-card">
+  <div class="action-label">
+    <span style="color:{urgency_color}">{act}</span> {ticker}
+    <span style="font-weight:400;font-size:0.85em;color:#94a3b8;margin-left:6px">{urgency}</span>
+  </div>
+  <div class="action-reason">{reason}</div>
+</div>""")
+            actions_html = "\n".join(action_items)
 
-        return "\n".join(lines)
+        # Risk block
+        risk_html = ""
+        if top_risk:
+            score_html = ""
+            if risk_score is not None:
+                # Color based on safety score (higher = safer)
+                if risk_score >= 60:
+                    score_color = "#166534"
+                elif risk_score >= 40:
+                    score_color = "#92400e"
+                else:
+                    score_color = "#991b1b"
+                score_html = f'<span style="float:right;color:{score_color};font-weight:700">Safety: {risk_score}/100</span>'
+            risk_html = f"""
+<div class="risk-block">
+  <div class="risk-label">Top Risk {score_html}</div>
+  <div class="risk-text">{_esc(top_risk[:300])}</div>
+</div>"""
 
-    # ────────────────────────────────────────────────────────
-    # Section 9: Delta Report
-    # ────────────────────────────────────────────────────────
+        return f"""
+<div class="section">
+  <div class="section-title">Actions &amp; Risks</div>
+  {actions_html}
+  {risk_html}
+</div>"""
 
-    def _section_delta_report(self) -> str:
-        lines = ["## 9. Delta Report — What Changed\n"]
+    def _html_signal_intelligence(self) -> str:
+        has_reddit = bool(self.reddit_signals)
+        has_substack = bool(self.substack_signals)
+        has_youtube = bool(self.youtube_signals)
+        has_articles = bool(self.top_articles)
+        if not any([has_reddit, has_substack, has_youtube, has_articles]):
+            return ""
 
-        if not self.delta_report:
-            lines.append("*No delta data available (first run or delta engine disabled).*")
-            return "\n".join(lines)
+        blocks: list[str] = []
 
-        # Handle both DeltaReport objects and dicts
-        if hasattr(self.delta_report, "high_significance"):
-            high = self.delta_report.high_significance
-            medium = self.delta_report.medium_significance
-            low = self.delta_report.low_significance
-            summary = self.delta_report.summary
-            total = self.delta_report.total_changes
-        else:
-            high = [type("D", (), d)() for d in self.delta_report.get("high_significance", [])]
-            medium = [type("D", (), d)() for d in self.delta_report.get("medium_significance", [])]
-            low = [type("D", (), d)() for d in self.delta_report.get("low_significance", [])]
-            summary = self.delta_report.get("summary", "")
-            total = len(high) + len(medium) + len(low)
+        # Top headlines
+        if has_articles:
+            items = []
+            for a in self.top_articles[:5]:
+                title = _esc(a.get("title", ""))
+                source = _esc(a.get("source", ""))
+                tickers = a.get("related_tickers") or a.get("affected_tickers", [])
+                sentiment = a.get("sentiment", 0)
+                urgency = a.get("urgency", "")
+                ticker_html = ""
+                if tickers:
+                    pills = " ".join(
+                        f'<span style="background:#e0e7ff;color:#3730a3;padding:1px 5px;border-radius:4px;font-size:0.7em;font-weight:600">{_esc(t)}</span>'
+                        for t in tickers[:3]
+                    )
+                    ticker_html = f'<span style="margin-left:6px">{pills}</span>'
+                urgency_dot = ""
+                if urgency == "high":
+                    urgency_dot = '<span style="color:#dc2626;margin-right:4px" title="High urgency">&#9679;</span>'
+                sent_color = _color(sentiment)
+                items.append(f"""
+<div style="padding:6px 0;border-bottom:1px solid #f1f5f9;font-size:0.85em">
+  {urgency_dot}<span style="color:#1e293b">{title}</span>{ticker_html}
+  <span style="color:#94a3b8;font-size:0.85em;margin-left:6px">{source}</span>
+</div>""")
+            blocks.append(f"""
+<div style="margin-bottom:14px">
+  <div style="font-size:0.7em;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;font-weight:600;margin-bottom:6px">Top Headlines</div>
+  {"".join(items)}
+</div>""")
 
-        if summary:
-            lines.append(f"*{summary}*\n")
+        # Reddit signals
+        if has_reddit:
+            items = []
+            for s in self.reddit_signals[:5]:
+                ticker = _esc(s.get("ticker", ""))
+                sentiment = s.get("sentiment", s.get("sentiment_score", 0))
+                mentions = s.get("mentions", s.get("mention_count", ""))
+                subs = s.get("subreddits", s.get("subreddit", ""))
+                if isinstance(subs, list):
+                    subs = ", ".join(subs[:2])
+                # Sentiment bar
+                try:
+                    sent_val = float(sentiment)
+                except (ValueError, TypeError):
+                    sent_val = 0
+                sent_color = _color(sent_val)
+                sent_str = f"{sent_val:+.1f}" if isinstance(sent_val, float) else str(sentiment)
+                items.append(f"""
+<div style="display:flex;align-items:baseline;gap:8px;padding:5px 0;border-bottom:1px solid #f1f5f9;font-size:0.85em">
+  <span style="font-weight:700;color:#0f172a;min-width:44px">{ticker}</span>
+  <span style="color:{sent_color};font-weight:600;min-width:36px">{sent_str}</span>
+  <span style="color:#64748b">{mentions} mentions</span>
+  <span style="color:#94a3b8;font-size:0.85em">r/{_esc(str(subs))}</span>
+</div>""")
+            blocks.append(f"""
+<div style="margin-bottom:14px">
+  <div style="font-size:0.7em;text-transform:uppercase;letter-spacing:1px;color:#f97316;font-weight:600;margin-bottom:6px">&#128172; Reddit</div>
+  {"".join(items)}
+</div>""")
 
-        lines.append(f"**Total changes:** {total} ({len(high)} high, {len(medium)} medium, {len(low)} low)\n")
+        # Substack newsletters
+        if has_substack:
+            items = []
+            for s in self.substack_signals[:4]:
+                title = _esc(s.get("title", ""))
+                summary = _esc(s.get("summary", "")[:120])
+                tickers = s.get("tickers", s.get("affected_tickers", []))
+                ticker_html = ""
+                if tickers:
+                    pills = " ".join(
+                        f'<span style="background:#fce7f3;color:#9d174d;padding:1px 5px;border-radius:4px;font-size:0.7em;font-weight:600">{_esc(t)}</span>'
+                        for t in tickers[:3]
+                    )
+                    ticker_html = f'<div style="margin-top:2px">{pills}</div>'
+                summary_html = f'<div style="color:#64748b;font-size:0.85em;margin-top:2px">{summary}</div>' if summary else ""
+                items.append(f"""
+<div style="padding:6px 0;border-bottom:1px solid #f1f5f9;font-size:0.85em">
+  <div style="color:#1e293b;font-weight:500">{title}</div>
+  {summary_html}
+  {ticker_html}
+</div>""")
+            blocks.append(f"""
+<div style="margin-bottom:14px">
+  <div style="font-size:0.7em;text-transform:uppercase;letter-spacing:1px;color:#8b5cf6;font-weight:600;margin-bottom:6px">&#128220; Substack</div>
+  {"".join(items)}
+</div>""")
 
-        if high:
-            lines.append("### High Significance\n")
-            for item in high:
-                narrative = getattr(item, "narrative", str(item))
-                lines.append(f"- **{narrative}**")
-            lines.append("")
+        # YouTube
+        if has_youtube:
+            items = []
+            for y in self.youtube_signals[:3]:
+                title = _esc(y.get("title", ""))
+                channel = _esc(y.get("channel", y.get("author", "")))
+                views = y.get("views", y.get("score", 0))
+                tickers = y.get("tickers", y.get("affected_tickers", []))
+                view_str = ""
+                if views:
+                    if views >= 1_000_000:
+                        view_str = f"{views / 1_000_000:.1f}M views"
+                    elif views >= 1_000:
+                        view_str = f"{views / 1_000:.0f}K views"
+                    else:
+                        view_str = f"{views} views"
+                ticker_html = ""
+                if tickers:
+                    ticker_html = f' <span style="color:#94a3b8;font-size:0.85em">[{", ".join(tickers[:3])}]</span>'
+                items.append(f"""
+<div style="padding:5px 0;border-bottom:1px solid #f1f5f9;font-size:0.85em">
+  <span style="color:#1e293b">{title}</span>{ticker_html}
+  <div style="color:#94a3b8;font-size:0.85em">{channel}{(' · ' + view_str) if view_str else ''}</div>
+</div>""")
+            blocks.append(f"""
+<div style="margin-bottom:14px">
+  <div style="font-size:0.7em;text-transform:uppercase;letter-spacing:1px;color:#dc2626;font-weight:600;margin-bottom:6px">&#9654; YouTube</div>
+  {"".join(items)}
+</div>""")
 
-        if medium:
-            lines.append("### Medium Significance\n")
-            for item in medium[:10]:
-                narrative = getattr(item, "narrative", str(item))
-                lines.append(f"- {narrative}")
-            lines.append("")
+        return f"""
+<div class="section">
+  <div class="section-title">Signal Intelligence</div>
+  {"".join(blocks)}
+</div>"""
 
-        if low:
-            lines.append(f"*{len(low)} low-significance changes omitted.*")
+    def _html_prediction_markets(self) -> str:
+        if not self.prediction_shifts:
+            return ""
 
-        return "\n".join(lines)
+        items = []
+        for pm in self.prediction_shifts[:5]:
+            title = _esc(pm.get("title", pm.get("market_title", "")))
+            prob = pm.get("probability", 0)
+            delta = pm.get("delta", pm.get("delta_pct", 0))
+            # Normalize: if delta is a fraction (0.15), convert to pp
+            if isinstance(delta, float) and -1 < delta < 1 and delta != 0:
+                delta = delta * 100
+            prob_display = prob * 100 if isinstance(prob, float) and prob < 1 else prob
+            direction_color = "#16a34a" if delta > 0 else "#dc2626"
+            affected = pm.get("affected_tickers", [])
+            ticker_html = ""
+            if affected:
+                ticker_html = f'<span style="color:#94a3b8;font-size:0.8em;margin-left:6px">[{", ".join(affected[:3])}]</span>'
 
-    # ────────────────────────────────────────────────────────
-    # Section 10: Catalyst Calendar
-    # ────────────────────────────────────────────────────────
+            # Probability bar
+            bar_width = max(5, min(100, int(prob_display)))
+            items.append(f"""
+<div style="padding:8px 0;border-bottom:1px solid #f1f5f9">
+  <div style="display:flex;justify-content:space-between;align-items:baseline;font-size:0.85em;margin-bottom:4px">
+    <span style="color:#1e293b;flex:1">{title}{ticker_html}</span>
+    <span style="font-weight:700;color:#0f172a;margin-left:8px">{prob_display:.0f}%</span>
+    <span style="font-weight:600;color:{direction_color};margin-left:6px;min-width:48px;text-align:right">{delta:+.0f}pp</span>
+  </div>
+  <div style="background:#e2e8f0;border-radius:4px;height:4px;overflow:hidden">
+    <div style="background:{direction_color};height:100%;width:{bar_width}%;border-radius:4px"></div>
+  </div>
+</div>""")
 
-    def _section_catalyst_calendar(self) -> str:
-        lines = ["## 10. Catalyst Calendar (Next 30 Days)\n"]
+        return f"""
+<div class="section">
+  <div class="section-title">Prediction Markets</div>
+  {"".join(items)}
+</div>"""
 
+    def _html_smart_money(self) -> str:
+        if not self.superinvestor_data:
+            return ""
+
+        items = []
+        for ticker, data in self.superinvestor_data.items():
+            if not isinstance(data, dict):
+                continue
+            insider = data.get("insider_net_buying")
+            supers = data.get("superinvestors_holding", [])
+            activity = data.get("superinvestor_activity", [])
+            count = data.get("superinvestor_count", len(supers))
+
+            if not insider and not supers and not activity:
+                continue
+
+            badges = []
+            if insider:
+                badges.append('<span style="background:#dcfce7;color:#166534;padding:2px 6px;border-radius:8px;font-size:0.7em;font-weight:600">INSIDER BUYING</span>')
+            if count and count > 0:
+                badges.append(f'<span style="background:#e0e7ff;color:#3730a3;padding:2px 6px;border-radius:8px;font-size:0.7em;font-weight:600">{count} SUPER</span>')
+
+            detail_parts = []
+            if supers:
+                detail_parts.append(f"Held by: {', '.join(str(s) for s in supers[:4])}")
+            if activity:
+                recent = activity[0]
+                inv = recent.get("investor", "")
+                act = recent.get("action", "")
+                val = recent.get("value_usd")
+                val_str = f" (${val / 1_000_000:.1f}M)" if val and val > 0 else ""
+                if inv:
+                    detail_parts.append(f"{inv} {act}{val_str}")
+
+            badges_html = " ".join(badges)
+            detail_html = f'<div style="color:#64748b;font-size:0.8em;margin-top:2px">{" · ".join(detail_parts)}</div>' if detail_parts else ""
+
+            items.append(f"""
+<div style="display:flex;align-items:baseline;gap:8px;padding:7px 0;border-bottom:1px solid #f1f5f9;font-size:0.85em">
+  <span style="font-weight:700;color:#0f172a;min-width:44px">{_esc(ticker)}</span>
+  <div style="flex:1">
+    <div>{badges_html}</div>
+    {detail_html}
+  </div>
+</div>""")
+
+        if not items:
+            return ""
+
+        return f"""
+<div class="section">
+  <div class="section-title">Smart Money</div>
+  {"".join(items)}
+</div>"""
+
+    def _html_watchlist(self) -> str:
+        conviction = self.conviction_result.get("current_list", [])
+        moonshots = self.moonshot_result.get("current_list", [])
+        if not conviction and not moonshots:
+            return ""
+
+        all_cards: list[str] = []
+
+        for c in conviction:
+            ticker = c.get("ticker", "?")
+            conv = c.get("conviction", "medium")
+            thesis = _esc(c.get("thesis", ""))
+            weeks = c.get("weeks_on_list", 1)
+            source = _esc(c.get("source", ""))
+            pros = c.get("pros", [])
+            cons = c.get("cons", [])
+
+            # Evidence tags
+            evidence_html = ""
+            if pros or cons:
+                tags = []
+                for p in (pros if isinstance(pros, list) else [])[:4]:
+                    p_str = str(p)
+                    tags.append(f'<span style="background:#dcfce7;color:#166534;padding:1px 6px;border-radius:4px;font-size:0.7em;margin:1px">{_esc(p_str)}</span>')
+                for co in (cons if isinstance(cons, list) else [])[:3]:
+                    c_str = str(co)
+                    tags.append(f'<span style="background:#fecaca;color:#991b1b;padding:1px 6px;border-radius:4px;font-size:0.7em;margin:1px">{_esc(c_str)}</span>')
+                evidence_html = f'<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:2px">{"".join(tags)}</div>'
+
+            # Cross-reference intel
+            intel_html = self._build_intel_html(ticker)
+
+            # Source line
+            source_html = f'<div style="font-size:0.75em;color:#94a3b8;margin-top:4px">Source: {source}</div>' if source else ""
+
+            all_cards.append(f"""
+<div style="background:#f8fafc;border-radius:8px;padding:14px 16px;margin-bottom:10px;border-left:4px solid #2563eb">
+  <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:4px">
+    <span style="font-weight:700;font-size:1em;color:#0f172a">{_esc(ticker)}</span>
+    {_conviction_pill(conv)}
+    <span style="font-size:0.75em;color:#94a3b8">Week {weeks}</span>
+  </div>
+  <div style="font-size:0.85em;color:#334155;margin-bottom:4px">{thesis}</div>
+  {source_html}
+  {evidence_html}
+  {intel_html}
+</div>""")
+
+        for m in moonshots:
+            ticker = m.get("ticker", "?")
+            thesis = _esc(m.get("thesis", ""))
+            upside = _esc(m.get("upside_case", ""))
+            downside = _esc(m.get("downside_case", ""))
+            milestone = _esc(m.get("key_milestone", ""))
+
+            # Upside/downside row
+            scenarios_html = ""
+            scenario_parts = []
+            if upside:
+                scenario_parts.append(f'<span style="color:#16a34a">&#9650; {upside}</span>')
+            if downside:
+                scenario_parts.append(f'<span style="color:#dc2626">&#9660; {downside}</span>')
+            if scenario_parts:
+                scenarios_html = f'<div style="font-size:0.8em;margin-top:4px">{" &nbsp;|&nbsp; ".join(scenario_parts)}</div>'
+
+            milestone_html = f'<div style="font-size:0.75em;color:#94a3b8;margin-top:4px">Milestone: {milestone}</div>' if milestone else ""
+
+            # Cross-reference intel
+            intel_html = self._build_intel_html(ticker)
+
+            all_cards.append(f"""
+<div style="background:#faf5ff;border-radius:8px;padding:14px 16px;margin-bottom:10px;border-left:4px solid #7c3aed">
+  <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:4px">
+    <span style="font-weight:700;font-size:1em;color:#0f172a">{_esc(ticker)}</span>
+    <span style="background:#ede9fe;color:#5b21b6;padding:2px 6px;border-radius:8px;font-size:0.7em;font-weight:600">MOONSHOT</span>
+  </div>
+  <div style="font-size:0.85em;color:#334155;margin-bottom:2px">{thesis}</div>
+  {scenarios_html}
+  {milestone_html}
+  {intel_html}
+</div>""")
+
+        return f"""
+<div class="section">
+  <div class="section-title">Watchlist</div>
+  {"".join(all_cards)}
+</div>"""
+
+    def _build_intel_html(self, ticker: str) -> str:
+        """Build cross-referenced intelligence HTML for a ticker."""
+        intel_items: list[str] = []
+
+        # Reddit signal
+        for s in self.reddit_signals:
+            if s.get("ticker", "").upper() == ticker.upper():
+                sent = s.get("sentiment", s.get("sentiment_score", 0))
+                mentions = s.get("mentions", s.get("mention_count", ""))
+                sub = s.get("subreddit", "")
+                try:
+                    sent_val = float(sent)
+                    sent_color = _color(sent_val)
+                    sent_str = f"{sent_val:+.1f}"
+                except (ValueError, TypeError):
+                    sent_color = "#64748b"
+                    sent_str = str(sent)
+                intel_items.append(
+                    f'<span style="color:#f97316">&#128172;</span> '
+                    f'<span style="color:{sent_color};font-weight:600">{sent_str}</span> '
+                    f'sentiment, {mentions} mentions'
+                    + (f' <span style="color:#94a3b8">r/{_esc(str(sub))}</span>' if sub else "")
+                )
+                break
+
+        # Substack signal
+        for s in self.substack_signals:
+            tickers = [t.upper() for t in s.get("tickers", s.get("affected_tickers", []))]
+            if ticker.upper() in tickers:
+                title = _esc(s.get("title", ""))
+                summary = _esc(s.get("summary", "")[:80])
+                line = f'<span style="color:#8b5cf6">&#128220;</span> {title}'
+                if summary:
+                    line += f' <span style="color:#94a3b8">— {summary}</span>'
+                intel_items.append(line)
+                break
+
+        # YouTube signal
+        for y in self.youtube_signals:
+            ytickers = [t.upper() for t in y.get("tickers", y.get("affected_tickers", []))]
+            if ticker.upper() in ytickers:
+                title = _esc(y.get("title", ""))
+                channel = _esc(y.get("channel", y.get("author", "")))
+                intel_items.append(f'<span style="color:#dc2626">&#9654;</span> {title} <span style="color:#94a3b8">— {channel}</span>')
+                break
+
+        # Smart money
+        si = self.superinvestor_data.get(ticker, {})
+        if isinstance(si, dict):
+            supers = si.get("superinvestors_holding", [])
+            insider = si.get("insider_net_buying")
+            activity = si.get("superinvestor_activity", [])
+            parts = []
+            if insider:
+                parts.append('<span style="color:#16a34a;font-weight:600">insider buying</span>')
+            if supers:
+                parts.append(f'held by {", ".join(_esc(str(s)) for s in supers[:3])}')
+            if activity:
+                recent = activity[0]
+                inv = _esc(recent.get("investor", ""))
+                act = recent.get("action", "")
+                val = recent.get("value_usd")
+                val_str = f" (${val / 1_000_000:.1f}M)" if val and val > 0 else ""
+                if inv:
+                    parts.append(f"{inv} {act}{val_str}")
+            if parts:
+                intel_items.append(f'<span style="color:#2563eb">&#128176;</span> {", ".join(parts)}')
+
+        # Fundamentals
+        fund = self.fundamentals.get(ticker, {})
+        if fund:
+            f_parts = []
+            pe = fund.get("pe_forward")
+            rev = fund.get("revenue_growth")
+            margin = fund.get("net_margin")
+            gross = fund.get("gross_margin")
+            if pe is not None:
+                f_parts.append(f"P/E(f) {pe:.1f}")
+            if rev is not None:
+                f_parts.append(f"Rev +{rev:.0%}")
+            if margin is not None:
+                f_parts.append(f"Net {margin:.0%}")
+            elif gross is not None:
+                f_parts.append(f"Gross {gross:.0%}")
+            if f_parts:
+                intel_items.append(f'<span style="color:#64748b">&#128202;</span> {" · ".join(f_parts)}')
+
+        if not intel_items:
+            return ""
+
+        rows = "\n".join(f'<div style="padding:2px 0">{item}</div>' for item in intel_items)
+        return f"""
+<div style="margin-top:8px;padding:8px 10px;background:rgba(255,255,255,0.7);border-radius:6px;font-size:0.8em;color:#475569;border:1px solid #e2e8f0">
+  {rows}
+</div>"""
+
+    def _html_upcoming(self) -> str:
         catalysts = self.catalyst_data.get("catalysts", [])
         if not catalysts:
-            lines.append("*No upcoming catalysts tracked.*")
-            return "\n".join(lines)
+            return ""
 
-        lines.append("| Date | Event | Type | Impact | Days Away |")
-        lines.append("|------|-------|------|--------|-----------|")
+        upcoming = [c for c in catalysts if self._days_away(c) <= 7]
+        if not upcoming:
+            return ""
 
-        for c in catalysts[:20]:
-            if isinstance(c, dict):
-                dt = c.get("date", "TBD")
-                desc = c.get("description", "")
-                event_type = c.get("event_type", "")
-                impact = c.get("impact_estimate", "medium")
-                days = c.get("days_away", "?")
-                lines.append(f"| {dt} | {desc} | {event_type} | {impact} | {days} |")
+        items = []
+        for c in upcoming[:8]:
+            dt = _esc(self._cat_date(c))
+            desc = _esc(self._cat_desc(c))
+            days = self._days_away(c)
+            impact = self._cat_field(c, "impact_estimate", "medium")
+
+            if days == 0:
+                day_label = '<span style="color:#dc2626;font-weight:600">TODAY</span>'
+            elif days == 1:
+                day_label = '<span style="color:#d97706;font-weight:600">TOMORROW</span>'
             else:
-                # Handle CatalystEvent dataclasses
-                dt = getattr(c, "date", "TBD")
-                desc = getattr(c, "description", "")
-                event_type = getattr(c, "event_type", "")
-                impact = getattr(c, "impact_estimate", "medium")
-                days = getattr(c, "days_away", "?")
-                lines.append(f"| {dt} | {desc} | {event_type} | {impact} | {days} |")
+                day_label = f'<span class="event-days">in {days}d</span>'
 
-        return "\n".join(lines)
+            items.append(f"""
+<div class="event-item">
+  <span class="event-date">{dt}</span>
+  <span style="flex:1">{desc}</span>
+  {day_label}
+</div>""")
 
-    # ────────────────────────────────────────────────────────
-    # Section 11: Track Record
-    # ────────────────────────────────────────────────────────
+        items_html = "\n".join(items)
 
-    def _section_track_record(self) -> str:
-        lines = ["## 11. Track Record / Scorecard\n"]
+        return f"""
+<div class="section">
+  <div class="section-title">Next 7 Days</div>
+  {items_html}
+</div>"""
 
-        if not self.scorecard or self.scorecard.get("total_recommendations", 0) == 0:
-            lines.append("*No recommendation history yet.*")
-            return "\n".join(lines)
+    def _html_footer(self) -> str:
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-        sc = self.scorecard
-        lines.append(f"**Total Recommendations (30d):** {sc.get('total_recommendations', 0)}  ")
-        lines.append(f"**Hit Rate (1m):** {sc.get('hit_rate_1m', 0):.0f}%  ")
-        lines.append(f"**Avg Return (1m):** {sc.get('avg_return_1m_pct', 0):+.1f}%  ")
-        lines.append(f"**Avg Alpha vs SPY (1m):** {sc.get('avg_alpha_1m_pct', 0):+.1f}%  ")
-        lines.append(f"**False Positive Rate:** {sc.get('false_positive_rate', 0):.0f}%\n")
-
-        best = sc.get("best_recommendation")
-        worst = sc.get("worst_recommendation")
-        if best:
-            lines.append(f"**Best:** {best['ticker']} ({best['return_pct']:+.1f}%)  ")
-        if worst:
-            lines.append(f"**Worst:** {worst['ticker']} ({worst['return_pct']:+.1f}%)")
-
-        by_conv = sc.get("hit_rate_by_conviction", {})
-        if by_conv:
-            lines.append("\n### By Conviction Level\n")
-            lines.append("| Level | Hit Rate |")
-            lines.append("|-------|----------|")
-            for level, rate in sorted(by_conv.items()):
-                lines.append(f"| {level} | {rate:.0f}% |")
-
-        return "\n".join(lines)
-
-    # ────────────────────────────────────────────────────────
-    # Section 12: Sources
-    # ────────────────────────────────────────────────────────
-
-    def _section_sources(self) -> str:
-        lines = ["## 12. Sources Used\n"]
-
-        sources = set()
-        sources.add("yfinance (prices, historical, fundamentals)")
-
-        if self.macro_data:
-            sources.add("FRED API (macro indicators)")
+        # Inline sources
+        sources = ["yfinance", "FRED"]
         if self.top_articles:
-            for a in self.top_articles[:5]:
-                src = a.get("source", "")
-                if src:
-                    sources.add(f"News: {src}")
+            srcs = {a.get("source", "") for a in self.top_articles[:5] if a.get("source")}
+            sources.extend(sorted(srcs)[:3])
         if self.reddit_mood:
-            sources.add("Reddit (Street Ear agent)")
-        if self.earnings_data:
-            sources.add("Financial Modeling Prep (earnings transcripts)")
+            sources.append("Reddit")
         if self.superinvestor_data:
-            sources.add("SEC EDGAR (13F filings)")
-        if self.prediction_shifts:
-            sources.add("Polymarket / Kalshi (prediction markets)")
-        sources.add("Google Gemini 3 Pro Preview (analysis)")
+            sources.append("SEC 13F")
+        sources.append("Gemini")
+        sources_str = " · ".join(sources)
 
-        for s in sorted(sources):
-            lines.append(f"- {s}")
+        return f"""
+<div class="footer">
+  AlphaDesk v2.0 · ${self.daily_cost:.2f} · {self.total_time:.0f}s · {ts}<br>
+  {sources_str}
+</div>"""
 
-        return "\n".join(lines)
+    # ── catalyst helpers ─────────────────────────────────────────
 
-    # ────────────────────────────────────────────────────────
-    # Section 13: Cost Breakdown
-    # ────────────────────────────────────────────────────────
+    def _days_away(self, c) -> int:
+        if isinstance(c, dict):
+            return c.get("days_away", 999)
+        return getattr(c, "days_away", 999)
 
-    def _section_cost_breakdown(self) -> str:
-        lines = ["## 13. Cost Breakdown\n"]
-        lines.append(f"**Today's API Cost:** ${self.daily_cost:.2f}  ")
-        lines.append(f"**Pipeline Runtime:** {self.total_time:.1f}s\n")
-        lines.append(f"*Generated by AlphaDesk v2.0 on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*")
-        return "\n".join(lines)
+    def _cat_date(self, c) -> str:
+        if isinstance(c, dict):
+            return str(c.get("date", "TBD"))
+        return str(getattr(c, "date", "TBD"))
 
+    def _cat_desc(self, c) -> str:
+        if isinstance(c, dict):
+            return c.get("description", "")
+        return getattr(c, "description", "")
 
-# ═══════════════════════════════════════════════════════
-# MARKDOWN → HTML CONVERTER
-# ═══════════════════════════════════════════════════════
-
-def _markdown_to_html(md: str) -> str:
-    """Convert Markdown to email-safe HTML with inline CSS.
-
-    Simple converter that handles the subset of Markdown we generate:
-    headings, bold, italic, tables, lists, code spans, horizontal rules.
-    """
-    import re
-
-    lines = md.split("\n")
-    html_lines = []
-    in_table = False
-    in_list = False
-    table_header_done = False
-
-    # CSS
-    css = """
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; color: #1a1a1a; background: #fff; line-height: 1.6; }
-        h1 { color: #0f172a; border-bottom: 3px solid #2563eb; padding-bottom: 10px; font-size: 1.8em; }
-        h2 { color: #1e3a5f; border-bottom: 1px solid #e2e8f0; padding-bottom: 6px; margin-top: 2em; font-size: 1.4em; }
-        h3 { color: #334155; margin-top: 1.5em; font-size: 1.1em; }
-        table { border-collapse: collapse; width: 100%; margin: 1em 0; font-size: 0.9em; }
-        th { background: #f1f5f9; color: #334155; padding: 8px 12px; text-align: left; border: 1px solid #e2e8f0; font-weight: 600; }
-        td { padding: 6px 12px; border: 1px solid #e2e8f0; }
-        tr:nth-child(even) { background: #f8fafc; }
-        code { background: #f1f5f9; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; color: #475569; }
-        blockquote { border-left: 4px solid #2563eb; padding: 0.5em 1em; margin: 1em 0; background: #f8fafc; color: #475569; }
-        .status-intact { color: #16a34a; font-weight: 600; }
-        .status-evolving { color: #d97706; font-weight: 600; }
-        .status-weakening { color: #dc2626; font-weight: 600; }
-        hr { border: none; border-top: 1px solid #e2e8f0; margin: 2em 0; }
-        ul { padding-left: 1.5em; }
-        li { margin-bottom: 0.3em; }
-        em { color: #64748b; }
-        strong { color: #0f172a; }
-    </style>
-    """
-
-    html_lines.append(f"<!DOCTYPE html>\n<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>{css}</head><body>")
-
-    for line in lines:
-        stripped = line.strip()
-
-        # Horizontal rule
-        if stripped == "---":
-            if in_table:
-                html_lines.append("</table>")
-                in_table = False
-                table_header_done = False
-            if in_list:
-                html_lines.append("</ul>")
-                in_list = False
-            html_lines.append("<hr>")
-            continue
-
-        # Table separator row (|---|---|)
-        if stripped.startswith("|") and set(stripped.replace("|", "").replace("-", "").strip()) <= {" ", ""}:
-            table_header_done = True
-            continue
-
-        # Table row
-        if stripped.startswith("|") and stripped.endswith("|"):
-            if in_list:
-                html_lines.append("</ul>")
-                in_list = False
-            cells = [c.strip() for c in stripped[1:-1].split("|")]
-            if not in_table:
-                html_lines.append("<table>")
-                in_table = True
-                # First row is header
-                html_lines.append("<tr>" + "".join(f"<th>{_inline_md(c)}</th>" for c in cells) + "</tr>")
-                continue
-            tag = "td"
-            html_lines.append("<tr>" + "".join(f"<td>{_inline_md(c)}</td>" for c in cells) + "</tr>")
-            continue
-
-        # Close table if we were in one
-        if in_table and not stripped.startswith("|"):
-            html_lines.append("</table>")
-            in_table = False
-            table_header_done = False
-
-        # Headings
-        if stripped.startswith("# ") and not stripped.startswith("## "):
-            if in_list:
-                html_lines.append("</ul>")
-                in_list = False
-            html_lines.append(f"<h1>{_inline_md(stripped[2:])}</h1>")
-            continue
-        if stripped.startswith("## "):
-            if in_list:
-                html_lines.append("</ul>")
-                in_list = False
-            html_lines.append(f"<h2>{_inline_md(stripped[3:])}</h2>")
-            continue
-        if stripped.startswith("### "):
-            if in_list:
-                html_lines.append("</ul>")
-                in_list = False
-            html_lines.append(f"<h3>{_inline_md(stripped[4:])}</h3>")
-            continue
-
-        # List items
-        if stripped.startswith("- "):
-            if not in_list:
-                html_lines.append("<ul>")
-                in_list = True
-            content = stripped[2:]
-            # Handle nested items (indented with spaces)
-            html_lines.append(f"<li>{_inline_md(content)}</li>")
-            continue
-
-        if stripped.startswith("  - "):
-            if not in_list:
-                html_lines.append("<ul>")
-                in_list = True
-            html_lines.append(f"<li style='margin-left:1em'>{_inline_md(stripped[4:])}</li>")
-            continue
-
-        # Close list if not a list item
-        if in_list and not stripped.startswith("- ") and not stripped.startswith("  - "):
-            html_lines.append("</ul>")
-            in_list = False
-
-        # Empty line
-        if not stripped:
-            continue
-
-        # Italic block (*text*)
-        if stripped.startswith("*") and stripped.endswith("*") and not stripped.startswith("**"):
-            html_lines.append(f"<p><em>{_inline_md(stripped[1:-1])}</em></p>")
-            continue
-
-        # Regular paragraph
-        html_lines.append(f"<p>{_inline_md(stripped)}</p>")
-
-    # Close any open elements
-    if in_table:
-        html_lines.append("</table>")
-    if in_list:
-        html_lines.append("</ul>")
-
-    html_lines.append("</body></html>")
-    return "\n".join(html_lines)
+    def _cat_field(self, c, field: str, default: str = "") -> str:
+        if isinstance(c, dict):
+            return c.get(field, default)
+        return getattr(c, field, default)
 
 
-def _inline_md(text: str) -> str:
-    """Convert inline Markdown: **bold**, *italic*, `code`, [INTACT] badges."""
-    import re
-    # Bold
-    text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
-    # Italic
-    text = re.sub(r"\*(.+?)\*", r"<em>\1</em>", text)
-    # Code
-    text = re.sub(r"`(.+?)`", r"<code>\1</code>", text)
-    # Status badges
-    text = text.replace("[INTACT]", '<span class="status-intact">[INTACT]</span>')
-    text = text.replace("[EVOLVING]", '<span class="status-evolving">[EVOLVING]</span>')
-    text = text.replace("[WEAKENING]", '<span class="status-weakening">[WEAKENING]</span>')
-    text = text.replace("[UNKNOWN]", '<span style="color:#94a3b8">[UNKNOWN]</span>')
-    return text
-
+# ═══════════════════════════════════════════════════════════════
+# SAVE TO DISK (same interface as before)
+# ═══════════════════════════════════════════════════════════════
 
 def save_verbose_report(markdown: str, html: str, report_dir: str | None = None) -> dict[str, str]:
     """Save the verbose report to disk.
@@ -951,7 +1676,6 @@ def save_verbose_report(markdown: str, html: str, report_dir: str | None = None)
         Dict with paths: {"markdown": "...", "html": "..."}.
     """
     from pathlib import Path
-    from datetime import date
 
     if report_dir:
         out_dir = Path(report_dir)

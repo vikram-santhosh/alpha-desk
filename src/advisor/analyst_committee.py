@@ -114,6 +114,11 @@ RULES:
             chg = report.get("change_pct")
             chg_str = f"{chg:+.1f}%" if chg is not None else ""
             lines.append(f"- {t}: ${price} {chg_str} | Rev growth: {rev_str} | Margin: {margin_str} | P/E: {pe}")
+            # Append top 3 news headlines for this holding
+            key_events = report.get("key_events", [])
+            for evt in key_events[:3]:
+                headline = evt.get("headline", evt) if isinstance(evt, dict) else str(evt)
+                lines.append(f"    news: {headline}")
         return "\n".join(lines) if lines else "No holdings data."
 
 
@@ -351,13 +356,27 @@ class AdvisorEditor:
         holdings_context: str = "",
         conviction_context: str = "",
         strategy_context: str = "",
+        news_context: str = "",
+        reddit_context: str = "",
+        substack_context: str = "",
     ) -> dict:
         """Synthesize all analyst reports into the final daily brief."""
         within_budget, _, _ = check_budget()
         if not within_budget:
             return {"error": "budget_exceeded", "formatted_brief": ""}
 
-        prompt = f"""You are the Chief Investment Officer writing the daily brief. You have reports from your Growth Analyst, Value Analyst, and Risk Officer.
+        signal_intelligence = ""
+        if news_context or reddit_context or substack_context:
+            parts = []
+            if news_context:
+                parts.append(f"TOP NEWS HEADLINES:\n{news_context}")
+            if reddit_context:
+                parts.append(f"REDDIT / RETAIL SENTIMENT:\n{reddit_context}")
+            if substack_context:
+                parts.append(f"EXPERT NEWSLETTER SIGNALS (Substack):\n{substack_context}")
+            signal_intelligence = "\n\n".join(parts)
+
+        prompt = f"""You are the Chief Investment Officer writing the daily brief. You have reports from your Growth Analyst, Value Analyst, and Risk Officer, plus raw signal intelligence from news, Reddit, and expert newsletters.
 
 GROWTH ANALYST REPORT:
 {json.dumps(growth_report, indent=2)[:3000]}
@@ -386,29 +405,34 @@ STRATEGY ENGINE OUTPUT:
 CONVICTION LIST:
 {conviction_context}
 
+{signal_intelligence}
+
 Write the daily brief with these sections:
 
 **SECTION 1 - WHAT CHANGED TODAY** (2-3 sentences)
-Lead with the most important change. If nothing material changed, say so.
+Lead with the most important change. If nothing material changed, say so. Reference specific news or signals if they drove the move.
 
 **SECTION 2 - ANALYST CONSENSUS & DISAGREEMENTS** (3-5 bullet points)
 Where do your analysts agree? Where do they disagree? When analysts disagree, who has the stronger evidence?
+Cross-reference with news and Reddit signals — does crowd sentiment confirm or contradict analyst views?
 
 **SECTION 3 - ACTIONS** (if any)
 Specific recommendations with conviction and sizing. Only if evidence warrants. "No action" is always the default.
+If news or Substack signals surfaced a new name, explain whether it clears the conviction bar.
 
 **SECTION 4 - WHAT TO WATCH THIS WEEK**
-Specific upcoming events that matter for this portfolio.
+Specific upcoming events that matter for this portfolio. Include any notable Reddit threads or newsletter theses to track.
 
 **SECTION 5 - PORTFOLIO HEALTH**
 Risk officer's top concern, concentration, correlation.
+Note any news-driven risks flagged today (e.g. chip export controls, regulatory headlines).
 
 RULES:
 - When Growth Analyst is bullish but Value Analyst says expensive and Risk Officer flags concentration, surface this CONFLICT explicitly.
 - If all three analysts agree, it's high conviction. Say so.
 - If your track record shows a bias, explicitly correct for it.
 - "No action" is always the default. Only recommend changes when evidence is overwhelming.
-- Be direct. Cite specific numbers. No hedging language.
+- Be direct. Cite specific numbers and specific headlines. No hedging language.
 - Separate sections with blank lines. Use bullet points for Sections 2-5."""
 
         try:
@@ -448,6 +472,9 @@ async def run_analyst_committee(
     holdings_context: str = "",
     conviction_context: str = "",
     strategy_context: str = "",
+    news_context: str = "",
+    reddit_context: str = "",
+    substack_context: str = "",
 ) -> dict:
     """Run the full analyst committee pipeline.
 
@@ -486,6 +513,9 @@ async def run_analyst_committee(
         holdings_context=holdings_context,
         conviction_context=conviction_context,
         strategy_context=strategy_context,
+        news_context=news_context,
+        reddit_context=reddit_context,
+        substack_context=substack_context,
     )
 
     log.info("Committee complete. Brief length: %d chars",

@@ -609,6 +609,69 @@ async def run() -> dict[str, Any]:
         "strategy": strategy,
     }
 
+    # Build signal intelligence context strings for the editor
+    # News: top 20 headlines, grouped by ticker relevance
+    _news_ctx_lines: list[str] = []
+    seen_headlines: set[str] = set()
+    for ns in news_signals[:50]:
+        headline = (ns.get("headline") or ns.get("title", "")).strip()
+        if not headline or headline in seen_headlines:
+            continue
+        seen_headlines.add(headline)
+        ticker = ns.get("ticker", "")
+        summary = ns.get("summary", "")
+        prefix = f"[{ticker}] " if ticker else ""
+        line = f"- {prefix}{headline}"
+        if summary:
+            line += f" — {summary[:120]}"
+        _news_ctx_lines.append(line)
+        if len(_news_ctx_lines) >= 20:
+            break
+    _news_ctx_str = "\n".join(_news_ctx_lines) if _news_ctx_lines else ""
+
+    # Reddit: mood, top themes, and notable ticker mentions from agent bus
+    _reddit_parts: list[str] = []
+    if _reddit_mood:
+        _reddit_parts.append(f"Mood: {_reddit_mood}")
+    if _reddit_themes:
+        _reddit_parts.append(f"Top themes: {'; '.join(_reddit_themes[:5])}")
+    _reddit_ticker_lines: list[str] = []
+    for sig in agent_bus_signals:
+        if sig.get("agent_name") == "street_ear":
+            payload = sig.get("payload", {})
+            t = payload.get("ticker") or sig.get("ticker", "")
+            sentiment = payload.get("sentiment_score", payload.get("sentiment", ""))
+            mentions = payload.get("mention_count", payload.get("mentions", ""))
+            subreddit = payload.get("subreddit", "")
+            if t:
+                parts_line = f"- {t}"
+                if sentiment != "":
+                    parts_line += f" sentiment: {sentiment}"
+                if mentions != "":
+                    parts_line += f", mentions: {mentions}"
+                if subreddit:
+                    parts_line += f" ({subreddit})"
+                _reddit_ticker_lines.append(parts_line)
+    if _reddit_ticker_lines:
+        _reddit_parts.append("Notable ticker mentions:\n" + "\n".join(_reddit_ticker_lines[:10]))
+    _reddit_ctx_str = "\n".join(_reddit_parts) if _reddit_parts else ""
+
+    # Substack: expert newsletter signals from agent bus + formatted output
+    _substack_lines: list[str] = []
+    for sig in agent_bus_signals:
+        if sig.get("agent_name") == "substack_ear":
+            payload = sig.get("payload", {})
+            title = payload.get("title") or payload.get("narrative_title", "")
+            summary = payload.get("summary") or payload.get("thesis_summary", "")
+            tickers_mentioned = payload.get("tickers", payload.get("affected_tickers", []))
+            ticker_str = f" [{', '.join(tickers_mentioned[:3])}]" if tickers_mentioned else ""
+            if title:
+                line = f"- {title}{ticker_str}"
+                if summary:
+                    line += f": {summary[:150]}"
+                _substack_lines.append(line)
+    _substack_ctx_str = "\n".join(_substack_lines) if _substack_lines else ""
+
     synthesis = {}
     try:
         from src.advisor.analyst_committee import run_analyst_committee
@@ -623,6 +686,9 @@ async def run() -> dict[str, Any]:
             holdings_context=_holdings_ctx_str,
             conviction_context=_conviction_ctx_str,
             strategy_context=_actions_ctx_str,
+            news_context=_news_ctx_str,
+            reddit_context=_reddit_ctx_str,
+            substack_context=_substack_ctx_str,
         )
 
         brief_text = committee_result.get("formatted_brief", "")
@@ -796,6 +862,40 @@ async def run() -> dict[str, Any]:
         except Exception:
             log.debug("Could not fetch scorecard for verbose report")
 
+        # Build structured signal lists from agent bus for Signal Intelligence section
+        _reddit_sigs: list[dict] = []
+        _substack_sigs: list[dict] = []
+        _youtube_sigs: list[dict] = []
+        for _bus_sig in agent_bus_signals:
+            _agent = _bus_sig.get("agent_name", "")
+            _payload = _bus_sig.get("payload", {})
+            if _agent == "street_ear":
+                _t = _payload.get("ticker") or _bus_sig.get("ticker", "")
+                if _t:
+                    _reddit_sigs.append({
+                        "ticker": _t,
+                        "sentiment": _payload.get("sentiment_score", _payload.get("sentiment", 0)),
+                        "mentions": _payload.get("mention_count", _payload.get("mentions", "")),
+                        "subreddit": _payload.get("subreddit", ""),
+                    })
+            elif _agent == "substack_ear":
+                _title = _payload.get("title") or _payload.get("narrative_title", "")
+                if _title:
+                    _substack_sigs.append({
+                        "title": _title,
+                        "summary": _payload.get("summary") or _payload.get("thesis_summary", ""),
+                        "tickers": _payload.get("tickers", _payload.get("affected_tickers", [])),
+                    })
+            elif _agent == "youtube_ear":
+                _title = _payload.get("title", "")
+                if _title:
+                    _youtube_sigs.append({
+                        "title": _title,
+                        "channel": _payload.get("channel", _payload.get("author", "")),
+                        "views": _payload.get("views", _payload.get("score", 0)),
+                        "tickers": _payload.get("tickers", _payload.get("affected_tickers", [])),
+                    })
+
         formatter = VerboseFormatter(
             holdings_reports=holdings_reports,
             fundamentals=fundamentals,
@@ -816,6 +916,9 @@ async def run() -> dict[str, Any]:
             scorecard=_scorecard,
             reddit_mood=reddit_mood,
             reddit_themes=reddit_themes,
+            reddit_signals=_reddit_sigs,
+            substack_signals=_substack_sigs,
+            youtube_signals=_youtube_sigs,
             daily_cost=daily_cost,
             total_time=total_time,
         )
@@ -825,6 +928,25 @@ async def run() -> dict[str, Any]:
         verbose_report_dir = paths.get("html", "")
         log.info("Verbose report generated: %d chars MD, %d chars HTML",
                  len(md_report), len(html_report))
+
+        # ── Email delivery ────────────────────────────────────────────
+        try:
+            from src.shared.email_reporter import EmailReporter
+            reporter = EmailReporter()
+            if reporter.is_configured():
+                # Build subject from CIO brief first line, fallback to date
+                _cio_text = (synthesis.get("committee_result") or {}).get("cio_brief", "")
+                _first_line = (_cio_text.strip().splitlines() or [""])[0].strip(" #*")
+                _today_str = date.today().strftime("%b %d, %Y")
+                _subject = f"AlphaDesk {_today_str} — {_first_line}" if _first_line else f"AlphaDesk Daily Report — {_today_str}"
+                ok = reporter.send_report(html_report, subject=_subject, plain_text=md_report)
+                if ok:
+                    log.info("Verbose report emailed: %s", _subject)
+            else:
+                log.debug("Email not configured — set SMTP_USER, SMTP_PASS, REPORT_EMAIL_TO in .env to enable")
+        except Exception:
+            log.exception("Failed to send email report — continuing")
+
     except Exception:
         log.exception("Failed to generate verbose report — continuing without it")
 
