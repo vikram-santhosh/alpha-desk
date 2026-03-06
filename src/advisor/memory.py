@@ -8,6 +8,7 @@ This is the foundation — every other advisor module reads/writes through here.
 """
 
 import json
+import os
 import sqlite3
 from datetime import date, datetime
 from pathlib import Path
@@ -17,7 +18,7 @@ from src.utils.logger import get_logger
 
 log = get_logger(__name__)
 
-DB_PATH = Path("data/advisor_memory.db")
+DB_PATH = Path(os.environ.get("ALPHADESK_DATA_DIR", "data")) / "advisor_memory.db"
 
 
 def _get_db() -> sqlite3.Connection:

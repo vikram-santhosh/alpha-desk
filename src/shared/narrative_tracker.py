@@ -6,6 +6,7 @@ for continuous improvement of signal quality.
 """
 
 import json
+import os
 import sqlite3
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -16,7 +17,7 @@ from src.utils.logger import get_logger
 
 log = get_logger(__name__)
 
-DB_PATH = Path("data/narrative_tracker.db")
+DB_PATH = Path(os.environ.get("ALPHADESK_DATA_DIR", "data")) / "narrative_tracker.db"
 AGENT_NAME = "narrative_tracker"
 
 # Propagation stage ordering and platform mapping

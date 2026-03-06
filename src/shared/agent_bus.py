@@ -6,6 +6,7 @@ and News Desk agents.
 """
 
 import json
+import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -15,7 +16,7 @@ from src.utils.logger import get_logger
 
 log = get_logger(__name__)
 
-DB_PATH = Path("data/agent_bus.db")
+DB_PATH = Path(os.environ.get("ALPHADESK_DATA_DIR", "data")) / "agent_bus.db"
 
 # Valid signal types
 SIGNAL_TYPES = {

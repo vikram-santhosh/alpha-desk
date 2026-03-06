@@ -5,6 +5,7 @@ Publishes expert signals to the agent bus.
 """
 
 import json
+import os
 import sqlite3
 from datetime import date, timedelta
 from pathlib import Path
@@ -15,7 +16,7 @@ from src.utils.logger import get_logger
 
 log = get_logger(__name__)
 
-DB_PATH = Path("data/substack_tracker.db")
+DB_PATH = Path(os.environ.get("ALPHADESK_DATA_DIR", "data")) / "substack_tracker.db"
 AGENT_NAME = "substack_ear"
 
 

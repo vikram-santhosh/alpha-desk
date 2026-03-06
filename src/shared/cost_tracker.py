@@ -13,7 +13,7 @@ from src.utils.logger import get_logger
 
 log = get_logger(__name__)
 
-DB_PATH = Path("data/cost_tracker.db")
+DB_PATH = Path(os.environ.get("ALPHADESK_DATA_DIR", "data")) / "cost_tracker.db"
 
 # Pricing per million tokens by model family
 MODEL_PRICING = {
