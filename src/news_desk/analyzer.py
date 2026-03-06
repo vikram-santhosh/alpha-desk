@@ -21,7 +21,7 @@ from src.utils.logger import get_logger
 log = get_logger(__name__)
 
 AGENT_NAME = "news_desk"
-MODEL = "claude-sonnet-4-6"
+MODEL = "claude-haiku-4-5"
 BATCH_SIZE = 25
 MAX_TOKENS = 4096
 
