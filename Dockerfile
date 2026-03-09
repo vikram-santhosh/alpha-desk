@@ -7,7 +7,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY config/ config/
 COPY src/ src/
+COPY run_daily.py .
 
-RUN mkdir -p data
+RUN mkdir -p data reports
 
+# Default: run Telegram bot (override with Cloud Run Job command)
 CMD ["python", "-m", "src.shared.telegram_bot"]

@@ -243,6 +243,7 @@ def publish_thesis_signals(analysis: dict[str, Any]) -> list[dict[str, Any]]:
                 "conviction": conviction,
                 "time_horizon": thesis.get("time_horizon", "medium_term"),
                 "contrarian": thesis.get("contrarian", False),
+                "url": thesis.get("source_url", ""),
             }
             publish(
                 signal_type="expert_thesis",
@@ -287,6 +288,7 @@ def publish_thesis_signals(analysis: dict[str, Any]) -> list[dict[str, Any]]:
                 "title": thesis.get("title", ""),
                 "affected_tickers": thesis.get("affected_tickers", []),
                 "conviction": thesis.get("conviction", "medium"),
+                "url": thesis.get("source_url", ""),
             }
             publish(
                 signal_type="sector_rotation_call",

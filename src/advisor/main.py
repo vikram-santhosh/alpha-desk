@@ -149,6 +149,26 @@ async def run() -> dict[str, Any]:
     except Exception:
         log.exception("Failed to load retrospective context")
 
+    # ── Step 1c: Load calibration context (from reasoning journal) ────
+    calibration_context = ""
+    try:
+        from src.advisor.reasoning_journal import build_calibration_context
+        calibration_context = build_calibration_context()
+        if calibration_context:
+            log.info("Loaded calibration context (%d chars)", len(calibration_context))
+    except Exception:
+        log.exception("Failed to load calibration context")
+
+    # ── Step 1d: Load user preference context ─────────────────────────
+    preference_context = ""
+    try:
+        from src.advisor.feedback_manager import build_preference_context
+        preference_context = build_preference_context()
+        if preference_context:
+            log.info("Loaded user preference context (%d chars)", len(preference_context))
+    except Exception:
+        log.exception("Failed to load user preference context")
+
     # Build ticker universe: holdings + conviction + moonshots
     holding_tickers = [h["ticker"] for h in memory["holdings"]]
     conviction_tickers = [c["ticker"] for c in memory["conviction_list"]]
@@ -472,7 +492,7 @@ async def run() -> dict[str, Any]:
         log.exception("Failed to update conviction list")
         conviction_result = {"current_list": memory["conviction_list"], "added": [], "removed": []}
 
-    # ── Step 6b: Catalyst tracking ────────────────────────────────────
+    # ── Step 6b: Catalyst tracking + event detection ─────────────────
     catalyst_data = {}
     catalyst_prompt_section = ""
     try:
@@ -482,6 +502,20 @@ async def run() -> dict[str, Any]:
         log.info("Catalyst tracking: %d catalysts found", len(catalyst_data.get("catalysts", [])))
     except Exception:
         log.exception("Catalyst tracking failed — continuing without catalysts")
+
+    # Extract future-dated events from news articles → persist as catalysts
+    try:
+        from src.advisor.event_detector import run_event_detection
+        top_articles = news_desk_result.get("top_articles", [])
+        existing_cats = catalyst_data.get("catalysts", [])
+        detected_events = run_event_detection(top_articles, existing_cats)
+        if detected_events:
+            log.info("Event detection: %d new events extracted from news", len(detected_events))
+            # Refresh catalyst data to include newly detected events
+            catalyst_data["catalysts"] = existing_cats + detected_events
+            catalyst_prompt_section = format_catalysts_for_prompt(catalyst_data["catalysts"])
+    except Exception:
+        log.exception("Event detection failed — continuing with hardcoded catalysts only")
 
     # Record conviction additions as structured recommendations for outcome tracking
     try:
@@ -572,6 +606,39 @@ async def run() -> dict[str, Any]:
         strategy = {"actions": [], "flags": [], "summary": "Strategy generation failed."}
 
     log.info("Step 6 completed in %.1fs", time.time() - step_start)
+
+    # ── Step 6c: Record reasoning journal entries ──────────────────────
+    try:
+        from src.advisor.reasoning_journal import record_daily_reasoning
+        for h in holdings_reports:
+            t = h.get("ticker", "")
+            if not t:
+                continue
+            chg = h.get("change_pct") or 0
+            thesis = h.get("thesis", "")
+            thesis_status = h.get("thesis_status", "intact")
+            # Determine predicted direction from strategy actions
+            action_dir = "flat"
+            for a in strategy.get("actions", []):
+                if a.get("ticker") == t:
+                    act = a.get("action", "").lower()
+                    if act in ("buy", "add", "hold"):
+                        action_dir = "up"
+                    elif act in ("sell", "trim", "reduce"):
+                        action_dir = "down"
+                    break
+            else:
+                # No explicit action → default to "up" if thesis intact
+                action_dir = "up" if thesis_status == "intact" else "flat"
+            record_daily_reasoning(
+                ticker=t,
+                analyst="composite",
+                thesis_snapshot=f"{thesis} (status: {thesis_status})",
+                predicted_direction=action_dir,
+            )
+        log.info("Recorded reasoning journal for %d holdings", len(holdings_reports))
+    except Exception:
+        log.exception("Failed to record reasoning journal")
 
     # ── Step 7: Analyst Committee synthesis ──────────────────────────────
     log.info("Step 7: Analyst Committee synthesis")
@@ -673,8 +740,36 @@ async def run() -> dict[str, Any]:
     _substack_ctx_str = "\n".join(_substack_lines) if _substack_lines else ""
 
     synthesis = {}
+    committee_result = None
     try:
         from src.advisor.analyst_committee import run_analyst_committee
+
+        # Build earnings & superinvestor context strings for deep research
+        _earnings_ctx_str = _build_earnings_ctx(
+            earnings_data if isinstance(earnings_data, dict) else {}
+        )
+        _superinvestor_ctx_str = _build_superinvestor_ctx(superinvestor_data)
+
+        # Determine priority tickers for deep research
+        # Priority: holdings with big moves > all holdings > conviction list
+        _deep_tickers: list[str] = []
+        _move_threshold = config.get("committee", {}).get("deep_research_move_threshold", 2.0)
+        _max_deep = config.get("committee", {}).get("deep_research_max_tickers", 6)
+        for h in sorted(holdings_reports, key=lambda x: abs(x.get("change_pct") or 0), reverse=True):
+            t = h.get("ticker", "")
+            if t and abs(h.get("change_pct") or 0) >= _move_threshold:
+                _deep_tickers.append(t)
+        # Fill with remaining holdings
+        for t in all_tickers[:12]:
+            if t not in _deep_tickers:
+                _deep_tickers.append(t)
+            if len(_deep_tickers) >= _max_deep:
+                break
+        # Add conviction list tickers
+        for c in conviction_result.get("current_list", []):
+            ct = c.get("ticker", "")
+            if ct and ct not in _deep_tickers:
+                _deep_tickers.append(ct)
 
         committee_result = await run_analyst_committee(
             tickers=all_tickers[:12],
@@ -689,6 +784,11 @@ async def run() -> dict[str, Any]:
             news_context=_news_ctx_str,
             reddit_context=_reddit_ctx_str,
             substack_context=_substack_ctx_str,
+            calibration_context=calibration_context,
+            preference_context=preference_context,
+            earnings_context=_earnings_ctx_str,
+            superinvestor_context=_superinvestor_ctx_str,
+            deep_research_tickers=_deep_tickers,
         )
 
         brief_text = committee_result.get("formatted_brief", "")
@@ -722,6 +822,10 @@ async def run() -> dict[str, Any]:
             catalyst_prompt_section=catalyst_prompt_section,
             news_signals=news_signals,
         )
+        # Preserve committee_result (deep research, analyst reports) even when
+        # editor synthesis failed — the verbose formatter can still use them.
+        if committee_result is not None:
+            synthesis["committee_result"] = committee_result
 
     # ── Step 8: Save memory state ──────────────────────────────────────
     try:
@@ -848,6 +952,20 @@ async def run() -> dict[str, Any]:
         formatted = "<b>AlphaDesk Advisor</b>\n\nError formatting daily brief."
 
     total_time = time.time() - pipeline_start
+
+    # ── Step 9b: Update chat session context for Q&A ──────────────────
+    try:
+        from src.advisor.chat_session import ChatSession
+        import os
+        _tg_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+        if _tg_chat_id:
+            _chat = ChatSession(_tg_chat_id)
+            _brief_for_chat = synthesis.get("formatted_brief", formatted)
+            _holdings_summary = _holdings_ctx_str
+            _chat.update_brief_context(_brief_for_chat, _holdings_summary)
+            log.info("Chat session context updated for Q&A")
+    except Exception:
+        log.debug("Failed to update chat session context — chat Q&A may lack context")
 
     # ── Step 10: Generate verbose report ─────────────────────────────
     verbose_report_dir = ""

@@ -174,10 +174,16 @@ committee:
   growth_analyst: true
   value_analyst: true
   risk_officer: true
+  deep_research_analyst: true
   editor_model: "claude-opus-4-6"
   analyst_model: "claude-opus-4-6"
-  max_tokens_per_analyst: 3000
+  max_tokens_per_analyst: 3500
   max_tokens_editor: 4000
+  max_tokens_deep_research: 8000
+  # Max tickers for deep research (priority 1 = full blocks)
+  deep_research_max_tickers: 6
+  # Minimum |change%| to auto-include in deep research
+  deep_research_move_threshold: 2.0
 
 # Delta Engine — "what changed" detection
 delta_engine:
@@ -252,6 +258,44 @@ delivery:
   email:
     enabled: false
     send_verbose: true
+
+# ═══════════════════════════════════════════════════
+# v3 Architecture Features
+# ═══════════════════════════════════════════════════
+
+# Reasoning Journal — tracks thesis accuracy over time
+reasoning_journal:
+  enabled: true
+  weekly_evaluation_day: "sunday"
+
+# Interactive Chat — Q&A about daily brief via Telegram
+chat:
+  enabled: true
+  session_expiry_hours: 4
+  max_history_messages: 10
+
+# User Feedback — shapes future analysis
+feedback:
+  enabled: true
+
+# Causal Reasoner — decomposes theses into assumption chains
+causal_reasoner:
+  enabled: true
+  model: "claude-opus-4-6"
+  max_tickers: 5
+
+# Event Detector — extracts future-dated events from news
+event_detector:
+  enabled: true
+  min_relevance: 7
+  dedup_days: 3
+
+# Gap Resolver — fetches missing data flagged by analysts
+gap_resolver:
+  enabled: true
+  model: "claude-haiku-4-5"
+  max_gaps: 5
+  timeout_seconds: 45
 
 # Scoring weights for composite score (must sum to 1.0)
 scoring_weights:
