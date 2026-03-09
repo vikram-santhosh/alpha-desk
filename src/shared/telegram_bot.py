@@ -332,25 +332,32 @@ async def handle_command(command: str, chat_id: str) -> None:
     elif cmd == "/help":
         help_text = (
             "<b>AlphaDesk Commands</b>\n\n"
-            "<b>Advisor (new)</b>\n"
+            "<b>Advisor</b>\n"
             "/advisor — Full 5-section daily brief\n"
             "/holdings — Portfolio check-in\n"
             "/macro — Macro &amp; market context\n"
             "/conviction — Conviction list (3-5 names)\n"
             "/moonshot — Moonshot ideas\n"
             "/action — Strategy actions (add/trim/hold)\n\n"
-            "<b>Legacy Agents</b>\n"
+            "<b>Intelligence</b>\n"
             "/brief — Full morning briefing (legacy)\n"
             "/portfolio — Portfolio analysis only\n"
             "/news — Market news only\n"
             "/trending — Reddit intelligence only\n"
             "/discover — Ticker discovery\n\n"
-            "<b>v2 Intelligence</b>\n"
+            "<b>Analysis</b>\n"
             "/delta — What changed since yesterday\n"
             "/catalysts — Upcoming catalysts (30d)\n"
             "/scorecard — Recommendation track record\n"
             "/retro — Weekly retrospective &amp; self-assessment\n"
             "/report — Latest verbose report path\n\n"
+            "<b>Feedback</b>\n"
+            "/rate — Rate today's brief (great/good/ok/bad)\n"
+            "/feedback — General feedback for the AI\n"
+            "/prefer — Set analysis preferences\n"
+            "/missed — Report a missed signal\n\n"
+            "<b>Chat</b>\n"
+            "Just type a question (no /) to ask about today's brief\n\n"
             "<b>System</b>\n"
             "/cost — API cost report\n"
             "/status — System status\n"
@@ -358,8 +365,109 @@ async def handle_command(command: str, chat_id: str) -> None:
         )
         send_message(chat_id, help_text)
 
+    elif cmd == "/feedback":
+        # Generic feedback — user provides free-text after the command
+        feedback_text = command.strip()[len("/feedback"):].strip()
+        if not feedback_text:
+            send_message(chat_id, "Usage: /feedback <your feedback text>\nExample: /feedback Focus more on geopolitical risk")
+            return
+        try:
+            from src.advisor.feedback_manager import record_feedback, extract_preferences, save_preferences
+            fb_id = record_feedback("preference", feedback_text)
+            prefs = extract_preferences(feedback_text)
+            if prefs:
+                save_preferences(prefs)
+            send_message(chat_id, f"✓ Feedback recorded (#{fb_id}). {'Extracted ' + str(len(prefs)) + ' preferences.' if prefs else 'No structured preferences detected.'}")
+        except Exception as e:
+            log.exception("Feedback command failed")
+            send_message(chat_id, f"Failed to record feedback: {e}")
+
+    elif cmd == "/rate":
+        # Rate today's brief
+        rating_text = command.strip()[len("/rate"):].strip()
+        if not rating_text:
+            send_message(chat_id, "Usage: /rate <great|good|ok|bad> [optional comment]\nExample: /rate great loved the causal analysis")
+            return
+        try:
+            from src.advisor.feedback_manager import record_feedback
+            record_feedback("rating", rating_text)
+            send_message(chat_id, "✓ Rating recorded. Thanks for the feedback!")
+        except Exception as e:
+            log.exception("Rate command failed")
+            send_message(chat_id, f"Failed to record rating: {e}")
+
+    elif cmd == "/prefer":
+        # Explicit preference setting
+        pref_text = command.strip()[len("/prefer"):].strip()
+        if not pref_text:
+            send_message(chat_id, "Usage: /prefer <your preference>\nExample: /prefer Weight tech analysis higher than macro")
+            return
+        try:
+            from src.advisor.feedback_manager import record_feedback, extract_preferences, save_preferences
+            record_feedback("preference", pref_text)
+            prefs = extract_preferences(pref_text)
+            if prefs:
+                save_preferences(prefs)
+                pref_lines = [f"  • {p.get('key', '?')}: {p.get('value', '?')} (conf: {p.get('confidence', 0):.0%})" for p in prefs]
+                send_message(chat_id, "✓ Preferences updated:\n" + "\n".join(pref_lines))
+            else:
+                send_message(chat_id, "✓ Recorded, but couldn't extract structured preferences. Try being more specific.")
+        except Exception as e:
+            log.exception("Prefer command failed")
+            send_message(chat_id, f"Failed to set preference: {e}")
+
+    elif cmd == "/missed":
+        # Report a missed signal
+        missed_text = command.strip()[len("/missed"):].strip()
+        if not missed_text:
+            send_message(chat_id, "Usage: /missed <what was missed>\nExample: /missed AMD competitor impact on NVDA margins")
+            return
+        try:
+            from src.advisor.feedback_manager import record_feedback
+            record_feedback("missed_signal", missed_text)
+            send_message(chat_id, "✓ Missed signal logged. Will be reviewed in next analysis cycle.")
+        except Exception as e:
+            log.exception("Missed command failed")
+            send_message(chat_id, f"Failed to record missed signal: {e}")
+
     else:
         send_message(chat_id, f"Unknown command: {cmd}\nType /help for available commands.")
+
+
+async def handle_chat_message(text: str, chat_id: str) -> None:
+    """Handle non-command text as conversational Q&A about today's brief.
+
+    Uses ChatSession to maintain context and answer follow-up questions
+    about the daily brief, portfolio, catalysts, etc.
+    """
+    if not authorize_chat(chat_id):
+        send_message(chat_id, "Unauthorized.")
+        return
+
+    log.info("Chat Q&A from %s: %s", chat_id, text[:80])
+
+    try:
+        from src.advisor.chat_session import ChatSession
+
+        session = ChatSession(chat_id)
+
+        # If session has no brief context, prompt user to run /advisor first
+        if not session.has_brief_context():
+            send_message(
+                chat_id,
+                "No daily brief loaded yet. Run /advisor first, then ask follow-up questions."
+            )
+            return
+
+        answer = await session.answer_question(text)
+        send_message(chat_id, answer)
+
+    except ImportError:
+        log.debug("ChatSession not available")
+        send_message(chat_id, "Chat Q&A not available. Type /help for commands.")
+    except Exception as e:
+        log.exception("Chat Q&A failed")
+        send_message(chat_id, f"Sorry, I couldn't process that question. Try /help for available commands.")
 
 
 def _run_scheduled_brief() -> None:
@@ -476,6 +584,9 @@ def run_bot() -> None:
 
                 if text.startswith("/"):
                     loop.run_until_complete(handle_command(text, chat_id))
+                elif text.strip():
+                    # Non-command text → conversational Q&A about today's brief
+                    loop.run_until_complete(handle_chat_message(text, chat_id))
 
         except KeyboardInterrupt:
             log.info("Bot stopped by user")
