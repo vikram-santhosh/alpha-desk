@@ -479,65 +479,91 @@ Respond with ONLY valid JSON, no markdown code blocks."""
 def _moonshot_fallback(
     ticker: str, candidate: dict, archetype: str,
 ) -> tuple[str, str, str, str]:
-    """Template-based fallback for moonshot thesis generation."""
+    """Template-based fallback for moonshot thesis generation.
+
+    Pulls available fundamentals into the templates to avoid generic text.
+    """
     fund = candidate.get("fundamentals_summary", {})
     signal_data = candidate.get("signal_data", {})
     rev_growth = fund.get("revenue_growth")
     pct_from_high = fund.get("pct_from_52w_high")
+    net_margin = fund.get("net_margin")
+    pe_forward = fund.get("pe_forward")
+    sector = fund.get("sector", "")
     exposure = signal_data.get("exposure", "")
     sector_theme = signal_data.get("sector_theme", "")
 
+    # Build a fundamentals snippet used across archetypes
+    fun_bits: list[str] = []
+    if rev_growth is not None:
+        fun_bits.append(f"revenue growing {rev_growth * 100:.0f}%")
+    if pe_forward is not None:
+        fun_bits.append(f"trading at {pe_forward:.0f}x forward earnings")
+    if net_margin is not None:
+        fun_bits.append(f"{net_margin * 100:.0f}% net margin")
+    fun_str = ", ".join(fun_bits) if fun_bits else "limited data available"
+
     if archetype == "small_cap_disruptor":
-        growth_str = f"{rev_growth * 100:.0f}%" if rev_growth else "high"
+        growth_str = f"{rev_growth * 100:.0f}%" if rev_growth else "strong"
+        sector_str = f" in {sector}" if sector else ""
         return (
-            f"{ticker} — Small-cap disruptor with {growth_str} revenue growth and strong social buzz",
-            "Multi-bagger potential if growth sustains and market re-rates",
-            "Growth deceleration or competitive entry could compress multiple 40-50%",
-            "Next quarterly earnings revenue growth rate",
+            f"{ticker} — Small-cap disruptor{sector_str} with {growth_str} revenue growth, "
+            f"{fun_str}. Social buzz suggests the street is underweight.",
+            f"If growth sustains above 25%, the current multiple re-rates 2-3x as institutions discover the name",
+            f"Growth deceleration below 15% or competitive entry compresses the multiple 40-50%",
+            "Next quarterly earnings — focus on revenue growth trajectory and customer count",
         )
     elif archetype == "catalyst_driven":
+        pe_ctx = f" at {pe_forward:.0f}x forward earnings" if pe_forward else ""
         return (
-            f"{ticker} — Catalyst-driven opportunity with binary event ahead",
-            "Positive catalyst resolution could drive 30-50%+ re-rating",
-            "Negative catalyst outcome could trigger 20-30% sell-off",
-            "Upcoming catalyst event resolution",
+            f"{ticker} — Trading{pe_ctx} with {fun_str}. "
+            f"A near-term catalyst event creates binary upside that the market is underpricing.",
+            f"Positive resolution re-rates the stock 30-50% as uncertainty premium collapses",
+            f"Negative outcome triggers 20-30% sell-off and likely multiple compression",
+            "Catalyst event resolution — watch for regulatory decision, contract award, or earnings beat",
         )
     elif archetype == "contrarian_turnaround":
-        drop_str = f"{pct_from_high:.0f}%" if pct_from_high else ">30%"
+        drop_str = f"{abs(pct_from_high):.0f}%" if pct_from_high else ">30%"
         return (
-            f"{ticker} — Contrarian turnaround, {drop_str} off highs with improving fundamentals",
-            "Mean reversion to historical levels could deliver 40-80% upside",
-            "Value trap risk if fundamentals continue deteriorating — further 20-30% downside",
-            "Two consecutive quarters of improving revenue growth",
+            f"{ticker} — Down {drop_str} from highs but {fun_str}. "
+            f"Fundamentals are stabilizing while the market still prices in deterioration.",
+            f"Mean reversion to 12-month average valuation delivers 40-80% upside",
+            f"Value trap — fundamentals continue deteriorating, another 20-30% downside before bottoming",
+            "Two consecutive quarters of improving revenue growth or margin expansion",
         )
     elif archetype == "pre_ipo_proxy":
         return (
-            f"{ticker} — Pre-IPO exposure: {exposure}",
-            f"If the unlisted company IPOs or grows rapidly, {ticker} benefits from direct exposure",
-            "Partnership unwinds or unlisted company falters — limited but real drag on valuation",
-            "Next quarterly disclosure of partnership metrics or investment valuation",
+            f"{ticker} — Pre-IPO exposure to {exposure}. "
+            f"Offers liquid access to a private-market growth story with {fun_str}.",
+            f"If the unlisted asset IPOs or is revalued higher, {ticker} re-rates as the discount closes",
+            "Partnership unwinds or unlisted asset falters — drag on valuation and NAV discount widens",
+            "Next quarterly disclosure of partnership metrics or investment fair-value mark",
         )
     elif archetype == "commodity_thematic":
+        exp_str = exposure if exposure else "commodity cycle"
         return (
-            f"{ticker} — {exposure}" if exposure else f"{ticker} — Commodity/thematic play",
-            "Macro tailwinds (inflation, central bank policy, demand cycle) drive sustained appreciation",
-            "Macro reversal or demand destruction compress prices 20-30%",
-            "Next Fed meeting or major macro data release",
+            f"{ticker} — Positioned for {exp_str}, with {fun_str}. "
+            f"Macro setup favors sustained tailwinds that are not yet priced in.",
+            "Macro tailwinds accelerate — inflation, supply constraints, or policy shifts drive 30-50% upside",
+            "Macro reversal or demand destruction compresses prices 20-30%",
+            "Next Fed meeting or major macro data release confirming directional thesis",
         )
     elif archetype == "thematic_sector":
         theme = sector_theme.replace("_", " ").title() if sector_theme else "Emerging sector"
         return (
-            f"{ticker} — {theme} play with asymmetric risk/reward",
-            f"Sector takes off — early movers in {theme.lower()} see 2-5x re-rating",
-            "Sector hype fades without commercial traction — 40-60% drawdown",
-            "First major commercial contract or revenue milestone",
+            f"{ticker} — Early mover in {theme.lower()} with {fun_str}. "
+            f"Sector is in early innings; winners will be re-rated as adoption accelerates.",
+            f"Sector inflects — early movers in {theme.lower()} see 2-5x re-rating as revenue ramps",
+            f"Sector hype fades without commercial traction — 40-60% drawdown as expectations reset",
+            "First major commercial contract, revenue milestone, or sector catalyst announcement",
         )
     else:
         return (
-            f"{ticker} — Asymmetric bet candidate",
-            "High growth potential if thesis plays out",
-            "Significant downside if thesis fails",
-            "Monitor next earnings report",
+            f"{ticker} — Asymmetric bet with {fun_str}. "
+            f"Risk/reward is skewed favorably at current levels.",
+            "Thesis plays out — re-rating potential of 30-50% as the narrative shifts",
+            "Thesis fails — 20-30% downside as the market re-prices expectations",
+            "Next earnings report or major company announcement",
         )
 
 
