@@ -350,7 +350,8 @@ class DeepResearchAnalyst:
                 growth_report: dict, value_report: dict, risk_report: dict,
                 news_context: str = "", reddit_context: str = "",
                 substack_context: str = "", earnings_context: str = "",
-                superinvestor_context: str = "") -> dict:
+                superinvestor_context: str = "",
+                config: dict | None = None) -> dict:
         """Produce deep research blocks for priority tickers."""
         within_budget, _, _ = check_budget()
         if not within_budget:
@@ -358,6 +359,21 @@ class DeepResearchAnalyst:
 
         if not priority_tickers:
             return {"blocks": {}}
+
+        # ── Tier tickers into deep vs summary ──
+        _cfg = config or {}
+        committee_cfg = _cfg.get("committee", {})
+        full_max = committee_cfg.get("deep_research_full_max", 3)
+        max_position_pct = _cfg.get("strategy", {}).get("max_position_pct", 15)
+
+        report_map = {r.get("ticker"): r for r in data_context.get("holdings_reports", [])}
+        sorted_tickers = sorted(
+            priority_tickers,
+            key=lambda t: abs(report_map.get(t, {}).get("change_pct") or 0),
+            reverse=True,
+        )
+        deep_tickers = sorted_tickers[:full_max]
+        summary_tickers = sorted_tickers[full_max:]
 
         context = self._build_context(priority_tickers, data_context,
                                        growth_report, value_report, risk_report)
@@ -376,10 +392,22 @@ class DeepResearchAnalyst:
             signal_parts.append(f"SUPERINVESTOR ACTIVITY:\n{superinvestor_context}")
         signal_section = "\n\n".join(signal_parts)
 
+        # Build mandate breach alerts
+        breach_alerts = []
+        for t in priority_tickers:
+            pct = report_map.get(t, {}).get("position_pct")
+            if pct is not None and pct > max_position_pct:
+                breach_alerts.append(f"MANDATE BREACH: {t} at {pct:.1f}% vs {max_position_pct}% limit — trimming is not optional.")
+        breach_section = "\n".join(breach_alerts) if breach_alerts else ""
+
+        # Build summary ticker list for prompt
+        summary_list = f"\nSUMMARY tickers (brief only): {', '.join(summary_tickers)}" if summary_tickers else ""
+
         prompt = f"""You are a lead buy-side research analyst at a concentrated long-only fund.
 Your job is to convert raw signals into decision-useful equity research for the portfolio manager.
+You are writing for a smart, busy PM who reads hundreds of these. Be sharp, be direct, take positions.
 
-DO NOT produce a news digest. Produce compact buy-side research notes.
+{breach_section}
 
 STOCK DATA AND ANALYST VIEWS:
 {context}
@@ -387,82 +415,91 @@ STOCK DATA AND ANALYST VIEWS:
 SIGNAL INTELLIGENCE:
 {signal_section}
 
-For EACH of the following tickers, produce a Deep Research Block: {', '.join(priority_tickers)}
+You must produce research for ALL of these tickers, but at DIFFERENT depths:
 
-For each ticker, write these sections using the EXACT headers shown:
+DEEP RESEARCH tickers (full prose): {', '.join(deep_tickers)}{summary_list}
+
+═══════════════════════════════════════
+DEEP RESEARCH FORMAT (for {', '.join(deep_tickers)})
+═══════════════════════════════════════
+
+For each deep ticker, write a PROSE-STYLE analyst note. NOT a templated form. Use this header:
 
 ## {{TICKER}} — Deep Research Block
 
-### 1. Why this name is in focus
-State clearly why the stock is being discussed (held in portfolio, newly recommended, watchlist, catalyst-driven, unusual move, crowded narrative, thesis checkpoint).
+Then write these 4 sections as flowing narrative:
 
-### 2. What changed today
-3-6 bullets of high-signal new information only. Include earnings/guidance, management commentary, analyst/industry commentary, regulatory/geopolitical developments, product/supply chain updates, unusual social/retail momentum. Skip if nothing material.
+### The Key Question
+One sentence framing the central question for this name RIGHT NOW. Examples:
+- "Is VRT's 8.5% rally on a down day the start of a 'safe haven AI' rotation, or a one-day anomaly?"
+- "Can AWS maintain enterprise trust after physical attacks on its data centers?"
 
-### 3. Signal → Interpretation → Investment Impact
-For each important signal, use this format:
-- Signal: {{fact/quote/event}}
-- Interpretation: {{what this means in industry/company context}}
-- Investment impact: {{bullish/bearish/mixed, and for whom}}
-- Confidence: {{high/medium/low}}
-Include 2-4 signal chains when enough data exists.
+### What We Know
+3-5 paragraphs of INTERPRETIVE NARRATIVE — not bullet dumps. Connect the dots between signals.
+Cover: what changed today, what the signals mean for the thesis, what the market is pricing in,
+and how this name relates to the rest of the portfolio.
 
-### 4. Management / Expert Commentary
-Capture the most important commentary from management, customers, suppliers, industry leaders, serious analysts. For each: who said it, what they said (paraphrased), why it matters, whether it strengthens or weakens the thesis. Interpret, don't just dump quotes.
+Use comparisons and analogies: "VRT is trading like a defense stock today, not a tech stock" is
+10x more useful than "VRT outperformed the broader market."
 
-### 5. Narrative / Crowd Intelligence
-Structure: bullish narrative, bearish narrative, what is newly trending, whether the narrative is early/crowded/fading. Be specific — avoid "sentiment mixed."
+Weave in the Growth Analyst and Value Analyst perspectives where they add insight. Don't just
+repeat their scores — tell the reader what the TENSION between them means.
 
-### 6. Thesis Scorecard
-Format:
-- Thesis: {{one sentence}}
-- Status: {{Strengthening/Stable/Weakening/Broken}}
-- Confidence: {{0-100}}
-- Evidence supporting: 2-3 bullets
-- Evidence against: 1-3 bullets
-- What would break the thesis: 1-2 bullets
+If a holding has a mandate breach (position > {max_position_pct}%), this MUST be the first thing discussed.
 
-### 7. Second-Order Effects
-Non-obvious effects if the current signal persists. Show systems thinking. Include read-throughs to other portfolio names where relevant.
+### What We Could Be Wrong About
+1-2 paragraphs on the strongest counterargument. Be specific:
+- "If hyperscaler CapEx guidance is cut >15% in Q2 calls, VRT's growth story collapses"
+NOT: "There are risks to the thesis"
 
-### 8. Valuation / Market Expectations
-What is the market pricing in? Use valuation context, growth expectations, implied optimism/skepticism, whether setup is asymmetric or crowded. Tie to expectations, not generic commentary.
+### Action & Catalysts
+- Stance: {{Add / Hold / Trim / Avoid}} (ONE word, no slashes like "Hold / Trim")
+- 2-3 sentences on WHY this stance, WHY NOW (not generic "monitor the situation")
+- Next 2-3 catalysts with approximate dates
+- 1-2 key unresolved questions
 
-### 9. Bull / Bear / Base
-- Bull case: trigger + expected reaction + supporting evidence
-- Base case: trigger + expected reaction + supporting evidence
-- Bear case: trigger + expected reaction + supporting evidence
+═══════════════════════════════════════
+SUMMARY FORMAT (for {', '.join(summary_tickers) if summary_tickers else 'none'})
+═══════════════════════════════════════
 
-### 10. Actionability
-- Recommended stance: {{Add/Hold/Trim/Avoid/Watch closely/Research further}}
-- Why now: 2-3 sentences
-- Next catalysts: 2-3 bullets
-- Key unresolved questions: 1-3 bullets
+For each summary ticker, write a COMPACT take. Use this header:
+
+## {{TICKER}} — Summary
+
+Then 3-5 sentences covering: what happened, thesis impact, and your stance.
+End with: Stance: {{Add/Hold/Trim/Avoid}}
+
+═══════════════════════════════════════
+WRITING RULES (apply to ALL tickers)
+═══════════════════════════════════════
+
+TOKEN ALLOCATION:
+- Allocate ~1200-1500 words per deep ticker
+- Allocate ~60-100 words per summary ticker
+- Go DEEP on {', '.join(deep_tickers)}, be BRIEF on the rest
 
 CROSS-STOCK READ-THROUGHS:
-When a signal on one company has implications for others, explicitly state:
-Read-through to other names:
-- {{ticker}}: {{impact}}
+When a signal on one company affects others, explicitly state:
+"Read-through to [ticker]: [impact]"
 
-PRIORITIZATION:
-- Priority 1 (full depth): portfolio holdings with meaningful move, newly recommended stocks, watchlist names with strong signal
-- Priority 2 (medium depth): secondary watchlist names, adjacent read-through names
-- Priority 3 (light mention): weak relevance, no meaningful new evidence
+ANTI-HEDGING RULES:
+- Pick a stance. "Hold" is fine. "Hold / Trim" is not.
+- Never write "mildly bearish" or "medium confidence" — either you're bearish or you're not.
+- Replace "consider trimming" with "trim." Replace "monitor closely" with what you'd actually watch for.
+- Never start a sentence with "It's worth noting" or "Investors should be aware."
 
 ANTI-SHALLOW RULES:
-- Do NOT merely restate headlines
-- Do NOT say "thesis intact" without evidence
-- Do NOT say "sentiment mixed" without specifics
-- Do NOT give generic commentary like "AI demand remains strong" unless tied to concrete evidence
-- Do NOT repeat the same headline under multiple stocks without tailoring interpretation
-- Do NOT give valuation commentary without stating what expectations appear embedded
+- Do NOT merely restate headlines — interpret them
+- Do NOT say "thesis intact" without citing specific evidence
+- Do NOT give generic commentary like "AI demand remains strong" unless tied to a concrete data point
+- Do NOT repeat the same headline across tickers without tailoring the interpretation
 
 STYLE:
-Write like a sharp internal buy-side analyst: compact, high-signal, evidence-based, interpretive not descriptive, willing to surface uncertainty and counterarguments.
+Write like a sharp buy-side analyst talking to a PM over coffee: direct, opinionated, evidence-based.
+Good: "This is the day the market decided VRT is a defense stock, not a tech stock. That matters because..."
+Bad: "VRT showed significant outperformance relative to the broader market, potentially indicating..."
 
-Good language: "This suggests…", "The key read-through is…", "The market appears to be pricing…", "This strengthens the thesis because…", "This is a headline risk, but not yet a thesis-breaker because…", "Second-order effect: …"
-
-Respond with the research blocks as structured text (not JSON). Use the exact section headers shown above."""
+Respond with the research blocks as structured text (not JSON)."""
 
         try:
             client = anthropic.Anthropic()
@@ -475,7 +512,7 @@ Respond with the research blocks as structured text (not JSON). Use the exact se
             log.info("Deep research analyst: %d in, %d out", usage.input_tokens, usage.output_tokens)
 
             text = response.content[0].text.strip()
-            blocks = self._parse_blocks(text, priority_tickers)
+            blocks = self._parse_blocks(text, priority_tickers, deep_tickers)
             return {"blocks": blocks, "raw_text": text}
 
         except Exception:
@@ -583,22 +620,33 @@ Respond with the research blocks as structured text (not JSON). Use the exact se
 
         return "\n".join(lines)
 
-    def _parse_blocks(self, text: str, tickers: list[str]) -> dict[str, str]:
-        """Parse the raw text into per-ticker blocks."""
+    def _parse_blocks(self, text: str, tickers: list[str],
+                      deep_tickers: list[str] | None = None) -> dict[str, dict]:
+        """Parse the raw text into per-ticker blocks with tier info.
+
+        Returns dict of ticker -> {"content": str, "tier": "full"|"summary"}.
+        """
         import re
-        blocks = {}
-        parts = re.split(r'\n##\s+(\w+)\s*[—–\-]\s*Deep Research Block', text)
+        blocks: dict[str, dict] = {}
+        _deep = set(t.upper() for t in (deep_tickers or []))
+
+        # Try splitting on ## TICKER — Deep Research Block or ## TICKER — Summary
+        parts = re.split(r'\n##\s+(\w+)\s*[—–\-]\s*(?:Deep Research Block|Summary)', text)
         if len(parts) > 1:
             for i in range(1, len(parts), 2):
                 ticker = parts[i].strip().upper()
                 content = parts[i + 1].strip() if i + 1 < len(parts) else ""
-                blocks[ticker] = content
+                tier = "full" if ticker in _deep else "summary"
+                blocks[ticker] = {"content": content, "tier": tier}
         else:
+            # Fallback: try to find each ticker's block
             for t in tickers:
                 pattern = rf'(?:##\s*)?{re.escape(t)}\b.*?(?=(?:##\s*\w+|$))'
                 match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
                 if match:
-                    blocks[t] = match.group(0).strip()
+                    content = match.group(0).strip()
+                    tier = "full" if t.upper() in _deep else "summary"
+                    blocks[t] = {"content": content, "tier": tier}
         return blocks
 
 
@@ -634,6 +682,7 @@ class AdvisorEditor:
         preference_context: str = "",
         causal_context: str = "",
         supplementary_research: str = "",
+        mandate_breach_ctx: str = "",
     ) -> dict:
         """Synthesize all analyst reports into the final daily brief."""
         within_budget, _, _ = check_budget()
@@ -651,9 +700,20 @@ class AdvisorEditor:
                 parts.append(f"EXPERT NEWSLETTER SIGNALS (Substack):\n{substack_context}")
             signal_intelligence = "\n\n".join(parts)
 
+        # Build mandate breach header for prompt
+        _breach_header = ""
+        if mandate_breach_ctx:
+            _breach_header = f"""
+╔══════════════════════════════════════════════════╗
+  MANDATE BREACHES — MUST ADDRESS IN EXECUTIVE TAKE
+{mandate_breach_ctx}
+╚══════════════════════════════════════════════════╝
+
+"""
+
         prompt = f"""You are the Chief Investment Officer writing the daily brief for a concentrated AI/tech portfolio. You have reports from your Growth Analyst, Value Analyst, and Risk Officer, plus raw signal intelligence.
 
-GROWTH ANALYST REPORT:
+{_breach_header}GROWTH ANALYST REPORT:
 {json.dumps(growth_report, indent=2)[:3000]}
 
 VALUE ANALYST REPORT:
@@ -693,7 +753,11 @@ CONVICTION LIST:
 Write the daily brief with these sections. Use the EXACT section headers shown:
 
 **SECTION 1 - EXECUTIVE TAKE**
-1 short paragraph: what changed, what matters, what to do. Lead with the most important change. Reference specific news or signals. If nothing material changed, say so.
+3-4 sentences MAXIMUM. This is the most important part of the brief. Structure:
+(1) LEAD with any MANDATE BREACHES. If a position exceeds its max weight, say so plainly: "META is at 25% of portfolio, breaching our 15% cap — we trim this week."
+(2) State the single most important development today and why it matters for THIS portfolio specifically.
+(3) State what we are doing about it — a specific action ("trim META to 15%") or an explicit non-action ("no changes warranted because X").
+Do NOT hedge. "Trim META" not "consider trimming." "Do nothing" not "monitor the situation."
 
 **SECTION 2 - THEME DASHBOARD**
 For each active macro thesis, provide:
@@ -731,9 +795,15 @@ RULES:
 - If your track record shows a bias, explicitly correct for it.
 - If CAUSAL CHAIN ANALYSIS is provided, reference assumption chains. If action depends on <50% confidence assumption, flag it explicitly.
 - "No action" is always the default. Only recommend changes when evidence is overwhelming.
-- Be direct. Cite specific numbers and specific headlines. No hedging language.
-- Write like a sharp buy-side CIO: compact, high-signal, interpretive not descriptive.
-- Separate sections with blank lines. Use bullet points within sections."""
+- Cite specific numbers and specific headlines.
+- Separate sections with blank lines. Use bullet points within sections.
+
+TONE:
+- Write like a CIO dictating to a PA, not like a compliance report.
+- Use "we" not "the portfolio." Use "trim" not "consider trimming."
+- If all three analysts agree on a name, say "high conviction across all desks" and move on — don't repeat their reasoning.
+- Cut any sentence that starts with "It's worth noting" or "Investors should be aware."
+- Be direct. Be opinionated. Be brief."""
 
         try:
             client = anthropic.Anthropic()
@@ -782,6 +852,8 @@ async def run_analyst_committee(
     earnings_context: str = "",
     superinvestor_context: str = "",
     deep_research_tickers: list[str] | None = None,
+    config: dict | None = None,
+    mandate_breach_ctx: str = "",
 ) -> dict:
     """Run the full analyst committee pipeline.
 
@@ -841,6 +913,7 @@ async def run_analyst_committee(
                 growth_result, value_result, risk_result,
                 news_context, reddit_context, substack_context,
                 earnings_context, superinvestor_context,
+                config,
             )
             parallel_tasks.append(("deep_research", deep_task))
 
@@ -925,6 +998,7 @@ async def run_analyst_committee(
         preference_context=preference_context,
         causal_context=_causal_ctx,
         supplementary_research=_supplementary_ctx,
+        mandate_breach_ctx=mandate_breach_ctx,
     )
 
     # Attach deep research to result

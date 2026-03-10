@@ -667,6 +667,14 @@ async def run() -> dict[str, Any]:
         for a in strategy.get("actions", [])
     ) if strategy.get("actions") else "No action recommended."
 
+    # Build mandate breach context for CIO prompt
+    _breach_lines = [
+        f"{a.get('ticker', '')}: {a.get('reason', '')} [urgency: {a.get('urgency', 'low')}]"
+        for a in strategy.get("actions", [])
+        if "exceeds max" in (a.get("reason", "") or "").lower()
+    ]
+    _mandate_breach_ctx = "\n".join(_breach_lines) if _breach_lines else ""
+
     # Build data context for committee analysts
     _data_context = {
         "fundamentals": fundamentals,
@@ -789,6 +797,8 @@ async def run() -> dict[str, Any]:
             earnings_context=_earnings_ctx_str,
             superinvestor_context=_superinvestor_ctx_str,
             deep_research_tickers=_deep_tickers,
+            config=config,
+            mandate_breach_ctx=_mandate_breach_ctx,
         )
 
         brief_text = committee_result.get("formatted_brief", "")

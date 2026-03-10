@@ -184,6 +184,8 @@ committee:
   deep_research_max_tickers: 6
   # Minimum |change%| to auto-include in deep research
   deep_research_move_threshold: 2.0
+  # Max tickers receiving full prose research (rest get compact summaries)
+  deep_research_full_max: 3
 
 # Delta Engine — "what changed" detection
 delta_engine:
