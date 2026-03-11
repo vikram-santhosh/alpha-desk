@@ -4,11 +4,14 @@ Fetches crowd sentiment / probability data from Polymarket (public API)
 and Kalshi (optional API key), filters for finance/macro-relevant markets,
 stores data via memory layer, and detects significant probability shifts.
 """
+from __future__ import annotations
 
 import json
 import os
 import re
 import urllib3
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 
 import requests
 
@@ -299,15 +302,24 @@ def fetch_prediction_markets(config: dict) -> list[dict]:
     log.info("Fetching prediction market data")
     all_markets = []
 
+    fetch_jobs: list[tuple[str, Any]] = []
+
     # Polymarket (public, always available)
     if config.get("polymarket", True):
-        poly_markets = _fetch_polymarket()
-        all_markets.extend(poly_markets)
+        fetch_jobs.append(("polymarket", _fetch_polymarket))
 
     # Kalshi (optional key, try anyway)
     if config.get("kalshi", True):
-        kalshi_markets = _fetch_kalshi()
-        all_markets.extend(kalshi_markets)
+        fetch_jobs.append(("kalshi", _fetch_kalshi))
+
+    if fetch_jobs:
+        with ThreadPoolExecutor(max_workers=min(len(fetch_jobs), 2)) as executor:
+            futures = [(name, executor.submit(fetch_fn)) for name, fetch_fn in fetch_jobs]
+            for name, future in futures:
+                try:
+                    all_markets.extend(future.result())
+                except Exception:
+                    log.exception("%s market fetch failed", name.title())
 
     # Filter by minimum volume if configured
     min_volume = config.get("min_volume_usd", 0)

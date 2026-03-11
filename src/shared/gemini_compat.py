@@ -17,6 +17,7 @@ Model mapping:
 google.genai is imported lazily inside _Messages.create() so that test
 modules can import this shim without needing the SDK installed.
 """
+from __future__ import annotations
 
 import os
 from dataclasses import dataclass

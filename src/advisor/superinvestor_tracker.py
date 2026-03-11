@@ -6,6 +6,7 @@ Tracks what hedge funds, superinvestors, and insiders are doing:
 - SEC 13F filings via EDGAR full-text search API
 - Combines all data into a smart-money summary per ticker
 """
+from __future__ import annotations
 
 from datetime import datetime, timedelta
 from typing import Any

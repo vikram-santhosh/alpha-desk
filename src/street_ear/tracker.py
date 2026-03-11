@@ -4,6 +4,7 @@ Maintains a SQLite database of ticker mention history and narrative tracking.
 Detects anomalies such as unusual mention spikes, sentiment reversals, and
 multi-subreddit convergence. Publishes signals to the agent bus.
 """
+from __future__ import annotations
 
 import json
 import os

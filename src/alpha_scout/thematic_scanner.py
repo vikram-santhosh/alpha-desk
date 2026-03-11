@@ -4,6 +4,7 @@ Discovers emerging investment themes from news/Reddit and maps them to tickers.
 Tracks candidate history for novelty scoring to penalize repeats and reward
 new discoveries.
 """
+from __future__ import annotations
 
 import json
 import math

@@ -6,6 +6,7 @@ This is the master orchestrator that:
 3. Uses Gemini to synthesize key takeaways and action items
 4. Assembles the complete morning briefing for Telegram delivery
 """
+from __future__ import annotations
 
 import asyncio
 import time

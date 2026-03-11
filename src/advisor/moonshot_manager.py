@@ -12,6 +12,7 @@ Six moonshot archetypes:
     5. commodity_thematic   — gold, silver, bitcoin, thematic ETFs
     6. thematic_sector      — space tech, quantum, nuclear, robotics
 """
+from __future__ import annotations
 
 import json
 

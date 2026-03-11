@@ -8,6 +8,7 @@ synthesis prompt to receive bias corrections like:
 
 Tables live in the shared advisor_memory.db alongside other advisor state.
 """
+from __future__ import annotations
 
 import json
 from datetime import date, datetime, timedelta

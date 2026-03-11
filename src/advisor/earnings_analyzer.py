@@ -8,6 +8,7 @@ for use by the daily brief.
 Primary source: Financial Modeling Prep (FMP) API if FMP_API_KEY is set.
 Fallback: yfinance earnings data.
 """
+from __future__ import annotations
 
 import json
 import os

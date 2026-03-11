@@ -7,8 +7,10 @@ Supports two data sources:
 Both sources are fetched with proper rate limiting, error handling,
 and graceful degradation when API keys are missing.
 """
+from __future__ import annotations
 
 import time
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Any
@@ -26,6 +28,8 @@ FINNHUB_DELAY = 1.0  # seconds between Finnhub calls (60 calls/min free tier)
 FINNHUB_BASE_URL = "https://finnhub.io/api/v1/company-news"
 NEWSAPI_HEADLINES_URL = "https://newsapi.org/v2/top-headlines"
 NEWSAPI_EVERYTHING_URL = "https://newsapi.org/v2/everything"
+ARTICLE_CONTENT_CAP = 1200
+SEMANTIC_DUPLICATE_THRESHOLD = 0.7
 
 
 def _normalize_finnhub_article(article: dict[str, Any], ticker: str) -> dict[str, Any]:
@@ -47,7 +51,7 @@ def _normalize_finnhub_article(article: dict[str, Any], ticker: str) -> dict[str
         "source": article.get("source", "Unknown"),
         "published_at": pub_datetime.isoformat(),
         "published_ts": article.get("datetime", 0),
-        "summary": sanitize_html(article.get("summary", "")),
+        "summary": sanitize_html((article.get("summary", "") or "")[:ARTICLE_CONTENT_CAP]),
         "category": article.get("category", "general"),
         "related_tickers": [ticker],
         "origin": "finnhub",
@@ -86,7 +90,7 @@ def _normalize_newsapi_article(article: dict[str, Any]) -> dict[str, Any]:
         "source": source_name,
         "published_at": pub_datetime.isoformat(),
         "published_ts": pub_ts,
-        "summary": sanitize_html(article.get("description") or ""),
+        "summary": sanitize_html((article.get("description") or "")[:ARTICLE_CONTENT_CAP]),
         "category": "market",
         "related_tickers": [],
         "origin": "newsapi",
@@ -351,10 +355,53 @@ def _deduplicate_articles(articles: list[dict[str, Any]]) -> list[dict[str, Any]
     return unique
 
 
+def _semantic_tokens(article: dict[str, Any]) -> set[str]:
+    text = " ".join(
+        [
+            str(article.get("title", "")),
+            str(article.get("summary", "")),
+            " ".join(article.get("related_tickers", []) or []),
+        ]
+    ).lower()
+    tokens = {
+        token
+        for token in re.findall(r"[a-z0-9]{3,}", text)
+        if token not in {"with", "from", "that", "this", "have", "will", "their", "market", "stock"}
+    }
+    return tokens
+
+
+def _similarity(left: set[str], right: set[str]) -> float:
+    if not left or not right:
+        return 0.0
+    intersection = len(left & right)
+    union = len(left | right)
+    if union == 0:
+        return 0.0
+    return intersection / union
+
+
+def _post_process_articles(articles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep the article set diverse and bounded for downstream prompts."""
+    diverse: list[dict[str, Any]] = []
+    seen_tokens: list[set[str]] = []
+
+    for article in articles:
+        tokens = _semantic_tokens(article)
+        if any(_similarity(tokens, existing) >= SEMANTIC_DUPLICATE_THRESHOLD for existing in seen_tokens):
+            continue
+        article["summary"] = str(article.get("summary", ""))[:ARTICLE_CONTENT_CAP]
+        diverse.append(article)
+        seen_tokens.append(tokens)
+
+    return diverse
+
+
 def fetch_all_news(
     tickers: list[str],
     finnhub_key: str | None,
     newsapi_key: str | None,
+    headlines_only: bool = False,
 ) -> list[dict[str, Any]]:
     """Orchestrate fetching from all news sources, combine, deduplicate, and sort.
 
@@ -386,31 +433,30 @@ def fetch_all_news(
         all_articles.extend(headlines)
         log.info("NewsAPI headlines contributed %d articles", len(headlines))
 
-        # 3. NewsAPI: broad category searches to cover all finance-relevant topics
-        # Each query = 1 API call. 7 queries × 4 runs/day = 28 calls/day (within 100 free-tier limit)
-        # Queries are independent and run in parallel for speed.
-        broad_queries = [
-            "economy OR inflation OR GDP OR unemployment OR recession",
-            "tariff OR trade OR sanctions OR import OR export OR trade deal",
-            "Federal Reserve OR interest rate OR central bank OR monetary policy",
-            "earnings OR IPO OR merger OR acquisition OR stock market",
-            "regulation OR SEC OR antitrust OR policy OR legislation",
-            "China OR Taiwan OR semiconductor OR chip OR AI OR geopolitical",
-            "oil OR energy OR commodity OR OPEC OR dollar OR currency",
-        ]
-        with ThreadPoolExecutor(max_workers=len(broad_queries)) as executor:
-            futures = {
-                executor.submit(fetch_newsapi_market, newsapi_key, q): q
-                for q in broad_queries
-            }
-            for future in as_completed(futures):
-                q = futures[future]
-                try:
-                    market_articles = future.result()
-                    all_articles.extend(market_articles)
-                    log.info("NewsAPI market search '%s': %d articles", q[:40], len(market_articles))
-                except Exception as e:
-                    log.error("NewsAPI market search '%s' failed: %s", q[:40], e)
+        if not headlines_only:
+            # 3. NewsAPI: broad category searches to cover all finance-relevant topics
+            broad_queries = [
+                "economy OR inflation OR GDP OR unemployment OR recession",
+                "tariff OR trade OR sanctions OR import OR export OR trade deal",
+                "Federal Reserve OR interest rate OR central bank OR monetary policy",
+                "earnings OR IPO OR merger OR acquisition OR stock market",
+                "regulation OR SEC OR antitrust OR policy OR legislation",
+                "China OR Taiwan OR semiconductor OR chip OR AI OR geopolitical",
+                "oil OR energy OR commodity OR OPEC OR dollar OR currency",
+            ]
+            with ThreadPoolExecutor(max_workers=len(broad_queries)) as executor:
+                futures = {
+                    executor.submit(fetch_newsapi_market, newsapi_key, q): q
+                    for q in broad_queries
+                }
+                for future in as_completed(futures):
+                    q = futures[future]
+                    try:
+                        market_articles = future.result()
+                        all_articles.extend(market_articles)
+                        log.info("NewsAPI market search '%s': %d articles", q[:40], len(market_articles))
+                    except Exception as e:
+                        log.error("NewsAPI market search '%s' failed: %s", q[:40], e)
     else:
         log.info("NewsAPI key not available; skipping NewsAPI source")
 
@@ -419,7 +465,7 @@ def fetch_all_news(
         return []
 
     # Deduplicate
-    unique_articles = _deduplicate_articles(all_articles)
+    unique_articles = _post_process_articles(_deduplicate_articles(all_articles))
 
     # Sort by datetime descending (most recent first)
     unique_articles.sort(key=lambda a: a.get("published_ts", 0), reverse=True)

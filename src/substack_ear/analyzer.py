@@ -4,6 +4,7 @@ Analyzes expert newsletter articles individually or in small batches
 using Gemini for cost-efficient extraction of investment theses,
 macro signals, and ticker mentions.
 """
+from __future__ import annotations
 
 import json
 from typing import Any

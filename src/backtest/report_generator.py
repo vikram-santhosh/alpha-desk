@@ -2,6 +2,7 @@
 
 Writes results.json, summary.md, and signals.csv to backtests/{run_date}/.
 """
+from __future__ import annotations
 
 import csv
 import json

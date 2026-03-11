@@ -6,6 +6,7 @@ cross-company mentions, prediction market data, and daily brief history.
 
 This is the foundation — every other advisor module reads/writes through here.
 """
+from __future__ import annotations
 
 import json
 import os
@@ -185,6 +186,17 @@ def _get_db() -> sqlite3.Connection:
             created_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS run_snapshots (
+            run_id TEXT NOT NULL UNIQUE,
+            run_type TEXT,
+            date TEXT,
+            snapshot_data TEXT,
+            delta_from_previous TEXT,
+            run_cost_usd REAL,
+            run_duration_s REAL,
+            last_consumed_signal_id INTEGER
+        );
+
         CREATE TABLE IF NOT EXISTS recommendation_outcomes (
             id INTEGER PRIMARY KEY,
             ticker TEXT NOT NULL,
@@ -229,6 +241,8 @@ def _get_db() -> sqlite3.Connection:
 
         CREATE INDEX IF NOT EXISTS idx_snapshots_ticker_date ON holding_snapshots(ticker, date);
         CREATE INDEX IF NOT EXISTS idx_daily_snapshots_date ON daily_snapshots(date);
+        CREATE INDEX IF NOT EXISTS idx_run_snapshots_date ON run_snapshots(date);
+        CREATE INDEX IF NOT EXISTS idx_run_snapshots_type ON run_snapshots(run_type);
         CREATE INDEX IF NOT EXISTS idx_rec_outcomes_ticker ON recommendation_outcomes(ticker);
         CREATE INDEX IF NOT EXISTS idx_rec_outcomes_status ON recommendation_outcomes(status);
         CREATE INDEX IF NOT EXISTS idx_earnings_ticker ON earnings_calls(ticker);
@@ -832,7 +846,7 @@ def build_memory_context() -> dict[str, Any]:
 
 
 # ═══════════════════════════════════════════════════════
-# DAILY SNAPSHOTS (Delta Engine)
+# SNAPSHOTS (Delta Engine & Multi-Run)
 # ═══════════════════════════════════════════════════════
 
 def save_daily_snapshot(date_str: str, snapshot_data: dict) -> None:
@@ -847,8 +861,98 @@ def save_daily_snapshot(date_str: str, snapshot_data: dict) -> None:
     log.info("Saved daily snapshot for %s", date_str)
 
 
+def save_run_snapshot(run_id: str, run_type: str, date_str: str, snapshot_data: dict,
+                      delta: dict | None = None, run_cost: float = 0.0,
+                      run_duration: float = 0.0, last_signal_id: int = 0,
+                      mirror_to_daily: bool = True) -> None:
+    """Save a per-run snapshot and optionally mirror it to daily_snapshots."""
+    conn = _get_db()
+    conn.execute("""
+        INSERT OR REPLACE INTO run_snapshots
+        (run_id, run_type, date, snapshot_data, delta_from_previous, run_cost_usd, run_duration_s, last_consumed_signal_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (run_id, run_type, date_str, json.dumps(snapshot_data),
+          json.dumps(delta) if delta else None, run_cost, run_duration, last_signal_id))
+    conn.commit()
+    conn.close()
+
+    if mirror_to_daily and run_type == "morning_full":
+        save_daily_snapshot(date_str, snapshot_data)
+
+    log.info("Saved run snapshot for %s (%s)", run_id, run_type)
+
+
+def get_run_snapshot(run_id: str) -> dict[str, Any] | None:
+    """Fetch a run snapshot by its run identifier."""
+    conn = _get_db()
+    row = conn.execute("""
+        SELECT * FROM run_snapshots WHERE run_id = ?
+    """, (run_id,)).fetchone()
+    if not row:
+        conn.close()
+        return None
+    cols = [d[0] for d in conn.execute("SELECT * FROM run_snapshots LIMIT 0").description]
+    conn.close()
+
+    return _decode_run_snapshot(dict(zip(cols, row)))
+
+
+def get_latest_run_snapshot(
+    run_type: str | None = None,
+    date_str: str | None = None,
+) -> dict[str, Any] | None:
+    """Get the most recent run snapshot, optionally filtered by type/date."""
+    conn = _get_db()
+    query = "SELECT * FROM run_snapshots WHERE 1=1"
+    params: list[Any] = []
+
+    if run_type:
+        query += " AND run_type = ?"
+        params.append(run_type)
+    if date_str:
+        query += " AND date = ?"
+        params.append(date_str)
+
+    query += " ORDER BY run_id DESC LIMIT 1"
+    row = conn.execute(query, params).fetchone()
+    if not row:
+        conn.close()
+        return None
+    cols = [d[0] for d in conn.execute("SELECT * FROM run_snapshots LIMIT 0").description]
+    conn.close()
+
+    return _decode_run_snapshot(dict(zip(cols, row)))
+
+
+def list_run_snapshots(limit: int = 10, run_type: str | None = None) -> list[dict[str, Any]]:
+    """List recent run snapshots for operational status and Telegram /runs."""
+    conn = _get_db()
+    query = "SELECT * FROM run_snapshots"
+    params: list[Any] = []
+    if run_type:
+        query += " WHERE run_type = ?"
+        params.append(run_type)
+    query += " ORDER BY run_id DESC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(query, params).fetchall()
+    cols = [d[0] for d in conn.execute("SELECT * FROM run_snapshots LIMIT 0").description]
+    conn.close()
+    return [_decode_run_snapshot(dict(zip(cols, row))) for row in rows]
+
+
+def _decode_run_snapshot(row: dict[str, Any]) -> dict[str, Any]:
+    """Decode JSON payload columns from the run snapshot table."""
+    row["snapshot_data"] = json.loads(row["snapshot_data"] or "{}")
+    row["delta_from_previous"] = (
+        json.loads(row["delta_from_previous"] or "{}")
+        if row.get("delta_from_previous")
+        else None
+    )
+    return row
+
+
 def get_latest_snapshot_before(date_str: str) -> dict | None:
-    """Get the most recent snapshot before the given date."""
+    """Get the most recent daily snapshot before the given date."""
     conn = _get_db()
     row = conn.execute("""
         SELECT snapshot_data FROM daily_snapshots
@@ -865,7 +969,7 @@ def get_latest_snapshot_before(date_str: str) -> dict | None:
 
 
 def get_snapshot_for_date(date_str: str) -> dict | None:
-    """Get the snapshot for an exact date."""
+    """Get the daily snapshot for an exact date."""
     conn = _get_db()
     row = conn.execute("""
         SELECT snapshot_data FROM daily_snapshots WHERE date = ?

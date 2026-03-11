@@ -7,6 +7,7 @@ anything covered in the morning brief.
 Sessions expire after 4 hours of inactivity. Message history is capped at
 10 messages (5 Q&A pairs) to keep context windows manageable.
 """
+from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta

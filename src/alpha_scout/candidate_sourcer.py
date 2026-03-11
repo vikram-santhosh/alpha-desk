@@ -6,7 +6,10 @@ Sources new ticker candidates from multiple channels:
 - S&P 500 components
 - yfinance screeners (day_gainers, undervalued_growth_stocks, etc.)
 """
+from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from typing import Any
 
 import pandas as pd
@@ -209,21 +212,26 @@ def source_all_candidates(
     max_candidates = screening.get("max_candidates", 50)
 
     all_candidates: list[dict[str, Any]] = []
+    source_jobs: list[tuple[str, Any, str]] = []
 
     # Agent bus signals
     if sources_config.get("agent_bus", True):
-        all_candidates.extend(_source_from_agent_bus())
+        source_jobs.append(("agent bus", _source_from_agent_bus, "Agent bus candidate sourcing failed"))
 
     # Reddit moonshot candidates (small-cap/value subs)
     if sources_config.get("reddit_moonshot", True):
         try:
             from src.alpha_scout.reddit_moonshot_sourcer import source_moonshot_candidates
             moonshot_exclude = set(existing_tickers) | {h["ticker"] for h in holdings}
-            moonshot_candidates = source_moonshot_candidates(
-                exclude_tickers=moonshot_exclude,
-                config=None,  # Will use default subreddits
-            )
-            all_candidates.extend(moonshot_candidates)
+            source_jobs.append((
+                "reddit moonshot",
+                partial(
+                    source_moonshot_candidates,
+                    exclude_tickers=moonshot_exclude,
+                    config=None,  # Will use default subreddits
+                ),
+                "Reddit moonshot sourcing failed",
+            ))
         except Exception:
             log.exception("Reddit moonshot sourcing failed")
 
@@ -232,8 +240,11 @@ def source_all_candidates(
         try:
             from src.alpha_scout.supply_chain_sourcer import source_from_supply_chain
             existing_set_for_chain = {t.upper() for t in existing_tickers}
-            chain_candidates = source_from_supply_chain(holdings, existing_set_for_chain)
-            all_candidates.extend(chain_candidates)
+            source_jobs.append((
+                "supply chain",
+                partial(source_from_supply_chain, holdings, existing_set_for_chain),
+                "Supply chain sourcing failed",
+            ))
         except Exception:
             log.exception("Supply chain sourcing failed")
 
@@ -245,26 +256,36 @@ def source_all_candidates(
             themes = config.get("_themes", [])
             if themes:
                 existing_set_for_themes = {t.upper() for t in existing_tickers}
-                theme_candidates = themes_to_candidates(themes, existing_set_for_themes)
-                all_candidates.extend(theme_candidates)
+                source_jobs.append((
+                    "thematic scanner",
+                    partial(themes_to_candidates, themes, existing_set_for_themes),
+                    "Thematic candidate sourcing failed",
+                ))
         except Exception:
             log.exception("Thematic candidate sourcing failed")
 
     # Sector peers
     if sources_config.get("sector_peers", True):
         sector_peers = config.get("sector_peers", {})
-        all_candidates.extend(_source_from_sector_peers(holdings, sector_peers))
+        source_jobs.append((
+            "sector peers",
+            partial(_source_from_sector_peers, holdings, sector_peers),
+            "Sector peer sourcing failed",
+        ))
 
     # S&P 500 index
     if sources_config.get("sp500_index", True):
-        all_candidates.extend(_source_from_sp500())
+        source_jobs.append(("S&P 500", _source_from_sp500, "S&P 500 candidate sourcing failed"))
 
     # Superinvestor 13F new positions (v2 — full universe scan)
     if sources_config.get("superinvestor_13f", True):
         try:
             from src.advisor.superinvestor_tracker import get_new_positions_as_candidates
-            si_candidates = get_new_positions_as_candidates(config)
-            all_candidates.extend(si_candidates)
+            source_jobs.append((
+                "superinvestor 13F",
+                partial(get_new_positions_as_candidates, config),
+                "Superinvestor 13F candidate sourcing failed",
+            ))
         except ImportError:
             log.debug("get_new_positions_as_candidates not available yet")
         except Exception:
@@ -275,15 +296,43 @@ def source_all_candidates(
         try:
             from src.alpha_scout.filing_scanner import scan_new_positions
             filing_exclude = set(existing_tickers) | {h["ticker"] for h in holdings}
-            filing_candidates = scan_new_positions(config, exclude_tickers=filing_exclude)
-            all_candidates.extend(filing_candidates)
+            source_jobs.append((
+                "filing scanner",
+                partial(scan_new_positions, config, exclude_tickers=filing_exclude),
+                "Filing scanner failed",
+            ))
         except Exception:
             log.exception("Filing scanner failed")
 
     # yfinance screeners
     if sources_config.get("yfinance_screener", True):
         screener_names = config.get("yfinance_screeners", ["undervalued_growth_stocks", "most_actives"])
-        all_candidates.extend(_source_from_yfinance_screeners(screener_names))
+        source_jobs.append((
+            "yfinance screener",
+            partial(_source_from_yfinance_screeners, screener_names),
+            "yfinance screener sourcing failed",
+        ))
+
+    if source_jobs:
+        max_workers = min(len(source_jobs), 8)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [
+                (name, error_message, executor.submit(job))
+                for name, job, error_message in source_jobs
+            ]
+            for name, error_message, future in futures:
+                try:
+                    sourced = future.result()
+                    if sourced:
+                        all_candidates.extend(sourced)
+                except Exception:
+                    log.exception(error_message)
+                else:
+                    log.info(
+                        "Candidate source complete: %s (%d candidates)",
+                        name,
+                        len(sourced or []),
+                    )
 
     # Deduplicate by ticker, keeping the first occurrence (preserves priority order)
     existing_set = {t.upper() for t in existing_tickers}

@@ -4,6 +4,7 @@ Explores the value chain around each holding to find related tickers
 that aren't in the current portfolio. Uses a static supply chain map
 (loaded from config) with optional LLM enrichment.
 """
+from __future__ import annotations
 
 from collections import Counter
 from typing import Any
