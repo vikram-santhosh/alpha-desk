@@ -4,6 +4,7 @@ Fetches recent finance video metadata via YouTube Data API v3 and transcripts
 via youtube-transcript-api. Returns videos in a schema compatible with the
 Reddit post format used downstream.
 """
+from __future__ import annotations
 
 import os
 import time

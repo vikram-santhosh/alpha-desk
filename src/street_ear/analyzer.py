@@ -7,6 +7,7 @@ results across batches into per-ticker summaries.
 Uses Sonnet for ticker extraction and sentiment classification rather
 than Opus, since this is structured extraction, not creative reasoning.
 """
+from __future__ import annotations
 
 import json
 from typing import Any

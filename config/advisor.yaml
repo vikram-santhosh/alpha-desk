@@ -261,6 +261,20 @@ delivery:
     enabled: false
     send_verbose: true
 
+schedule:
+  market_days:
+    - time: "07:00"
+      run_type: morning_full
+      budget_usd: 10.0
+    - time: "19:00"
+      run_type: evening_wrap
+      budget_usd: 3.0
+  weekends:
+    - time: "10:00"
+      run_type: weekend
+      budget_usd: 2.0
+  daily_cost_cap: 25.0
+
 # ═══════════════════════════════════════════════════
 # v3 Architecture Features
 # ═══════════════════════════════════════════════════

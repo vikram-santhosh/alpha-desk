@@ -14,6 +14,7 @@ Sections:
   7. Upcoming (catalysts next 7 days)
   Footer (sources, cost, timestamp)
 """
+from __future__ import annotations
 
 import re
 from datetime import datetime, date
@@ -2081,11 +2082,13 @@ class VerboseFormatter:
             sources.append("SEC 13F")
         sources.append("Gemini")
         sources_str = " · ".join(sources)
+        citations_html = self.committee_result.get("citations_html", "")
 
         return f"""
 <div class="footer">
   AlphaDesk v2.0 · ${self.daily_cost:.2f} · {self.total_time:.0f}s · {ts}<br>
   {sources_str}
+  {citations_html}
 </div>"""
 
     # ── catalyst helpers ─────────────────────────────────────────

@@ -90,7 +90,8 @@ flowchart TD
     COST -.->|tracks spend| SHIM
 ```
 
-**Typical runtime:** ~5 minutes. **Typical cost:** ~$8/run (Gemini 2.5 Pro + Flash).
+**Typical runtime:** morning full ~5 minutes, evening wrap <2 minutes, weekend review <2 minutes.
+**Typical cost:** morning full ~$9-12, evening wrap ~$1-3, weekend review ~$1-2.
 
 ## LLM Backend
 
@@ -129,20 +130,17 @@ AlphaDesk uses **Google Gemini** via an Anthropic-compatible shim (`src/shared/g
 | **Delta Engine** | Day-over-day change detection | High/medium/low significance changes |
 | **Catalyst Tracker** | Event calendar (FOMC, CPI, earnings) | Next 30 days of catalysts with impact estimates |
 
-### Deep Research Blocks
+### Deep Research Pipeline
 
-Each priority ticker (up to 6, selected by move size) gets a structured 10-section research note:
+Priority tickers now run through a multi-step research flow rather than a single synthesis call:
 
-1. **Why this name is in focus** — Portfolio context, move significance
-2. **What changed today** — Specific events, not generic headlines
-3. **Signal → Interpretation → Investment Impact** — Each signal gets a chain with confidence level
-4. **Management / Expert Commentary** — Quotes with bull/bear framing
-5. **Narrative / Crowd Intelligence** — Where in the narrative lifecycle (early/consensus/crowded)
-6. **Thesis Scorecard** — Status (Strengthening/Stable/Weakening/Broken), confidence 0-100, evidence for/against
-7. **Second-Order Effects** — Cross-stock read-throughs and unintended consequences
-8. **Valuation / Market Expectations** — What's priced in vs. what could surprise
-9. **Bull / Bear / Base** — Three scenarios with specific triggers
-10. **Actionability** — Recommended stance, catalysts, unresolved questions
+1. **Plan** — research tasks are ranked by information density, uncertainty, and conflicting signals
+2. **Gather** — fetch top article bodies, memory context, and related signals
+3. **Analyze** — identify contradictions, second-order effects, and explicit data gaps
+4. **Fill gaps** — resolve missing competitor/fundamental context and pull late-arriving signals
+5. **Synthesize** — produce the final deep research block with citations
+
+This improves the old headlines-only deep research path by letting the system read article bodies, cross-validate evidence, and degrade gracefully if one research step fails.
 
 ### CIO Brief Format
 
@@ -234,18 +232,37 @@ channels:
 ### 5. First run
 
 ```bash
-# Full morning brief (all agents + synthesis)
-python -m src.shared.morning_brief
+# Auto-select run type from config/schedule
+python run_daily.py --run-type=auto
+
+# Full morning brief
+python run_daily.py --run-type=morning_full
+
+# Evening wrap
+python run_daily.py --run-type=evening_wrap
+
+# Weekend review
+python run_daily.py --run-type=weekend
 
 # Or start the Telegram bot (long-running with daily schedule)
 python -m src.shared.telegram_bot
 ```
 
+## Run Profiles
+
+| Run Type | Intended Time | Scope | Delivery |
+|---|---|---|---|
+| `morning_full` | 07:00 market days | Full 10-step advisor pipeline + analyst committee + verbose report | Telegram + optional email |
+| `evening_wrap` | 19:00 market days | Headlines-only news, closing prices, delta vs morning, Flash delta analyst | Telegram |
+| `weekend` | 10:00 Saturday | Thesis review, run history summary, next-week catalysts | Telegram |
+
+The active schedule lives in `config/advisor.yaml` under `schedule:` and drives both `determine_run_profile()` and the Telegram scheduler fallback.
+
 ## Configuration
 
 | File | Purpose |
 |------|---------|
-| `config/advisor.yaml` | Holdings, macro theses, strategy params, v2 settings |
+| `config/advisor.yaml` | Holdings, macro theses, strategy params, multi-run schedule |
 | `config/portfolio.yaml` | Holdings with shares and cost basis |
 | `config/watchlist.yaml` | Additional tickers to track |
 | `config/scout.yaml` | Alpha Scout screening parameters |
@@ -343,6 +360,7 @@ Default daily cap: **$20** (configurable via `DAILY_COST_CAP` in `.env`). When e
 | `/scorecard` | Recommendation track record |
 | `/retro` | Weekly retrospective & self-assessment |
 | `/report` | Latest verbose report file path |
+| `/runs` | Recent run history (type, cost, duration) |
 
 ### Feedback
 
@@ -379,11 +397,15 @@ alphadesk/
 │   └── substack_feeds.yaml     # Substack RSS feeds
 ├── src/
 │   ├── advisor/                # Investment advisor (30 modules)
-│   │   ├── main.py             # Pipeline orchestrator
+│   │   ├── main.py             # Public advisor entrypoint
+│   │   ├── run_orchestrator.py # Morning/evening/weekend execution router
+│   │   ├── run_profile.py      # Schedule-driven run classification
 │   │   ├── memory.py           # SQLite persistent memory
 │   │   ├── formatter.py        # Telegram output formatter
 │   │   ├── verbose_formatter.py # Full investment memo generator
 │   │   ├── analyst_committee.py # Growth + Value + Risk + Deep Research + CIO synthesis
+│   │   ├── research_planner.py # Planner for multi-step deep research
+│   │   ├── deep_researcher.py  # Iterative search/fetch/analyze/synthesize research engine
 │   │   ├── causal_reasoner.py  # Second-order effects & cross-stock read-throughs
 │   │   ├── gap_resolver.py     # Resolves data gaps identified by analysts
 │   │   ├── event_detector.py   # LLM-powered event extraction from news
@@ -414,9 +436,13 @@ alphadesk/
 │   ├── report/                 # Report delivery CLI
 │   ├── shared/                 # Cross-agent infrastructure
 │   │   ├── agent_bus.py        # SQLite pub/sub for inter-agent signals
+│   │   ├── agent_decorator.py  # Shared budget/timing/JSON extraction wrapper
+│   │   ├── context_manager.py  # Priority-aware prompt truncation
+│   │   ├── citations.py        # URL/source citation registry
 │   │   ├── gemini_compat.py    # Anthropic→Gemini compatibility shim
 │   │   ├── config_loader.py    # YAML config loading
 │   │   ├── cost_tracker.py     # API cost tracking with budget cap
+│   │   ├── prompt_loader.py    # External prompt template loader
 │   │   ├── morning_brief.py    # Primary pipeline orchestrator
 │   │   ├── telegram_bot.py     # Bot commands + scheduling
 │   │   ├── email_reporter.py   # SMTP email delivery
@@ -427,6 +453,8 @@ alphadesk/
 │       ├── logger.py           # Structured logging
 │       └── cleanup.py          # Data cleanup utilities
 ├── tests/
+├── prompts/
+│   └── agents/                 # Externalized prompts for committee/reasoner/delta analyst
 ├── Dockerfile
 ├── docker-compose.yaml
 ├── requirements.txt
@@ -455,7 +483,7 @@ alphadesk/
 
 ### Option A: Telegram bot (recommended)
 
-Fires the full morning briefing daily at 07:00, delivers to Telegram:
+Reads `config/advisor.yaml` and registers all configured run types locally:
 
 ```bash
 python -m src.shared.telegram_bot
@@ -467,7 +495,73 @@ python -m src.shared.telegram_bot
 docker compose up -d
 ```
 
-### Option C: systemd (Linux)
+### Option C: Cloud Run Job + Cloud Scheduler
+
+`run_daily.py` is the production entrypoint for batch execution. It:
+
+1. syncs SQLite databases from `/app/data` to `/tmp/data`
+2. runs the requested profile
+3. syncs updated databases back to `/app/data`
+4. syncs generated reports between local `reports/` and `/app/data/reports`
+
+Build and deploy the image:
+
+```bash
+gcloud builds submit --tag us-central1-docker.pkg.dev/PROJECT_ID/alphadesk/alphadesk
+
+gcloud run jobs deploy alphadesk-advisor \
+  --image us-central1-docker.pkg.dev/PROJECT_ID/alphadesk/alphadesk \
+  --region us-central1 \
+  --tasks 1 \
+  --max-retries 1 \
+  --memory 2Gi \
+  --cpu 2 \
+  --set-env-vars ALPHADESK_DATA_DIR=/tmp/data \
+  --set-secrets GEMINI_API_KEY=GEMINI_API_KEY:latest,TELEGRAM_BOT_TOKEN=TELEGRAM_BOT_TOKEN:latest,TELEGRAM_CHAT_ID=TELEGRAM_CHAT_ID:latest,FINNHUB_API_KEY=FINNHUB_API_KEY:latest,NEWSAPI_KEY=NEWSAPI_KEY:latest,FRED_API_KEY=FRED_API_KEY:latest,FMP_API_KEY=FMP_API_KEY:latest
+```
+
+The image uses `ENTRYPOINT ["python"]`, so Cloud Run Job argument overrides resolve to:
+
+- `python run_daily.py --run-type=morning_full`
+- `python run_daily.py --run-type=evening_wrap`
+- `python run_daily.py --run-type=weekend`
+
+Create scheduler triggers:
+
+```bash
+gcloud scheduler jobs create http alphadesk-morning \
+  --location us-central1 \
+  --schedule "0 7 * * 1-5" \
+  --uri "https://run.googleapis.com/apis/run.googleapis.com/v1/namespaces/PROJECT_ID/jobs/alphadesk-advisor:run" \
+  --http-method POST \
+  --oauth-service-account-email SCHEDULER_SA@PROJECT_ID.iam.gserviceaccount.com \
+  --message-body '{\"overrides\":{\"containerOverrides\":[{\"args\":[\"run_daily.py\",\"--run-type=morning_full\"]}]}}'
+
+gcloud scheduler jobs create http alphadesk-evening \
+  --location us-central1 \
+  --schedule "0 19 * * 1-5" \
+  --uri "https://run.googleapis.com/apis/run.googleapis.com/v1/namespaces/PROJECT_ID/jobs/alphadesk-advisor:run" \
+  --http-method POST \
+  --oauth-service-account-email SCHEDULER_SA@PROJECT_ID.iam.gserviceaccount.com \
+  --message-body '{\"overrides\":{\"containerOverrides\":[{\"args\":[\"run_daily.py\",\"--run-type=evening_wrap\"]}]}}'
+
+gcloud scheduler jobs create http alphadesk-weekend \
+  --location us-central1 \
+  --schedule "0 10 * * 6" \
+  --uri "https://run.googleapis.com/apis/run.googleapis.com/v1/namespaces/PROJECT_ID/jobs/alphadesk-advisor:run" \
+  --http-method POST \
+  --oauth-service-account-email SCHEDULER_SA@PROJECT_ID.iam.gserviceaccount.com \
+  --message-body '{\"overrides\":{\"containerOverrides\":[{\"args\":[\"run_daily.py\",\"--run-type=weekend\"]}]}}'
+```
+
+Required IAM:
+
+- the Cloud Scheduler service account needs `roles/run.invoker` on the Cloud Run job
+- the Cloud Run job service account needs access to the referenced Secret Manager secrets
+
+Before deployment, make sure the image includes `prompts/agents/`. The current `Dockerfile` already copies that directory.
+
+### Option D: systemd (Linux)
 
 ```ini
 [Unit]
@@ -490,6 +584,14 @@ WantedBy=multi-user.target
 
 ```bash
 python -m pytest
+```
+
+Focused verification for the multi-run system:
+
+```bash
+python run_daily.py --run-type=evening_wrap
+python run_daily.py --run-type=weekend
+pytest tests/test_run_foundation.py tests/test_multirun_orchestrator.py tests/test_run_daily_cli.py -q
 ```
 
 ## Backtesting

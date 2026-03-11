@@ -3,6 +3,7 @@
 Computes forward-looking 1d/3d/7d returns from pre-fetched price data
 and builds per-agent performance metrics.
 """
+from __future__ import annotations
 
 from datetime import date, timedelta
 from typing import Any

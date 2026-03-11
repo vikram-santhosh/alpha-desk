@@ -3,6 +3,7 @@
 Loops over trading days, runs the pipeline per day (with historical data),
 captures signals, computes forward-looking outcomes, and generates reports.
 """
+from __future__ import annotations
 
 import asyncio
 import time

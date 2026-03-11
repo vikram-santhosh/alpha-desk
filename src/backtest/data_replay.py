@@ -4,6 +4,7 @@ Provides functions to build historical data for a specific day from
 pre-fetched yfinance DataFrames. Used by the BacktestRunner to replay
 the pipeline with historical prices.
 """
+from __future__ import annotations
 
 from datetime import date, timedelta
 from typing import Any

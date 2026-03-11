@@ -4,6 +4,7 @@ Monitors thesis flow from expert sources (Substack) through amplification (YouTu
 to mainstream adoption (Reddit). Records signal outcomes and source reliability
 for continuous improvement of signal quality.
 """
+from __future__ import annotations
 
 import json
 import os

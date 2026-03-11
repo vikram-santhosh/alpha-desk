@@ -7,6 +7,7 @@ for inter-agent coordination.
 Uses a Gemini-backed compatibility layer for classification tasks
 (relevance/sentiment scoring), since this is structured extraction.
 """
+from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -305,7 +306,7 @@ def analyze_news(
     Articles are processed in batches of ~15 to optimize API usage.
     Each article is enriched with analysis fields (relevance, sentiment,
     urgency, affected_tickers, category, summary). Articles with
-    relevance >= 5 or urgency == "high" are kept; others are filtered out.
+    relevance >= 7 or urgency == "high" are kept; others are filtered out.
 
     Portfolio context is injected into the system prompt so the LLM can
     infer indirect impact (e.g., tariff news → semiconductor holdings).
@@ -372,14 +373,14 @@ def analyze_news(
             enriched["related_tickers"] = merged_tickers
             analyzed.append(enriched)
 
-    # Filter: keep articles with relevance >= 5 or urgency == "high"
+    # Filter: keep articles with relevance >= 7 or urgency == "high"
     filtered = [
         a for a in analyzed
-        if a.get("relevance", 0) >= 5 or a.get("urgency") == "high"
+        if a.get("relevance", 0) >= 7 or a.get("urgency") == "high"
     ]
 
     log.info(
-        "Analysis complete: %d analyzed, %d passed filter (relevance>=5 or urgency=high)",
+        "Analysis complete: %d analyzed, %d passed filter (relevance>=7 or urgency=high)",
         len(analyzed),
         len(filtered),
     )

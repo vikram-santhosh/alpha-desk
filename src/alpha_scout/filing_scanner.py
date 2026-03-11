@@ -3,6 +3,7 @@
 Scans SEC EDGAR for superinvestor 13F filings and identifies new positions
 by comparing current holdings to previous filings stored in memory.
 """
+from __future__ import annotations
 
 from typing import Any
 

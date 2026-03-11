@@ -3,6 +3,7 @@
 Sends the verbose HTML report via SMTP email (Gmail + generic SMTP).
 Gracefully degrades if not configured — silently skips when env vars missing.
 """
+from __future__ import annotations
 
 import os
 import smtplib

@@ -4,6 +4,7 @@ Fetches valuation, profitability, and growth metrics from yfinance and
 detects conditions that warrant alerts (extreme P/E, 52-week
 proximity, upcoming earnings, negative margins).
 """
+from __future__ import annotations
 
 from datetime import datetime, timedelta
 from typing import Any

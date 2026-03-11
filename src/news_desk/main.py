@@ -9,6 +9,7 @@ Orchestrates the full news intelligence pipeline:
 
 Entry point: `run()` — an async function returning a structured result dict.
 """
+from __future__ import annotations
 
 import asyncio
 import os
@@ -72,7 +73,7 @@ def _load_api_keys() -> dict[str, str | None]:
     return keys
 
 
-async def run() -> dict[str, Any]:
+async def run(headlines_only: bool = False) -> dict[str, Any]:
     """Run the full News Desk pipeline.
 
     Orchestrates fetching, analysis, signal publishing, and formatting.
@@ -132,6 +133,7 @@ async def run() -> dict[str, Any]:
                 tickers=tickers,
                 finnhub_key=keys.get("finnhub_key"),
                 newsapi_key=keys.get("newsapi_key"),
+                headlines_only=headlines_only,
             ),
         )
         stats["raw_articles"] = len(raw_articles)

@@ -9,6 +9,7 @@ final brief has fewer blind spots.
 This makes the pipeline reactive rather than strictly linear: analysts can
 request data they need *after* seeing what's available.
 """
+from __future__ import annotations
 
 import asyncio
 import json

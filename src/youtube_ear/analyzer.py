@@ -7,6 +7,7 @@ Aggregates results across batches into per-ticker summaries.
 Uses the lightweight Gemini path for cost efficiency — transcripts are long but extraction is
 structured, not creative reasoning.
 """
+from __future__ import annotations
 
 import json
 from typing import Any
