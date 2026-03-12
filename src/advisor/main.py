@@ -1183,6 +1183,7 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
         log.debug("Failed to update chat session context — chat Q&A may lack context")
 
     # ── Step 10: Generate verbose report ─────────────────────────────
+    total_time = time.time() - pipeline_start
     verbose_report_dir = ""
     try:
         from src.advisor.verbose_formatter import VerboseFormatter, save_verbose_report

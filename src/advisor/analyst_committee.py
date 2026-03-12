@@ -74,7 +74,7 @@ class GrowthAnalyst:
             margin = fund.get("net_margin")
             pe = fund.get("pe_trailing")
             price = report.get("price", fund.get("current_price", "N/A"))
-            change_pct = report.get("change_pct")
+            change_pct = report.get("change_pct") or 0.0
             lines.append(
                 f"- {ticker}: price={price} change={change_pct:+.1f}% "
                 f"rev_growth={self._fmt_pct(rev_growth)} margin={self._fmt_pct(margin)} pe={pe if pe is not None else 'N/A'}"
