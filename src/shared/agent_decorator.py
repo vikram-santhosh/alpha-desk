@@ -8,12 +8,45 @@ from collections.abc import Awaitable, Callable
 from functools import wraps
 from typing import Any, TypeVar
 
-from src.shared.cost_tracker import check_budget, record_usage
+from src.shared.cost_tracker import check_budget, get_budget_pressure, record_usage
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
 
 F = TypeVar("F", bound=Callable[..., Awaitable[Any]])
+
+# Model downgrade chain: from most expensive to cheapest
+_DOWNGRADE_CHAIN: dict[str, str] = {
+    "claude-opus-4-6": "claude-sonnet-4-6",
+    "claude-sonnet-4-6": "claude-haiku-4-5",
+}
+
+# Pressure threshold above which we downgrade one tier
+_DOWNGRADE_THRESHOLD = 0.7
+
+
+def select_model(preferred: str, allow_downgrade: bool = True) -> str:
+    """Pick the best model given current budget pressure.
+
+    Args:
+        preferred: The ideal model to use.
+        allow_downgrade: If False, always return preferred regardless of pressure.
+
+    Returns:
+        Model ID string — either preferred or a cheaper alternative.
+    """
+    if not allow_downgrade:
+        return preferred
+
+    pressure = get_budget_pressure()
+    if pressure < _DOWNGRADE_THRESHOLD:
+        return preferred
+
+    downgraded = _DOWNGRADE_CHAIN.get(preferred)
+    if downgraded:
+        log.info("Budget pressure %.2f — downgrading %s -> %s", pressure, preferred, downgraded)
+        return downgraded
+    return preferred
 
 
 class UsageLike:

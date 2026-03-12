@@ -10,6 +10,7 @@ from src.utils.logger import get_logger
 log = get_logger(__name__)
 
 PROMPT_DIR = Path("prompts") / "agents"
+SKILLS_DIR = Path("prompts") / "skills"
 
 
 def load_prompt(agent_name: str, fallback: str = "", **variables: Any) -> str:
@@ -24,6 +25,24 @@ def load_prompt(agent_name: str, fallback: str = "", **variables: Any) -> str:
         log.warning("Prompt %s not found and no fallback provided", path)
         return ""
 
+    return Template(template_text).safe_substitute({k: _stringify(v) for k, v in variables.items()})
+
+
+def load_skill(skill_name: str, **variables: Any) -> str:
+    """Load a skill prompt from prompts/skills/.
+
+    Args:
+        skill_name: Name of the skill (without .md extension).
+        **variables: Template variables to substitute.
+
+    Returns:
+        Rendered skill prompt, or empty string if not found.
+    """
+    path = SKILLS_DIR / f"{skill_name}.md"
+    if not path.exists():
+        log.debug("Skill prompt %s not found", path)
+        return ""
+    template_text = path.read_text()
     return Template(template_text).safe_substitute({k: _stringify(v) for k, v in variables.items()})
 
 

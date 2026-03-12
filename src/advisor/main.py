@@ -163,42 +163,46 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
         increment_conviction_weeks,
     )
 
-    # Seed holdings and macro theses from config (only inserts new ones)
-    seed_holdings(config.get("holdings", []))
-    seed_macro_theses(config.get("macro_theses", []))
+    if "load_memory" not in run_profile.run_steps:
+        log.info("Skipping step %s (not in run_steps for %s)", "load_memory", run_profile.run_type)
+        memory = {"holdings": [], "macro_theses": [], "conviction_list": [], "moonshot_list": []}
+    else:
+        # Seed holdings and macro theses from config (only inserts new ones)
+        seed_holdings(config.get("holdings", []))
+        seed_macro_theses(config.get("macro_theses", []))
 
-    # Sync entry_price from config into DB (config is source of truth)
-    from src.advisor.memory import update_holding
-    for h in config.get("holdings", []):
-        if h.get("entry_price"):
-            try:
-                update_holding(h["ticker"], entry_price=h["entry_price"])
-            except Exception:
-                pass
+        # Sync entry_price from config into DB (config is source of truth)
+        from src.advisor.memory import update_holding
+        for h in config.get("holdings", []):
+            if h.get("entry_price"):
+                try:
+                    update_holding(h["ticker"], entry_price=h["entry_price"])
+                except Exception:
+                    pass
 
-    # Increment conviction weeks on Mondays
-    if date.today().weekday() == 0:
-        increment_conviction_weeks()
+        # Increment conviction weeks on Mondays
+        if date.today().weekday() == 0:
+            increment_conviction_weeks()
 
-    memory = build_memory_context()
+        memory = build_memory_context()
 
-    # Enrich memory holdings with config data (shares, entry_price, portfolio_pct)
-    # that isn't stored in the DB schema
-    config_holdings_map = {
-        h["ticker"]: h for h in config.get("holdings", [])
-    }
-    for h in memory["holdings"]:
-        cfg = config_holdings_map.get(h["ticker"], {})
-        if cfg.get("shares"):
-            h["shares"] = cfg["shares"]
-        if cfg.get("entry_price") and not h.get("entry_price"):
-            h["entry_price"] = cfg["entry_price"]
-        if cfg.get("portfolio_pct"):
-            h["portfolio_pct"] = cfg["portfolio_pct"]
+        # Enrich memory holdings with config data (shares, entry_price, portfolio_pct)
+        # that isn't stored in the DB schema
+        config_holdings_map = {
+            h["ticker"]: h for h in config.get("holdings", [])
+        }
+        for h in memory["holdings"]:
+            cfg = config_holdings_map.get(h["ticker"], {})
+            if cfg.get("shares"):
+                h["shares"] = cfg["shares"]
+            if cfg.get("entry_price") and not h.get("entry_price"):
+                h["entry_price"] = cfg["entry_price"]
+            if cfg.get("portfolio_pct"):
+                h["portfolio_pct"] = cfg["portfolio_pct"]
 
-    log.info("Memory loaded: %d holdings, %d macro theses, %d conviction, %d moonshots",
-             len(memory["holdings"]), len(memory["macro_theses"]),
-             len(memory["conviction_list"]), len(memory["moonshot_list"]))
+        log.info("Memory loaded: %d holdings, %d macro theses, %d conviction, %d moonshots",
+                 len(memory["holdings"]), len(memory["macro_theses"]),
+                 len(memory["conviction_list"]), len(memory["moonshot_list"]))
 
     # ── Step 1b-d: Start context loaders in the background ────────────
     retrospective_task: asyncio.Task[str] | None = None
@@ -271,12 +275,29 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
             log.debug("YouTube Ear not available or failed")
             return {"formatted": "", "signals": [], "stats": {}}
 
+    _default_agent_result = {"formatted": "", "signals": [], "stats": {}}
+
     log.info("Step 2: Running Street Ear + News Desk + Substack Ear + YouTube Ear")
+    _step2_tasks: list[tuple[str, str, Any]] = [
+        ("street_ear", "Street Ear", run_street_ear),
+        ("news_desk", "News Desk", run_news_desk),
+        ("substack_ear", "Substack Ear", _safe_run_substack),
+        ("youtube_ear", "YouTube Ear", _safe_run_youtube),
+    ]
+    _step2_coros = []
+
+    async def _noop_agent():
+        return dict(_default_agent_result)
+
+    for _i, (step_name, agent_label, agent_fn) in enumerate(_step2_tasks):
+        if step_name not in run_profile.run_steps:
+            log.info("Skipping step %s (not in run_steps for %s)", step_name, run_profile.run_type)
+            _step2_coros.append(_noop_agent())
+        else:
+            _step2_coros.append(_run_agent(agent_label, agent_fn))
+
     street_ear_result, news_desk_result, substack_result, youtube_result = await asyncio.gather(
-        _run_agent("Street Ear", run_street_ear),
-        _run_agent("News Desk", run_news_desk),
-        _run_agent("Substack Ear", _safe_run_substack),
-        _run_agent("YouTube Ear", _safe_run_youtube),
+        *_step2_coros
     )
 
     # Read signals without consuming (Portfolio Analyst needs them later)
@@ -410,6 +431,20 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
             superinvestor_data,
         )
 
+    _run_market = "market_data_full" in run_profile.run_steps or "market_data_prices" in run_profile.run_steps
+    _run_advisor = "advisor_data" in run_profile.run_steps
+
+    if not _run_market:
+        log.info("Skipping step %s (not in run_steps for %s)", "market_data_full", run_profile.run_type)
+    if not _run_advisor:
+        log.info("Skipping step %s (not in run_steps for %s)", "advisor_data", run_profile.run_type)
+
+    async def _default_market():
+        return {}, {}, {}
+
+    async def _default_advisor():
+        return {}, [], [], {}, {}
+
     (
         prices,
         fundamentals,
@@ -421,8 +456,8 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
         earnings_data,
         superinvestor_data,
     ) = await asyncio.gather(
-        _fetch_market_data(),
-        _fetch_advisor_data(),
+        _fetch_market_data() if _run_market else _default_market(),
+        _fetch_advisor_data() if _run_advisor else _default_advisor(),
     )
 
     # Update macro theses with new data — include macro_event signals from bus
@@ -464,20 +499,25 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
     # ── Step 5: Monitor holdings ───────────────────────────────────────
     from src.advisor.holdings_monitor import monitor_holdings, build_holdings_narrative
 
-    log.info("Step 5: Monitoring holdings")
-    try:
-        holdings_reports = monitor_holdings(
-            holdings=memory["holdings"],
-            prices=prices,
-            fundamentals=fundamentals,
-            signals=agent_bus_signals,
-            news_signals=news_signals,
-        )
-    except Exception:
-        log.exception("Failed to monitor holdings")
+    if "holdings_monitor" not in run_profile.run_steps:
+        log.info("Skipping step %s (not in run_steps for %s)", "holdings_monitor", run_profile.run_type)
         holdings_reports = []
+        holdings_narrative = ""
+    else:
+        log.info("Step 5: Monitoring holdings")
+        try:
+            holdings_reports = monitor_holdings(
+                holdings=memory["holdings"],
+                prices=prices,
+                fundamentals=fundamentals,
+                signals=agent_bus_signals,
+                news_signals=news_signals,
+            )
+        except Exception:
+            log.exception("Failed to monitor holdings")
+            holdings_reports = []
 
-    holdings_narrative = build_holdings_narrative(holdings_reports)
+        holdings_narrative = build_holdings_narrative(holdings_reports)
 
     # ── Step 5b: Delta Engine — snapshot + compute changes ─────────────
     from src.advisor.delta_engine import (
@@ -488,69 +528,73 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
     )
     from src.advisor.memory import get_latest_snapshot_before
 
-    log.info("Step 5b: Delta Engine")
     delta_report = None
     delta_summary_task: asyncio.Task[str] | None = None
     delta_prompt_section = ""
     yesterday_snapshot = None
     save_snapshot_task: asyncio.Task[Any] | None = None
     daily_snapshot_saved = False
-    try:
-        today_snapshot = build_snapshot(
-            holdings_reports=holdings_reports,
-            fundamentals=fundamentals,
-            technicals=technicals,
-            macro_data=macro_data,
-            conviction_list=memory["conviction_list"],
-            moonshot_list=memory["moonshot_list"],
-            strategy={},
-            earnings_data=earnings_data if isinstance(earnings_data, dict) else {},
-            superinvestor_data=superinvestor_data,
-            reddit_mood=_reddit_mood,
-            reddit_themes=_reddit_themes,
-        )
-        yesterday_snapshot_task = asyncio.create_task(
-            _run_blocking_step(
-                "Load previous snapshot",
-                get_latest_snapshot_before,
-                date.today().isoformat(),
-                default=None,
+    today_snapshot: dict[str, Any] = {}
+
+    if "delta_engine" not in run_profile.run_steps:
+        log.info("Skipping step %s (not in run_steps for %s)", "delta_engine", run_profile.run_type)
+    else:
+        try:
+            today_snapshot = build_snapshot(
+                holdings_reports=holdings_reports,
+                fundamentals=fundamentals,
+                technicals=technicals,
+                macro_data=macro_data,
+                conviction_list=memory["conviction_list"],
+                moonshot_list=memory["moonshot_list"],
+                strategy={},
+                earnings_data=earnings_data if isinstance(earnings_data, dict) else {},
+                superinvestor_data=superinvestor_data,
+                reddit_mood=_reddit_mood,
+                reddit_themes=_reddit_themes,
             )
-        )
-        if run_profile.run_type == "morning_full":
-            save_snapshot_task = asyncio.create_task(
+            yesterday_snapshot_task = asyncio.create_task(
                 _run_blocking_step(
-                    "Save daily snapshot",
-                    save_today_snapshot,
-                    today_snapshot,
+                    "Load previous snapshot",
+                    get_latest_snapshot_before,
+                    date.today().isoformat(),
                     default=None,
                 )
             )
-        yesterday_snapshot = await yesterday_snapshot_task
-        if save_snapshot_task is not None:
-            await save_snapshot_task
-            daily_snapshot_saved = True
-    except Exception:
-        log.exception("Failed to build/save daily snapshot")
-        today_snapshot = {}
+            if run_profile.run_type == "morning_full":
+                save_snapshot_task = asyncio.create_task(
+                    _run_blocking_step(
+                        "Save daily snapshot",
+                        save_today_snapshot,
+                        today_snapshot,
+                        default=None,
+                    )
+                )
+            yesterday_snapshot = await yesterday_snapshot_task
+            if save_snapshot_task is not None:
+                await save_snapshot_task
+                daily_snapshot_saved = True
+        except Exception:
+            log.exception("Failed to build/save daily snapshot")
+            today_snapshot = {}
 
-    try:
-        delta_report = compute_deltas(today_snapshot, yesterday_snapshot)
-        delta_summary_task = asyncio.create_task(
-            _run_blocking_step(
-                "Generate delta summary",
-                _generate_delta_summary_text,
-                delta_report,
-                default="",
+        try:
+            delta_report = compute_deltas(today_snapshot, yesterday_snapshot)
+            delta_summary_task = asyncio.create_task(
+                _run_blocking_step(
+                    "Generate delta summary",
+                    _generate_delta_summary_text,
+                    delta_report,
+                    default="",
+                )
             )
-        )
-        log.info("Delta report: %d high, %d medium, %d low",
-                 len(delta_report.high_significance),
-                 len(delta_report.medium_significance),
-                 len(delta_report.low_significance))
-    except Exception:
-        log.exception("Failed to compute deltas")
-        delta_prompt_section = ""
+            log.info("Delta report: %d high, %d medium, %d low",
+                     len(delta_report.high_significance),
+                     len(delta_report.medium_significance),
+                     len(delta_report.low_significance))
+        except Exception:
+            log.exception("Failed to compute deltas")
+            delta_prompt_section = ""
 
     # ── Step 6: Decision engine ────────────────────────────────────────
     from src.advisor.valuation_engine import compute_target_price
@@ -558,240 +602,249 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
     from src.advisor.moonshot_manager import update_moonshot_list
     from src.advisor.strategy_engine import generate_strategy
 
-    log.info("Step 6: Running decision engine")
     step_start = time.time()
-
-    # Compute valuations for all tickers
     valuation_data = {}
-    for ticker in all_tickers:
-        try:
-            fund = fundamentals.get(ticker, {})
-            earn = earnings_data.get("per_ticker", {}).get(ticker) if isinstance(earnings_data, dict) else None
-            val_result = compute_target_price(ticker, fund, earn)
-            # Enrich with P/E data from fundamentals for strategy engine
-            if not val_result.get("insufficient_data"):
-                val_result["pe_trailing"] = fund.get("pe_trailing")
-                val_result["pe_forward"] = fund.get("pe_forward")
-            valuation_data[ticker] = val_result
-        except Exception:
-            log.debug("Failed to compute valuation for %s", ticker)
-
-    # Source candidates from Alpha Scout for conviction/moonshot pipeline
     discovery_candidates = []
-    try:
-        from src.alpha_scout.screener import screen_candidates
-
-        if discovery_candidates_task is not None:
-            discovery_candidates = await discovery_candidates_task
-
-        if discovery_candidates:
-            # Fetch data for candidates and screen them
-            cand_tickers = [c["ticker"] for c in discovery_candidates[:20]]
-            cand_si_tickers = [c["ticker"] for c in discovery_candidates[:10]]
-
-            cand_fundamentals_task = asyncio.create_task(
-                _run_blocking_step(
-                    "Fetch candidate fundamentals",
-                    fetch_all_fundamentals,
-                    cand_tickers,
-                    default={},
-                )
-            )
-            cand_historical_task = asyncio.create_task(
-                _run_blocking_step(
-                    "Fetch candidate historical data",
-                    fetch_all_historical,
-                    cand_tickers,
-                    default={},
-                )
-            )
-            cand_superinvestor_task = asyncio.create_task(
-                _run_blocking_step(
-                    "Fetch candidate superinvestor data",
-                    run_superinvestor_tracking,
-                    cand_si_tickers,
-                    config,
-                    default={},
-                )
-            )
-
-            cand_historical = await cand_historical_task
-            cand_technicals_task = asyncio.create_task(
-                _run_blocking_step(
-                    "Run candidate technical analysis",
-                    run_technical_analysis,
-                    cand_tickers,
-                    cand_historical,
-                    default={},
-                )
-            )
-
-            cand_fundamentals, cand_technicals, cand_si_data = await asyncio.gather(
-                cand_fundamentals_task,
-                cand_technicals_task,
-                cand_superinvestor_task,
-            )
-
-            if isinstance(cand_si_data, dict):
-                for t, summary in cand_si_data.get("smart_money_summaries", {}).items():
-                    if t not in superinvestor_data:
-                        superinvestor_data[t] = summary
-
-            discovery_candidates = await _run_blocking_step(
-                "Screen discovery candidates",
-                screen_candidates,
-                discovery_candidates[:20],
-                cand_technicals,
-                cand_fundamentals,
-                holding_tickers,
-                fundamentals,
-                config.get("conviction_weights", {
-                    "technical": 0.30, "fundamental": 0.30,
-                    "sentiment": 0.20, "diversification": 0.20,
-                }),
-                default=discovery_candidates[:20],
-            )
-            # Compute valuations for top candidates
-            for cand in discovery_candidates[:10]:
-                t = cand["ticker"]
-                try:
-                    cand_fund = cand_fundamentals.get(t, {})
-                    valuation_data[t] = compute_target_price(t, cand_fund)
-                except Exception:
-                    pass
-
-            log.info("Sourced %d discovery candidates for conviction pipeline", len(discovery_candidates))
-    except Exception:
-        log.exception("Failed to source discovery candidates")
-
-    # Update conviction list
-    try:
-        conviction_result = update_conviction_list(
-            candidates=discovery_candidates,
-            superinvestor_data=superinvestor_data,
-            earnings_data=earnings_data if isinstance(earnings_data, dict) else {},
-            prediction_data=prediction_data,
-            valuation_data=valuation_data,
-            config=config,
-        )
-    except Exception:
-        log.exception("Failed to update conviction list")
-        conviction_result = {"current_list": memory["conviction_list"], "added": [], "removed": []}
-
-    # ── Step 6b: Catalyst tracking + event detection ─────────────────
+    conviction_result = {"current_list": memory["conviction_list"], "added": [], "removed": []}
+    moonshot_result = {"current_list": memory["moonshot_list"], "added": [], "removed": []}
+    strategy = {"actions": [], "flags": [], "summary": "Skipped."}
     catalyst_data = {}
     catalyst_prompt_section = ""
-    try:
-        from src.advisor.catalyst_tracker import run_catalyst_tracking, format_catalysts_for_prompt
-        catalyst_data = run_catalyst_tracking(all_tickers)
-        catalyst_prompt_section = format_catalysts_for_prompt(catalyst_data.get("catalysts", []))
-        log.info("Catalyst tracking: %d catalysts found", len(catalyst_data.get("catalysts", [])))
-    except Exception:
-        log.exception("Catalyst tracking failed — continuing without catalysts")
 
-    # Extract future-dated events from news articles → persist as catalysts
-    try:
-        from src.advisor.event_detector import run_event_detection
-        top_articles = news_desk_result.get("top_articles", [])
-        existing_cats = catalyst_data.get("catalysts", [])
-        detected_events = run_event_detection(top_articles, existing_cats)
-        if detected_events:
-            log.info("Event detection: %d new events extracted from news", len(detected_events))
-            # Refresh catalyst data to include newly detected events
-            catalyst_data["catalysts"] = existing_cats + detected_events
-            catalyst_prompt_section = format_catalysts_for_prompt(catalyst_data["catalysts"])
-    except Exception:
-        log.exception("Event detection failed — continuing with hardcoded catalysts only")
+    if "decision_engine" not in run_profile.run_steps:
+        log.info("Skipping step %s (not in run_steps for %s)", "decision_engine", run_profile.run_type)
+    else:
+        log.info("Step 6: Running decision engine")
 
-    # Record conviction additions as structured recommendations for outcome tracking
-    try:
-        from src.advisor.memory import record_recommendation
-        from src.advisor.conviction_manager import build_evidence_items
-        from src.shared.schemas import compute_evidence_quality_score
-        for added_entry in conviction_result.get("added", []):
-            t = added_entry.get("ticker", "")
-            if not t:
-                continue
-            # Build evidence items for this ticker
-            si_data = superinvestor_data.get(t)
-            earn_data = earnings_data.get("per_ticker", {}).get(t) if isinstance(earnings_data, dict) else None
-            fund = fundamentals.get(t, {})
-            val = valuation_data.get(t)
-            crowd = {}
-            for c in discovery_candidates:
-                if c.get("ticker") == t:
-                    sig = c.get("signal_data", {})
-                    if sig.get("sentiment") is not None:
-                        crowd["reddit_sentiment"] = sig["sentiment"]
-                    break
-            evidence_items = build_evidence_items(t, earn_data, crowd, si_data, fund, val)
-            eq_score = compute_evidence_quality_score(evidence_items)
-
-            # Fetch actual thesis text from memory for skeptic review
-            thesis_text = ""
+    if "decision_engine" in run_profile.run_steps:
+        for ticker in all_tickers:
             try:
-                conv_entries = memory.get_conviction_list(active_only=True)
-                for ce in conv_entries:
-                    if ce.get("ticker") == t:
-                        thesis_text = ce.get("thesis", "")
+                fund = fundamentals.get(ticker, {})
+                earn = earnings_data.get("per_ticker", {}).get(ticker) if isinstance(earnings_data, dict) else None
+                val_result = compute_target_price(ticker, fund, earn)
+                # Enrich with P/E data from fundamentals for strategy engine
+                if not val_result.get("insufficient_data"):
+                    val_result["pe_trailing"] = fund.get("pe_trailing")
+                    val_result["pe_forward"] = fund.get("pe_forward")
+                valuation_data[ticker] = val_result
+            except Exception:
+                log.debug("Failed to compute valuation for %s", ticker)
+    
+        # Source candidates from Alpha Scout for conviction/moonshot pipeline
+        try:
+            from src.alpha_scout.screener import screen_candidates
+    
+            if discovery_candidates_task is not None:
+                discovery_candidates = await discovery_candidates_task
+    
+            if discovery_candidates:
+                # Fetch data for candidates and screen them
+                cand_tickers = [c["ticker"] for c in discovery_candidates[:20]]
+                cand_si_tickers = [c["ticker"] for c in discovery_candidates[:10]]
+    
+                cand_fundamentals_task = asyncio.create_task(
+                    _run_blocking_step(
+                        "Fetch candidate fundamentals",
+                        fetch_all_fundamentals,
+                        cand_tickers,
+                        default={},
+                    )
+                )
+                cand_historical_task = asyncio.create_task(
+                    _run_blocking_step(
+                        "Fetch candidate historical data",
+                        fetch_all_historical,
+                        cand_tickers,
+                        default={},
+                    )
+                )
+                cand_superinvestor_task = asyncio.create_task(
+                    _run_blocking_step(
+                        "Fetch candidate superinvestor data",
+                        run_superinvestor_tracking,
+                        cand_si_tickers,
+                        config,
+                        default={},
+                    )
+                )
+    
+                cand_historical = await cand_historical_task
+                cand_technicals_task = asyncio.create_task(
+                    _run_blocking_step(
+                        "Run candidate technical analysis",
+                        run_technical_analysis,
+                        cand_tickers,
+                        cand_historical,
+                        default={},
+                    )
+                )
+    
+                cand_fundamentals, cand_technicals, cand_si_data = await asyncio.gather(
+                    cand_fundamentals_task,
+                    cand_technicals_task,
+                    cand_superinvestor_task,
+                )
+    
+                if isinstance(cand_si_data, dict):
+                    for t, summary in cand_si_data.get("smart_money_summaries", {}).items():
+                        if t not in superinvestor_data:
+                            superinvestor_data[t] = summary
+    
+                discovery_candidates = await _run_blocking_step(
+                    "Screen discovery candidates",
+                    screen_candidates,
+                    discovery_candidates[:20],
+                    cand_technicals,
+                    cand_fundamentals,
+                    holding_tickers,
+                    fundamentals,
+                    config.get("conviction_weights", {
+                        "technical": 0.30, "fundamental": 0.30,
+                        "sentiment": 0.20, "diversification": 0.20,
+                    }),
+                    default=discovery_candidates[:20],
+                )
+                # Compute valuations for top candidates
+                for cand in discovery_candidates[:10]:
+                    t = cand["ticker"]
+                    try:
+                        cand_fund = cand_fundamentals.get(t, {})
+                        valuation_data[t] = compute_target_price(t, cand_fund)
+                    except Exception:
+                        pass
+    
+                log.info("Sourced %d discovery candidates for conviction pipeline", len(discovery_candidates))
+        except Exception:
+            log.exception("Failed to source discovery candidates")
+    
+        # Update conviction list
+        try:
+            conviction_result = update_conviction_list(
+                candidates=discovery_candidates,
+                superinvestor_data=superinvestor_data,
+                earnings_data=earnings_data if isinstance(earnings_data, dict) else {},
+                prediction_data=prediction_data,
+                valuation_data=valuation_data,
+                config=config,
+            )
+        except Exception:
+            log.exception("Failed to update conviction list")
+            conviction_result = {"current_list": memory["conviction_list"], "added": [], "removed": []}
+    
+        # ── Step 6b: Catalyst tracking + event detection ─────────────────
+        catalyst_data = {}
+        catalyst_prompt_section = ""
+        try:
+            from src.advisor.catalyst_tracker import run_catalyst_tracking, format_catalysts_for_prompt
+            catalyst_data = run_catalyst_tracking(all_tickers)
+            catalyst_prompt_section = format_catalysts_for_prompt(catalyst_data.get("catalysts", []))
+            log.info("Catalyst tracking: %d catalysts found", len(catalyst_data.get("catalysts", [])))
+        except Exception:
+            log.exception("Catalyst tracking failed — continuing without catalysts")
+    
+        # Extract future-dated events from news articles → persist as catalysts
+        try:
+            from src.advisor.event_detector import run_event_detection
+            top_articles = news_desk_result.get("top_articles", [])
+            existing_cats = catalyst_data.get("catalysts", [])
+            detected_events = run_event_detection(top_articles, existing_cats)
+            if detected_events:
+                log.info("Event detection: %d new events extracted from news", len(detected_events))
+                # Refresh catalyst data to include newly detected events
+                catalyst_data["catalysts"] = existing_cats + detected_events
+                catalyst_prompt_section = format_catalysts_for_prompt(catalyst_data["catalysts"])
+        except Exception:
+            log.exception("Event detection failed — continuing with hardcoded catalysts only")
+    
+        # Record conviction additions as structured recommendations for outcome tracking
+        try:
+            from src.advisor.memory import record_recommendation
+            from src.advisor.conviction_manager import build_evidence_items
+            from src.shared.schemas import compute_evidence_quality_score
+            for added_entry in conviction_result.get("added", []):
+                t = added_entry.get("ticker", "")
+                if not t:
+                    continue
+                # Build evidence items for this ticker
+                si_data = superinvestor_data.get(t)
+                earn_data = earnings_data.get("per_ticker", {}).get(t) if isinstance(earnings_data, dict) else None
+                fund = fundamentals.get(t, {})
+                val = valuation_data.get(t)
+                crowd = {}
+                for c in discovery_candidates:
+                    if c.get("ticker") == t:
+                        sig = c.get("signal_data", {})
+                        if sig.get("sentiment") is not None:
+                            crowd["reddit_sentiment"] = sig["sentiment"]
                         break
-            except Exception:
-                pass
-
-            # Run skeptic challenge on new conviction additions
-            rec_dict = {
-                "ticker": t,
-                "recommendation_date": date.today().isoformat(),
-                "action": "BUY",
-                "conviction_level": added_entry.get("conviction", "medium"),
-                "valuation": val or {},
-                "thesis": {"core_argument": thesis_text, "supporting_evidence": [e.to_dict() for e in evidence_items], "evidence_quality_score": eq_score},
-                "bear_case": {"primary_risk": ""},
-                "analyst_scores": {"composite_score": 0.0},
-                "source": "conviction_pipeline",
-                "category": "conviction_add",
-            }
-            try:
-                from src.advisor.skeptic_agent import SkepticAgent, apply_skeptic_to_recommendation
-                skeptic = SkepticAgent()
-                market_ctx = {"vix": macro_data.get("vix", {}).get("value") if isinstance(macro_data.get("vix"), dict) else macro_data.get("vix"),
-                              "treasury_10y": macro_data.get("treasury_10y", {}).get("value") if isinstance(macro_data.get("treasury_10y"), dict) else macro_data.get("treasury_10y")}
-                skeptic_result = skeptic.challenge_recommendation(rec_dict, market_ctx)
-                rec_dict = apply_skeptic_to_recommendation(rec_dict, skeptic_result)
-                log.info("Skeptic reviewed %s: modifier=%.2f", t, skeptic_result.get("confidence_modifier", 1.0))
-            except Exception:
-                log.exception("Skeptic review failed for %s — recording without skeptic", t)
-
-            record_recommendation(rec_dict)
-    except Exception:
-        log.exception("Failed to record conviction recommendations for outcome tracking")
-
-    # Update moonshot list
-    try:
-        moonshot_result = update_moonshot_list(
-            candidates=discovery_candidates,
-            config=config,
-            prediction_data=prediction_data,
-            earnings_data=earnings_data if isinstance(earnings_data, dict) else {},
-            valuation_data=valuation_data,
-        )
-    except Exception:
-        log.exception("Failed to update moonshot list")
-        moonshot_result = {"current_list": memory["moonshot_list"], "added": [], "removed": []}
-
-    # Generate strategy
-    try:
-        strategy = generate_strategy(
-            holdings_reports=holdings_reports,
-            macro_theses=updated_theses,
-            valuation_data=valuation_data,
-            config=config,
-        )
-    except Exception:
-        log.exception("Failed to generate strategy")
-        strategy = {"actions": [], "flags": [], "summary": "Strategy generation failed."}
-
-    log.info("Step 6 completed in %.1fs", time.time() - step_start)
+                evidence_items = build_evidence_items(t, earn_data, crowd, si_data, fund, val)
+                eq_score = compute_evidence_quality_score(evidence_items)
+    
+                # Fetch actual thesis text from memory for skeptic review
+                thesis_text = ""
+                try:
+                    conv_entries = memory.get_conviction_list(active_only=True)
+                    for ce in conv_entries:
+                        if ce.get("ticker") == t:
+                            thesis_text = ce.get("thesis", "")
+                            break
+                except Exception:
+                    pass
+    
+                # Run skeptic challenge on new conviction additions
+                rec_dict = {
+                    "ticker": t,
+                    "recommendation_date": date.today().isoformat(),
+                    "action": "BUY",
+                    "conviction_level": added_entry.get("conviction", "medium"),
+                    "valuation": val or {},
+                    "thesis": {"core_argument": thesis_text, "supporting_evidence": [e.to_dict() for e in evidence_items], "evidence_quality_score": eq_score},
+                    "bear_case": {"primary_risk": ""},
+                    "analyst_scores": {"composite_score": 0.0},
+                    "source": "conviction_pipeline",
+                    "category": "conviction_add",
+                }
+                try:
+                    from src.advisor.skeptic_agent import SkepticAgent, apply_skeptic_to_recommendation
+                    skeptic = SkepticAgent()
+                    market_ctx = {"vix": macro_data.get("vix", {}).get("value") if isinstance(macro_data.get("vix"), dict) else macro_data.get("vix"),
+                                  "treasury_10y": macro_data.get("treasury_10y", {}).get("value") if isinstance(macro_data.get("treasury_10y"), dict) else macro_data.get("treasury_10y")}
+                    skeptic_result = skeptic.challenge_recommendation(rec_dict, market_ctx)
+                    rec_dict = apply_skeptic_to_recommendation(rec_dict, skeptic_result)
+                    log.info("Skeptic reviewed %s: modifier=%.2f", t, skeptic_result.get("confidence_modifier", 1.0))
+                except Exception:
+                    log.exception("Skeptic review failed for %s — recording without skeptic", t)
+    
+                record_recommendation(rec_dict)
+        except Exception:
+            log.exception("Failed to record conviction recommendations for outcome tracking")
+    
+        # Update moonshot list
+        try:
+            moonshot_result = update_moonshot_list(
+                candidates=discovery_candidates,
+                config=config,
+                prediction_data=prediction_data,
+                earnings_data=earnings_data if isinstance(earnings_data, dict) else {},
+                valuation_data=valuation_data,
+            )
+        except Exception:
+            log.exception("Failed to update moonshot list")
+            moonshot_result = {"current_list": memory["moonshot_list"], "added": [], "removed": []}
+    
+        # Generate strategy
+        try:
+            strategy = generate_strategy(
+                holdings_reports=holdings_reports,
+                macro_theses=updated_theses,
+                valuation_data=valuation_data,
+                config=config,
+            )
+        except Exception:
+            log.exception("Failed to generate strategy")
+            strategy = {"actions": [], "flags": [], "summary": "Strategy generation failed."}
+    
+        log.info("Step 6 completed in %.1fs", time.time() - step_start)
 
     # ── Step 6c: Record reasoning journal entries ──────────────────────
     try:
@@ -843,7 +896,13 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
         log.info("Loaded user preference context (%d chars)", len(preference_context))
 
     # ── Step 7: Analyst Committee synthesis ──────────────────────────────
-    log.info("Step 7: Analyst Committee synthesis")
+    _run_committee = "full_analyst_committee" in run_profile.run_steps or "delta_analyst" in run_profile.run_steps
+    synthesis = {}
+    committee_result = None
+    if not _run_committee:
+        log.info("Skipping step %s (not in run_steps for %s)", "full_analyst_committee", run_profile.run_type)
+    else:
+        log.info("Step 7: Analyst Committee synthesis")
 
     # Build context strings for the committee editor
     _macro_ctx_parts = []
@@ -953,95 +1012,124 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
                 _substack_lines.append(line)
     _substack_ctx_str = "\n".join(_substack_lines) if _substack_lines else ""
 
-    synthesis = {}
-    committee_result = None
-    try:
-        from src.advisor.analyst_committee import run_analyst_committee
+    if _run_committee:
+        try:
+            from src.advisor.analyst_committee import run_analyst_committee
 
-        # Build earnings & superinvestor context strings for deep research
-        _earnings_ctx_str = _build_earnings_ctx(
-            earnings_data if isinstance(earnings_data, dict) else {}
-        )
-        _superinvestor_ctx_str = _build_superinvestor_ctx(superinvestor_data)
-
-        # Determine priority tickers for deep research
-        # Priority: holdings with big moves > all holdings > conviction list
-        _deep_tickers: list[str] = []
-        _move_threshold = config.get("committee", {}).get("deep_research_move_threshold", 2.0)
-        _max_deep = config.get("committee", {}).get("deep_research_max_tickers", 6)
-        for h in sorted(holdings_reports, key=lambda x: abs(x.get("change_pct") or 0), reverse=True):
-            t = h.get("ticker", "")
-            if t and abs(h.get("change_pct") or 0) >= _move_threshold:
-                _deep_tickers.append(t)
-        # Fill with remaining holdings
-        for t in all_tickers[:12]:
-            if t not in _deep_tickers:
-                _deep_tickers.append(t)
-            if len(_deep_tickers) >= _max_deep:
-                break
-        # Add conviction list tickers
-        for c in conviction_result.get("current_list", []):
-            ct = c.get("ticker", "")
-            if ct and ct not in _deep_tickers:
-                _deep_tickers.append(ct)
-
-        committee_result = await run_analyst_committee(
-            tickers=all_tickers[:12],
-            data_context=_data_context,
-            delta_summary=delta_prompt_section,
-            retrospective_context=retrospective_context,
-            catalyst_section=catalyst_prompt_section,
-            macro_context=_macro_ctx_str,
-            holdings_context=_holdings_ctx_str,
-            conviction_context=_conviction_ctx_str,
-            strategy_context=_actions_ctx_str,
-            news_context=_news_ctx_str,
-            reddit_context=_reddit_ctx_str,
-            substack_context=_substack_ctx_str,
-            calibration_context=calibration_context,
-            preference_context=preference_context,
-            earnings_context=_earnings_ctx_str,
-            superinvestor_context=_superinvestor_ctx_str,
-            deep_research_tickers=_deep_tickers,
-            config=config,
-            mandate_breach_ctx=_mandate_breach_ctx,
-        )
-
-        brief_text = committee_result.get("formatted_brief", "")
-        if brief_text and "error" not in committee_result:
-            synthesis = {
-                "macro_summary": brief_text,
-                "formatted_brief": brief_text,
-                "committee_result": committee_result,
-            }
-            log.info("Committee synthesis complete: %d chars", len(brief_text))
-        else:
-            log.warning("Committee returned no brief — falling back to single-pass synthesis")
-            raise ValueError("Committee returned empty brief")
-
-    except Exception:
-        log.exception("Analyst committee failed — falling back to single-pass synthesis")
-        synthesis = _synthesize_brief(
-            memory=memory,
-            macro_data=macro_data,
-            updated_theses=updated_theses,
-            prediction_shifts=prediction_shifts,
-            holdings_reports=holdings_reports,
-            strategy=strategy,
-            conviction_list=conviction_result.get("current_list", []),
-            moonshot_list=moonshot_result.get("current_list", []),
-            earnings_data=earnings_data,
-            superinvestor_data=superinvestor_data,
-            reddit_mood=_reddit_mood,
-            reddit_themes=_reddit_themes,
-            delta_prompt_section=delta_prompt_section,
-            catalyst_prompt_section=catalyst_prompt_section,
-            news_signals=news_signals,
-        )
-        # Preserve committee_result (deep research, analyst reports) even when
-        # editor synthesis failed — the verbose formatter can still use them.
-        if committee_result is not None:
-            synthesis["committee_result"] = committee_result
+            # Build earnings & superinvestor context strings for deep research
+            _earnings_ctx_str = _build_earnings_ctx(
+                earnings_data if isinstance(earnings_data, dict) else {}
+            )
+            _superinvestor_ctx_str = _build_superinvestor_ctx(superinvestor_data)
+    
+            # Determine priority tickers for deep research
+            # Priority: holdings with big moves > all holdings > conviction list
+            _deep_tickers: list[str] = []
+            _move_threshold = config.get("committee", {}).get("deep_research_move_threshold", 2.0)
+            _max_deep = config.get("committee", {}).get("deep_research_max_tickers", 6)
+            for h in sorted(holdings_reports, key=lambda x: abs(x.get("change_pct") or 0), reverse=True):
+                t = h.get("ticker", "")
+                if t and abs(h.get("change_pct") or 0) >= _move_threshold:
+                    _deep_tickers.append(t)
+            # Fill with remaining holdings
+            for t in all_tickers[:12]:
+                if t not in _deep_tickers:
+                    _deep_tickers.append(t)
+                if len(_deep_tickers) >= _max_deep:
+                    break
+            # Add conviction list tickers
+            for c in conviction_result.get("current_list", []):
+                ct = c.get("ticker", "")
+                if ct and ct not in _deep_tickers:
+                    _deep_tickers.append(ct)
+    
+            committee_result = await run_analyst_committee(
+                tickers=all_tickers[:12],
+                data_context=_data_context,
+                delta_summary=delta_prompt_section,
+                retrospective_context=retrospective_context,
+                catalyst_section=catalyst_prompt_section,
+                macro_context=_macro_ctx_str,
+                holdings_context=_holdings_ctx_str,
+                conviction_context=_conviction_ctx_str,
+                strategy_context=_actions_ctx_str,
+                news_context=_news_ctx_str,
+                reddit_context=_reddit_ctx_str,
+                substack_context=_substack_ctx_str,
+                calibration_context=calibration_context,
+                preference_context=preference_context,
+                earnings_context=_earnings_ctx_str,
+                superinvestor_context=_superinvestor_ctx_str,
+                deep_research_tickers=_deep_tickers,
+                config=config,
+                mandate_breach_ctx=_mandate_breach_ctx,
+            )
+    
+            brief_text = committee_result.get("formatted_brief", "")
+            if brief_text and "error" not in committee_result:
+                # Run Flash reviewer on synthesized brief
+                try:
+                    from src.advisor.brief_reviewer import review_brief
+    
+                    review_result = await review_brief(
+                        brief_text=brief_text,
+                        holdings_context=_holdings_ctx_str,
+                        news_context=_news_ctx_str,
+                    )
+                    log.info(
+                        "Brief review: quality=%s, should_flag=%s, issues=%d, cost=$%.4f",
+                        review_result.get("overall_quality", "N/A"),
+                        review_result.get("should_flag", False),
+                        len(review_result.get("issues", [])),
+                        review_result.get("cost_usd", 0.0),
+                    )
+                    should_flag = review_result.get("should_flag", False)
+                    quality = review_result.get("overall_quality", 10)
+                    if should_flag or (isinstance(quality, (int, float)) and quality < 6):
+                        issues = review_result.get("issues", [])
+                        issue_summary = "; ".join(
+                            i.get("description", "")
+                            for i in issues[:3]
+                            if i.get("severity") in ("high", "medium")
+                        ) or "Quality below threshold"
+                        brief_text = f"[REVIEWER NOTE: {issue_summary}]\n\n{brief_text}"
+                        log.warning("Brief flagged by reviewer: %s", issue_summary)
+                except Exception:
+                    log.exception("Brief reviewer failed — proceeding without review")
+    
+                synthesis = {
+                    "macro_summary": brief_text,
+                    "formatted_brief": brief_text,
+                    "committee_result": committee_result,
+                }
+                log.info("Committee synthesis complete: %d chars", len(brief_text))
+            else:
+                log.warning("Committee returned no brief — falling back to single-pass synthesis")
+                raise ValueError("Committee returned empty brief")
+    
+        except Exception:
+            log.exception("Analyst committee failed — falling back to single-pass synthesis")
+            synthesis = _synthesize_brief(
+                memory=memory,
+                macro_data=macro_data,
+                updated_theses=updated_theses,
+                prediction_shifts=prediction_shifts,
+                holdings_reports=holdings_reports,
+                strategy=strategy,
+                conviction_list=conviction_result.get("current_list", []),
+                moonshot_list=moonshot_result.get("current_list", []),
+                earnings_data=earnings_data,
+                superinvestor_data=superinvestor_data,
+                reddit_mood=_reddit_mood,
+                reddit_themes=_reddit_themes,
+                delta_prompt_section=delta_prompt_section,
+                catalyst_prompt_section=catalyst_prompt_section,
+                news_signals=news_signals,
+            )
+            # Preserve committee_result (deep research, analyst reports) even when
+            # editor synthesis failed — the verbose formatter can still use them.
+            if committee_result is not None:
+                synthesis["committee_result"] = committee_result
 
     # ── Step 8: Save memory state ──────────────────────────────────────
     if run_profile.run_type == "morning_full":
@@ -1185,104 +1273,107 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
     # ── Step 10: Generate verbose report ─────────────────────────────
     total_time = time.time() - pipeline_start
     verbose_report_dir = ""
-    try:
-        from src.advisor.verbose_formatter import VerboseFormatter, save_verbose_report
-
-        # Fetch scorecard for track record section (lightweight)
-        _scorecard = {}
+    if "report_generation_all" not in run_profile.run_steps:
+        log.info("Skipping step %s (not in run_steps for %s)", "report_generation_all", run_profile.run_type)
+    elif "report_generation_all" in run_profile.run_steps:
         try:
-            from src.advisor.memory import get_recommendation_scorecard
-            _scorecard = get_recommendation_scorecard(lookback_days=30)
+            from src.advisor.verbose_formatter import VerboseFormatter, save_verbose_report
+
+            # Fetch scorecard for track record section (lightweight)
+            _scorecard = {}
+            try:
+                from src.advisor.memory import get_recommendation_scorecard
+                _scorecard = get_recommendation_scorecard(lookback_days=30)
+            except Exception:
+                log.debug("Could not fetch scorecard for verbose report")
+    
+            # Build structured signal lists from agent bus for Signal Intelligence section
+            _reddit_sigs: list[dict] = []
+            _substack_sigs: list[dict] = []
+            _youtube_sigs: list[dict] = []
+            for _bus_sig in agent_bus_signals:
+                _agent = _bus_sig.get("agent_name", "")
+                _payload = _bus_sig.get("payload", {})
+                if _agent == "street_ear":
+                    _t = _payload.get("ticker") or _bus_sig.get("ticker", "")
+                    if _t:
+                        _reddit_sigs.append({
+                            "ticker": _t,
+                            "sentiment": _payload.get("sentiment_score", _payload.get("sentiment", 0)),
+                            "mentions": _payload.get("mention_count", _payload.get("mentions", "")),
+                            "subreddit": _payload.get("subreddit", ""),
+                        })
+                elif _agent == "substack_ear":
+                    _title = _payload.get("title") or _payload.get("narrative_title", "")
+                    if _title:
+                        _substack_sigs.append({
+                            "title": _title,
+                            "summary": _payload.get("summary") or _payload.get("thesis_summary", ""),
+                            "tickers": _payload.get("tickers", _payload.get("affected_tickers", [])),
+                        })
+                elif _agent == "youtube_ear":
+                    _title = _payload.get("title", "")
+                    if _title:
+                        _youtube_sigs.append({
+                            "title": _title,
+                            "channel": _payload.get("channel", _payload.get("author", "")),
+                            "views": _payload.get("views", _payload.get("score", 0)),
+                            "tickers": _payload.get("tickers", _payload.get("affected_tickers", [])),
+                        })
+    
+            formatter = VerboseFormatter(
+                holdings_reports=holdings_reports,
+                fundamentals=fundamentals,
+                technicals=technicals,
+                macro_data=macro_data,
+                strategy=strategy,
+                conviction_result=conviction_result,
+                moonshot_result=moonshot_result,
+                delta_report=delta_report,
+                catalyst_data=catalyst_data,
+                committee_result=synthesis.get("committee_result") or {},
+                updated_theses=updated_theses,
+                prediction_shifts=prediction_shifts,
+                news_signals=news_signals,
+                top_articles=top_articles,
+                earnings_data=earnings_data,
+                superinvestor_data=superinvestor_data,
+                scorecard=_scorecard,
+                reddit_mood=reddit_mood,
+                reddit_themes=reddit_themes,
+                reddit_signals=_reddit_sigs,
+                substack_signals=_substack_sigs,
+                youtube_signals=_youtube_sigs,
+                daily_cost=daily_cost,
+                total_time=total_time,
+            )
+            md_report = formatter.generate_markdown()
+            html_report = formatter.generate_html(md_report)
+            paths = save_verbose_report(md_report, html_report)
+            verbose_report_dir = paths.get("html", "")
+            log.info("Verbose report generated: %d chars MD, %d chars HTML",
+                     len(md_report), len(html_report))
+    
+            # ── Email delivery ────────────────────────────────────────────
+            try:
+                from src.shared.email_reporter import EmailReporter
+                reporter = EmailReporter()
+                if reporter.is_configured():
+                    # Build subject from CIO brief first line, fallback to date
+                    _cio_text = (synthesis.get("committee_result") or {}).get("cio_brief", "")
+                    _first_line = (_cio_text.strip().splitlines() or [""])[0].strip(" #*")
+                    _today_str = date.today().strftime("%b %d, %Y")
+                    _subject = f"AlphaDesk {_today_str} — {_first_line}" if _first_line else f"AlphaDesk Daily Report — {_today_str}"
+                    ok = reporter.send_report(html_report, subject=_subject, plain_text=md_report)
+                    if ok:
+                        log.info("Verbose report emailed: %s", _subject)
+                else:
+                    log.debug("Email not configured — set SMTP_USER, SMTP_PASS, REPORT_EMAIL_TO in .env to enable")
+            except Exception:
+                log.exception("Failed to send email report — continuing")
+    
         except Exception:
-            log.debug("Could not fetch scorecard for verbose report")
-
-        # Build structured signal lists from agent bus for Signal Intelligence section
-        _reddit_sigs: list[dict] = []
-        _substack_sigs: list[dict] = []
-        _youtube_sigs: list[dict] = []
-        for _bus_sig in agent_bus_signals:
-            _agent = _bus_sig.get("agent_name", "")
-            _payload = _bus_sig.get("payload", {})
-            if _agent == "street_ear":
-                _t = _payload.get("ticker") or _bus_sig.get("ticker", "")
-                if _t:
-                    _reddit_sigs.append({
-                        "ticker": _t,
-                        "sentiment": _payload.get("sentiment_score", _payload.get("sentiment", 0)),
-                        "mentions": _payload.get("mention_count", _payload.get("mentions", "")),
-                        "subreddit": _payload.get("subreddit", ""),
-                    })
-            elif _agent == "substack_ear":
-                _title = _payload.get("title") or _payload.get("narrative_title", "")
-                if _title:
-                    _substack_sigs.append({
-                        "title": _title,
-                        "summary": _payload.get("summary") or _payload.get("thesis_summary", ""),
-                        "tickers": _payload.get("tickers", _payload.get("affected_tickers", [])),
-                    })
-            elif _agent == "youtube_ear":
-                _title = _payload.get("title", "")
-                if _title:
-                    _youtube_sigs.append({
-                        "title": _title,
-                        "channel": _payload.get("channel", _payload.get("author", "")),
-                        "views": _payload.get("views", _payload.get("score", 0)),
-                        "tickers": _payload.get("tickers", _payload.get("affected_tickers", [])),
-                    })
-
-        formatter = VerboseFormatter(
-            holdings_reports=holdings_reports,
-            fundamentals=fundamentals,
-            technicals=technicals,
-            macro_data=macro_data,
-            strategy=strategy,
-            conviction_result=conviction_result,
-            moonshot_result=moonshot_result,
-            delta_report=delta_report,
-            catalyst_data=catalyst_data,
-            committee_result=synthesis.get("committee_result") or {},
-            updated_theses=updated_theses,
-            prediction_shifts=prediction_shifts,
-            news_signals=news_signals,
-            top_articles=top_articles,
-            earnings_data=earnings_data,
-            superinvestor_data=superinvestor_data,
-            scorecard=_scorecard,
-            reddit_mood=reddit_mood,
-            reddit_themes=reddit_themes,
-            reddit_signals=_reddit_sigs,
-            substack_signals=_substack_sigs,
-            youtube_signals=_youtube_sigs,
-            daily_cost=daily_cost,
-            total_time=total_time,
-        )
-        md_report = formatter.generate_markdown()
-        html_report = formatter.generate_html(md_report)
-        paths = save_verbose_report(md_report, html_report)
-        verbose_report_dir = paths.get("html", "")
-        log.info("Verbose report generated: %d chars MD, %d chars HTML",
-                 len(md_report), len(html_report))
-
-        # ── Email delivery ────────────────────────────────────────────
-        try:
-            from src.shared.email_reporter import EmailReporter
-            reporter = EmailReporter()
-            if reporter.is_configured():
-                # Build subject from CIO brief first line, fallback to date
-                _cio_text = (synthesis.get("committee_result") or {}).get("cio_brief", "")
-                _first_line = (_cio_text.strip().splitlines() or [""])[0].strip(" #*")
-                _today_str = date.today().strftime("%b %d, %Y")
-                _subject = f"AlphaDesk {_today_str} — {_first_line}" if _first_line else f"AlphaDesk Daily Report — {_today_str}"
-                ok = reporter.send_report(html_report, subject=_subject, plain_text=md_report)
-                if ok:
-                    log.info("Verbose report emailed: %s", _subject)
-            else:
-                log.debug("Email not configured — set SMTP_USER, SMTP_PASS, REPORT_EMAIL_TO in .env to enable")
-        except Exception:
-            log.exception("Failed to send email report — continuing")
-
-    except Exception:
-        log.exception("Failed to generate verbose report — continuing without it")
+            log.exception("Failed to generate verbose report — continuing without it")
 
     total_time = time.time() - pipeline_start
     run_cost = get_run_cost()

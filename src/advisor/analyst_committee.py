@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 from src.shared import gemini_compat as anthropic
-from src.shared.agent_decorator import track_agent
+from src.shared.agent_decorator import select_model, track_agent
 from src.shared.citations import CitationRegistry
 from src.shared.context_manager import ContextBudget
 from src.shared.prompt_loader import load_prompt
@@ -175,6 +175,7 @@ class AdvisorEditor:
         supplementary_research: str = "",
         mandate_breach_ctx: str = "",
         citations: str = "",
+        deep_research_context: str = "",
     ) -> dict[str, Any]:
         analyst_budget = ContextBudget(token_budget=2500)
         analyst_budget.add_section("Growth", json.dumps(growth_report, indent=2), "analyst_reports")
@@ -185,6 +186,9 @@ class AdvisorEditor:
         signal_budget.add_section("News", news_context, "news")
         signal_budget.add_section("Reddit", reddit_context, "reddit")
         signal_budget.add_section("Substack", substack_context, "substack")
+
+        deep_research_budget = ContextBudget(token_budget=4000)
+        deep_research_budget.add_section("Deep Research", deep_research_context, 85)
 
         prompt = load_prompt(
             "cio_editor",
@@ -198,6 +202,7 @@ class AdvisorEditor:
             calibration_context=calibration_context,
             preference_context=preference_context,
             causal_context=causal_context,
+            deep_research_blocks=deep_research_budget.render(),
             supplementary_research=supplementary_research,
             catalyst_section=catalyst_section,
             macro_context=macro_context,
@@ -208,7 +213,8 @@ class AdvisorEditor:
             citations=citations,
         )
 
-        runner = _make_text_agent(self.AGENT_NAME, EDITOR_MODEL, 4200)
+        editor_model = select_model(EDITOR_MODEL, allow_downgrade=False)
+        runner = _make_text_agent(self.AGENT_NAME, editor_model, 4200)
         return await runner(prompt)
 
 
@@ -216,6 +222,14 @@ def _budgeted_json(payload: dict[str, Any], token_budget: int) -> str:
     budget = ContextBudget(token_budget=token_budget)
     budget.add_section("JSON", json.dumps(payload, indent=2), "analyst_reports")
     return budget.render()
+
+
+def _estimate_tokens(data: Any) -> int:
+    """Rough token estimate: ~4 chars per token on serialized JSON."""
+    try:
+        return len(json.dumps(data, default=str)) // 4
+    except (TypeError, ValueError):
+        return 0
 
 
 async def run_analyst_committee(
@@ -248,14 +262,42 @@ async def run_analyst_committee(
     risk = RiskOfficer()
     editor = AdvisorEditor()
 
-    growth_runner = _make_json_agent(growth.AGENT_NAME, ANALYST_MODEL, 3200)
-    value_runner = _make_json_agent(value.AGENT_NAME, ANALYST_MODEL, 3200)
-    risk_runner = _make_json_agent(risk.AGENT_NAME, ANALYST_MODEL, 3200)
+    # Scope data_context per analyst to reduce token usage
+    full_tokens = _estimate_tokens(data_context)
+
+    growth_context = {
+        "fundamentals": data_context.get("fundamentals", {}),
+        "holdings_reports": data_context.get("holdings_reports", []),
+        "earnings_data": data_context.get("earnings_data", {}),
+        "news_articles": data_context.get("news_articles", []),
+        "signals": data_context.get("signals", []),
+    }
+    log.info("Growth analyst context: %d tokens (full would be %d)", _estimate_tokens(growth_context), full_tokens)
+
+    value_context = {
+        "fundamentals": data_context.get("fundamentals", {}),
+        "valuation_data": data_context.get("valuation_data", {}),
+        "holdings_reports": data_context.get("holdings_reports", []),
+    }
+    log.info("Value analyst context: %d tokens (full would be %d)", _estimate_tokens(value_context), full_tokens)
+
+    risk_context = {
+        "holdings_reports": data_context.get("holdings_reports", []),
+        "macro_data": data_context.get("macro_data", {}),
+        "strategy": data_context.get("strategy", {}),
+        "news_articles": data_context.get("news_articles", []),
+    }
+    log.info("Risk analyst context: %d tokens (full would be %d)", _estimate_tokens(risk_context), full_tokens)
+
+    analyst_model = select_model(ANALYST_MODEL)
+    growth_runner = _make_json_agent(growth.AGENT_NAME, analyst_model, 3200)
+    value_runner = _make_json_agent(value.AGENT_NAME, analyst_model, 3200)
+    risk_runner = _make_json_agent(risk.AGENT_NAME, analyst_model, 3200)
 
     analyst_tasks = {
-        "growth": growth_runner(growth.build_prompt(tickers, data_context)),
-        "value": value_runner(value.build_prompt(tickers, data_context)),
-        "risk": risk_runner(risk.build_prompt(tickers, data_context)),
+        "growth": growth_runner(growth.build_prompt(tickers, growth_context)),
+        "value": value_runner(value.build_prompt(tickers, value_context)),
+        "risk": risk_runner(risk.build_prompt(tickers, risk_context)),
     }
     analyst_results = await asyncio.gather(*analyst_tasks.values(), return_exceptions=True)
 
@@ -384,6 +426,18 @@ async def run_analyst_committee(
 
                 enriched_supplementary = format_supplementary_research(outcome)
 
+    # Build deep research prompt section from blocks
+    deep_research_prompt_section = ""
+    blocks = deep_research_result.get("blocks", {})
+    if blocks:
+        block_texts = []
+        for block in (blocks.values() if isinstance(blocks, dict) else blocks):
+            content = block.get("content", "") if isinstance(block, dict) else str(block)
+            block_texts.append(content[:1500])
+        if block_texts:
+            blocks_text = "\n\n---\n\n".join(block_texts)
+            deep_research_prompt_section = f"## Deep Research\n{blocks_text}"
+
     editor_result = await editor.synthesize(
         growth_report=reports["growth"],
         value_report=reports["value"],
@@ -405,6 +459,7 @@ async def run_analyst_committee(
         supplementary_research=enriched_supplementary,
         mandate_breach_ctx=mandate_breach_ctx,
         citations=citation_registry.format_for_prompt(),
+        deep_research_context=deep_research_prompt_section,
     )
 
     brief_text = editor_result.get("raw_text", "")

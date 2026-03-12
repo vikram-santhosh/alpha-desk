@@ -30,6 +30,9 @@ ${preference_context}
 CAUSAL CONTEXT:
 ${causal_context}
 
+DEEP RESEARCH:
+${deep_research_blocks}
+
 SUPPLEMENTARY RESEARCH:
 ${supplementary_research}
 
@@ -67,5 +70,6 @@ Rules:
 - Lead with mandate breaches if any exist.
 - Work with partial analyst coverage if reports are missing.
 - Surface explicit tension when Growth, Value, and Risk disagree.
+- When deep research is available, prefer its conclusions over analyst summaries for the tickers it covers — it has access to more recent and detailed source material.
 - Do not hedge. Recommend an action or an explicit non-action.
 - Cite specific numbers, catalysts, and headlines.

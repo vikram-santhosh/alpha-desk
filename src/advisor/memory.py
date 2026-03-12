@@ -1167,6 +1167,54 @@ def get_recommendation_scorecard(lookback_days: int = 30) -> dict:
     }
 
 
+def get_planner_calibration(lookback_days: int = 90) -> dict[str, Any]:
+    """Compute per-trigger-type hit rates and alpha for planner weight adjustment.
+
+    Groups recommendation outcomes by source (trigger type) and computes:
+    - hit_rate: fraction of recommendations with positive 1m return
+    - avg_alpha: mean alpha_1m_pct
+    - avg_confidence_modifier: derived from hit_rate (0.7-1.3 range)
+
+    Returns dict keyed by trigger_type, e.g.:
+        {"price_move": {"hit_rate": 0.45, "avg_alpha": -1.2, "avg_confidence_modifier": 0.97}, ...}
+    """
+    conn = _get_db()
+    cutoff = date.today().isoformat()
+    rows = conn.execute("""
+        SELECT source, return_1m_pct, alpha_1m_pct
+        FROM recommendation_outcomes
+        WHERE recommendation_date >= date(?, '-' || ? || ' days')
+          AND return_1m_pct IS NOT NULL
+    """, (cutoff, lookback_days)).fetchall()
+    conn.close()
+
+    if not rows:
+        return {}
+
+    from collections import defaultdict
+    by_source: dict[str, list[tuple[float, float | None]]] = defaultdict(list)
+    for source, ret_1m, alpha_1m in rows:
+        trigger = (source or "unknown").split("/")[0]
+        by_source[trigger].append((ret_1m, alpha_1m))
+
+    result: dict[str, Any] = {}
+    for trigger, entries in by_source.items():
+        hits = sum(1 for ret, _ in entries if ret > 0)
+        hit_rate = hits / len(entries) if entries else 0.0
+        alphas = [a for _, a in entries if a is not None]
+        avg_alpha = (sum(alphas) / len(alphas)) if alphas else 0.0
+        # Map hit_rate to confidence modifier: 0.0->0.7, 0.5->1.0, 1.0->1.3
+        avg_confidence_modifier = round(0.7 + (hit_rate * 0.6), 3)
+        result[trigger] = {
+            "hit_rate": round(hit_rate, 3),
+            "avg_alpha": round(avg_alpha, 2),
+            "avg_confidence_modifier": avg_confidence_modifier,
+            "sample_size": len(entries),
+        }
+
+    return result
+
+
 # ═══════════════════════════════════════════════════════
 # THESIS ACTIONS
 # ═══════════════════════════════════════════════════════
@@ -1245,3 +1293,129 @@ def update_thesis_outcome(action_id: int, outcome_30d: str) -> None:
     conn.commit()
     conn.close()
     log.info("Updated thesis action %d outcome: %s", action_id, outcome_30d)
+
+
+# ═══════════════════════════════════════════════════════
+# PER-TICKER DEEP CONTEXT
+# ═══════════════════════════════════════════════════════
+
+def get_ticker_deep_context(ticker: str, lookback_days: int = 90) -> dict[str, Any]:
+    """Retrieve deep context for a single ticker across all memory tables.
+
+    Queries earnings_calls, superinvestor_positions, cross_mentions,
+    prediction_markets, recommendation_outcomes, and thesis_actions.
+
+    Returns:
+        Structured dict with non-empty sections, capped at ~2000 chars total.
+    """
+    conn = _get_db()
+    cutoff = date.today().isoformat()
+    result: dict[str, Any] = {}
+
+    # Earnings calls: last 2 quarters
+    rows = conn.execute("""
+        SELECT quarter, eps_actual, eps_estimate, revenue_actual, revenue_estimate,
+               guidance_sentiment, management_tone, key_quotes
+        FROM earnings_calls WHERE ticker = ?
+        ORDER BY quarter DESC LIMIT 2
+    """, (ticker,)).fetchall()
+    if rows:
+        earnings = []
+        for r in rows:
+            entry: dict[str, Any] = {"quarter": r[0]}
+            if r[1] is not None and r[2] is not None:
+                entry["eps"] = f"actual={r[1]} est={r[2]}"
+            if r[3] is not None and r[4] is not None:
+                entry["rev"] = f"actual={r[3]} est={r[4]}"
+            if r[5]:
+                entry["guidance"] = r[5]
+            if r[6]:
+                entry["tone"] = r[6]
+            quotes = json.loads(r[7] or "[]")
+            if quotes:
+                entry["quotes"] = quotes[:2]
+            earnings.append(entry)
+        result["earnings"] = earnings
+
+    # Superinvestor positions: latest quarter entries
+    rows = conn.execute("""
+        SELECT investor_name, quarter, action, shares, pct_of_portfolio
+        FROM superinvestor_positions WHERE ticker = ?
+        ORDER BY quarter DESC LIMIT 5
+    """, (ticker,)).fetchall()
+    if rows:
+        result["superinvestors"] = [
+            {"investor": r[0], "quarter": r[1], "action": r[2], "shares": r[3], "pct": r[4]}
+            for r in rows
+        ]
+
+    # Cross mentions
+    rows = conn.execute("""
+        SELECT source_ticker, quarter, context, sentiment
+        FROM cross_mentions WHERE mentioned_ticker = ?
+        ORDER BY quarter DESC LIMIT 5
+    """, (ticker,)).fetchall()
+    if rows:
+        result["cross_mentions"] = [
+            {"source": r[0], "quarter": r[1], "context": r[2][:200], "sentiment": r[3]}
+            for r in rows
+        ]
+
+    # Prediction markets: entries with this ticker in affected_tickers
+    rows = conn.execute("""
+        SELECT market_title, probability, prev_probability, category
+        FROM prediction_markets
+        WHERE affected_tickers LIKE ? AND date >= date(?, '-' || ? || ' days')
+        ORDER BY date DESC LIMIT 5
+    """, (f'%"{ticker}"%', cutoff, lookback_days)).fetchall()
+    if rows:
+        result["prediction_markets"] = [
+            {"title": r[0], "prob": r[1], "prev": r[2], "category": r[3]}
+            for r in rows
+        ]
+
+    # Recommendation outcomes: last 5
+    rows = conn.execute("""
+        SELECT recommendation_date, action, conviction, entry_price, return_1m_pct,
+               alpha_1m_pct, status, thesis_summary
+        FROM recommendation_outcomes WHERE ticker = ?
+        ORDER BY recommendation_date DESC LIMIT 5
+    """, (ticker,)).fetchall()
+    if rows:
+        result["recommendations"] = [
+            {
+                "date": r[0], "action": r[1], "conviction": r[2],
+                "entry_price": r[3], "return_1m": r[4], "alpha_1m": r[5],
+                "status": r[6], "thesis": (r[7] or "")[:150],
+            }
+            for r in rows
+        ]
+
+    # Thesis actions: recent
+    rows = conn.execute("""
+        SELECT action_date, action_type, outcome_30d, notes
+        FROM thesis_actions WHERE ticker = ?
+        AND action_date >= date(?, '-' || ? || ' days')
+        ORDER BY action_date DESC LIMIT 5
+    """, (ticker, cutoff, lookback_days)).fetchall()
+    if rows:
+        result["thesis_actions"] = [
+            {"date": r[0], "type": r[1], "outcome": r[2], "notes": (r[3] or "")[:100]}
+            for r in rows
+        ]
+
+    conn.close()
+
+    # Cap total serialized output at ~2000 chars
+    serialized = json.dumps(result)
+    if len(serialized) > 2000:
+        # Trim longest sections first
+        for key in ("cross_mentions", "recommendations", "thesis_actions", "prediction_markets"):
+            if key in result and len(json.dumps(result)) > 2000:
+                result[key] = result[key][:2]
+        serialized = json.dumps(result)
+        if len(serialized) > 2000:
+            serialized = serialized[:2000]
+            result = json.loads(serialized[:serialized.rfind("}") + 1] + "}")
+
+    return result

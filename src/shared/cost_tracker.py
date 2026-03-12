@@ -203,6 +203,25 @@ def get_run_cost(run_id: str | None = None) -> float:
     return row[0] if row else 0.0
 
 
+def get_budget_pressure() -> float:
+    """Return budget pressure as a float from 0.0 (no pressure) to 1.0 (at/over cap).
+
+    Considers both the per-run budget (if active) and the daily cap,
+    returning the higher pressure of the two.
+    """
+    daily_cap = _load_daily_cap()
+    spent_today = get_daily_cost()
+    daily_pressure = min(spent_today / daily_cap, 1.0) if daily_cap > 0 else 0.0
+
+    run_budget = get_current_run_budget()
+    if run_budget is not None and run_budget > 0 and get_current_run_id():
+        run_spent = get_run_cost()
+        run_pressure = min(run_spent / run_budget, 1.0)
+        return max(daily_pressure, run_pressure)
+
+    return daily_pressure
+
+
 def check_budget(run_budget: float | None = None) -> tuple[bool, float, float]:
     """Check whether we are within the active run or daily budget.
 
