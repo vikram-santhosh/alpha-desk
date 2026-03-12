@@ -4,6 +4,7 @@ Agents publish signals to the bus; other agents consume them.
 This enables loose coupling between the Street Ear, Portfolio Analyst,
 and News Desk agents.
 """
+from __future__ import annotations
 
 import json
 import os
@@ -119,36 +120,14 @@ def consume(
         List of signal dicts with id, timestamp, signal_type, source_agent, payload.
     """
     conn = _get_db()
-
-    query = "SELECT id, timestamp, signal_type, source_agent, payload FROM signals WHERE consumed = 0"
-    params: list[Any] = []
-
-    if signal_type:
-        query += " AND signal_type = ?"
-        params.append(signal_type)
-    if source_agent:
-        query += " AND source_agent = ?"
-        params.append(source_agent)
-
-    query += " ORDER BY timestamp ASC"
-    rows = conn.execute(query, params).fetchall()
-
-    signals = []
-    for row in rows:
-        signals.append({
-            "id": row[0],
-            "timestamp": row[1],
-            "signal_type": row[2],
-            "source_agent": row[3],
-            "payload": json.loads(row[4]),
-        })
-
-    if mark_consumed and signals:
-        ids = [s["id"] for s in signals]
-        placeholders = ",".join("?" * len(ids))
-        conn.execute(f"UPDATE signals SET consumed = 1 WHERE id IN ({placeholders})", ids)
-        conn.commit()
-
+    signals = _fetch_signals(
+        conn,
+        "consumed = 0",
+        [],
+        signal_type=signal_type,
+        source_agent=source_agent,
+        mark_consumed=mark_consumed,
+    )
     conn.close()
 
     log.info(
@@ -179,6 +158,92 @@ def get_recent_signals(limit: int = 50) -> list[dict[str, Any]]:
         }
         for r in rows
     ]
+
+
+def consume_since(
+    since_id: int,
+    signal_type: str | None = None,
+    source_agent: str | None = None,
+    mark_consumed: bool = True,
+) -> list[dict[str, Any]]:
+    """Consume signals published after a given signal ID.
+
+    Args:
+        since_id: Only fetch signals with id > since_id.
+        signal_type: Filter by signal type (optional).
+        source_agent: Filter by source agent (optional).
+        mark_consumed: Whether to mark signals as consumed after reading.
+    """
+    conn = _get_db()
+    signals = _fetch_signals(
+        conn,
+        "id > ?",
+        [since_id],
+        signal_type=signal_type,
+        source_agent=source_agent,
+        mark_consumed=mark_consumed,
+    )
+    conn.close()
+
+    log.info(
+        "Consumed %d signals since id %d (type=%s, source=%s)",
+        len(signals),
+        since_id,
+        signal_type or "any",
+        source_agent or "any",
+    )
+    return signals
+
+
+def get_latest_signal_id() -> int:
+    """Return the latest signal ID currently present on the bus."""
+    conn = _get_db()
+    row = conn.execute("SELECT COALESCE(MAX(id), 0) FROM signals").fetchone()
+    conn.close()
+    return int(row[0] or 0)
+
+
+def _fetch_signals(
+    conn: sqlite3.Connection,
+    base_where: str,
+    params: list[Any],
+    *,
+    signal_type: str | None = None,
+    source_agent: str | None = None,
+    mark_consumed: bool = True,
+) -> list[dict[str, Any]]:
+    """Fetch signals using a shared query path for consume variants."""
+    query = f"SELECT id, timestamp, signal_type, source_agent, payload FROM signals WHERE {base_where}"
+    query_params = list(params)
+
+    if signal_type:
+        query += " AND signal_type = ?"
+        query_params.append(signal_type)
+    if source_agent:
+        query += " AND source_agent = ?"
+        query_params.append(source_agent)
+
+    query += " ORDER BY timestamp ASC"
+    rows = conn.execute(query, query_params).fetchall()
+
+    signals = [
+        {
+            "id": row[0],
+            "timestamp": row[1],
+            "signal_type": row[2],
+            "source_agent": row[3],
+            "payload": json.loads(row[4]),
+        }
+        for row in rows
+    ]
+
+    if mark_consumed and signals:
+        ids = [signal["id"] for signal in signals]
+        placeholders = ",".join("?" * len(ids))
+        conn.execute(f"UPDATE signals SET consumed = 1 WHERE id IN ({placeholders})", ids)
+        conn.commit()
+
+    return signals
 
 
 def clear_old_signals(days: int = 7) -> int:

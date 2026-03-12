@@ -4,6 +4,7 @@ Produces per-holding reports with price data, cumulative returns,
 trend narratives from recent snapshots, key events, and thesis status.
 Also builds a human-readable summary for the Opus synthesis prompt.
 """
+from __future__ import annotations
 
 from datetime import datetime, timedelta
 from typing import Any

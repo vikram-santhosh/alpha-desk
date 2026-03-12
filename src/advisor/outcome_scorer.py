@@ -4,6 +4,7 @@ Scores past recommendations against actual outcomes by fetching current
 prices and computing returns at various time horizons (1d, 1w, 1m, 3m).
 Auto-closes expired recommendations and produces a scorecard.
 """
+from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from typing import Any

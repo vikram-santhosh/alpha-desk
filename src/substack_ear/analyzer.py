@@ -4,6 +4,7 @@ Analyzes expert newsletter articles individually or in small batches
 using Gemini for cost-efficient extraction of investment theses,
 macro signals, and ticker mentions.
 """
+from __future__ import annotations
 
 import json
 from typing import Any
@@ -215,7 +216,15 @@ def _analyze_batch(
         if block.type == "text":
             response_text += block.text
 
-    return _parse_llm_response(response_text)
+    result = _parse_llm_response(response_text)
+
+    # Attach source article URLs to each thesis for downstream hyperlinking
+    batch_urls = [a.get("url", "") for a in articles if a.get("url")]
+    if batch_urls:
+        for thesis in result.get("theses", []):
+            thesis.setdefault("source_url", batch_urls[0])
+
+    return result
 
 
 def _aggregate_results(

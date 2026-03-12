@@ -4,6 +4,7 @@ Computes 3-year target prices using scenario analysis, CAGR calculations,
 and margin-of-safety checks. Implements the 25% CAGR gate that filters
 all portfolio addition recommendations.
 """
+from __future__ import annotations
 
 from src.utils.logger import get_logger
 

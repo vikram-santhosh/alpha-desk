@@ -4,6 +4,7 @@ Uses Telegram Bot API directly via requests (no third-party wrapper).
 Supports commands: /brief, /refresh, /portfolio, /news, /trending, /cost, /status
 Includes scheduling via the `schedule` library.
 """
+from __future__ import annotations
 
 import asyncio
 import json
@@ -18,6 +19,7 @@ import requests
 import schedule
 from dotenv import load_dotenv
 
+from src.shared.config_loader import load_config
 from src.shared.cost_tracker import format_cost_report
 from src.shared.morning_brief import run as run_morning_brief
 from src.shared.morning_brief import run_single_agent
@@ -221,6 +223,26 @@ async def handle_command(command: str, chat_id: str) -> None:
         result = await run_advisor()
         send_message(chat_id, result["formatted"])
 
+    elif cmd == "/runs":
+        try:
+            from src.advisor.memory import list_run_snapshots
+
+            runs = list_run_snapshots(limit=8)
+            if not runs:
+                send_message(chat_id, "No recorded runs yet.")
+                return
+
+            lines = ["<b>Recent AlphaDesk Runs</b>", ""]
+            for run in runs:
+                lines.append(
+                    f"  • <b>{run.get('run_type', 'run')}</b> {run.get('run_id', '')} "
+                    f"| ${run.get('run_cost_usd', 0):.2f} | {run.get('run_duration_s', 0):.0f}s"
+                )
+            send_message(chat_id, "\n".join(lines))
+        except Exception as e:
+            log.exception("/runs failed")
+            send_message(chat_id, f"Run history failed: {e}")
+
     elif cmd in ("/holdings", "/macro", "/conviction", "/moonshot", "/action"):
         section_map = {
             "/holdings": "holdings",
@@ -332,25 +354,33 @@ async def handle_command(command: str, chat_id: str) -> None:
     elif cmd == "/help":
         help_text = (
             "<b>AlphaDesk Commands</b>\n\n"
-            "<b>Advisor (new)</b>\n"
+            "<b>Advisor</b>\n"
             "/advisor — Full 5-section daily brief\n"
             "/holdings — Portfolio check-in\n"
             "/macro — Macro &amp; market context\n"
             "/conviction — Conviction list (3-5 names)\n"
             "/moonshot — Moonshot ideas\n"
             "/action — Strategy actions (add/trim/hold)\n\n"
-            "<b>Legacy Agents</b>\n"
+            "<b>Intelligence</b>\n"
             "/brief — Full morning briefing (legacy)\n"
             "/portfolio — Portfolio analysis only\n"
             "/news — Market news only\n"
             "/trending — Reddit intelligence only\n"
             "/discover — Ticker discovery\n\n"
-            "<b>v2 Intelligence</b>\n"
+            "<b>Analysis</b>\n"
             "/delta — What changed since yesterday\n"
             "/catalysts — Upcoming catalysts (30d)\n"
             "/scorecard — Recommendation track record\n"
             "/retro — Weekly retrospective &amp; self-assessment\n"
             "/report — Latest verbose report path\n\n"
+            "/runs — Recent run history\n"
+            "<b>Feedback</b>\n"
+            "/rate — Rate today's brief (great/good/ok/bad)\n"
+            "/feedback — General feedback for the AI\n"
+            "/prefer — Set analysis preferences\n"
+            "/missed — Report a missed signal\n\n"
+            "<b>Chat</b>\n"
+            "Just type a question (no /) to ask about today's brief\n\n"
             "<b>System</b>\n"
             "/cost — API cost report\n"
             "/status — System status\n"
@@ -358,21 +388,122 @@ async def handle_command(command: str, chat_id: str) -> None:
         )
         send_message(chat_id, help_text)
 
+    elif cmd == "/feedback":
+        # Generic feedback — user provides free-text after the command
+        feedback_text = command.strip()[len("/feedback"):].strip()
+        if not feedback_text:
+            send_message(chat_id, "Usage: /feedback <your feedback text>\nExample: /feedback Focus more on geopolitical risk")
+            return
+        try:
+            from src.advisor.feedback_manager import record_feedback, extract_preferences, save_preferences
+            fb_id = record_feedback("preference", feedback_text)
+            prefs = extract_preferences(feedback_text)
+            if prefs:
+                save_preferences(prefs)
+            send_message(chat_id, f"✓ Feedback recorded (#{fb_id}). {'Extracted ' + str(len(prefs)) + ' preferences.' if prefs else 'No structured preferences detected.'}")
+        except Exception as e:
+            log.exception("Feedback command failed")
+            send_message(chat_id, f"Failed to record feedback: {e}")
+
+    elif cmd == "/rate":
+        # Rate today's brief
+        rating_text = command.strip()[len("/rate"):].strip()
+        if not rating_text:
+            send_message(chat_id, "Usage: /rate <great|good|ok|bad> [optional comment]\nExample: /rate great loved the causal analysis")
+            return
+        try:
+            from src.advisor.feedback_manager import record_feedback
+            record_feedback("rating", rating_text)
+            send_message(chat_id, "✓ Rating recorded. Thanks for the feedback!")
+        except Exception as e:
+            log.exception("Rate command failed")
+            send_message(chat_id, f"Failed to record rating: {e}")
+
+    elif cmd == "/prefer":
+        # Explicit preference setting
+        pref_text = command.strip()[len("/prefer"):].strip()
+        if not pref_text:
+            send_message(chat_id, "Usage: /prefer <your preference>\nExample: /prefer Weight tech analysis higher than macro")
+            return
+        try:
+            from src.advisor.feedback_manager import record_feedback, extract_preferences, save_preferences
+            record_feedback("preference", pref_text)
+            prefs = extract_preferences(pref_text)
+            if prefs:
+                save_preferences(prefs)
+                pref_lines = [f"  • {p.get('key', '?')}: {p.get('value', '?')} (conf: {p.get('confidence', 0):.0%})" for p in prefs]
+                send_message(chat_id, "✓ Preferences updated:\n" + "\n".join(pref_lines))
+            else:
+                send_message(chat_id, "✓ Recorded, but couldn't extract structured preferences. Try being more specific.")
+        except Exception as e:
+            log.exception("Prefer command failed")
+            send_message(chat_id, f"Failed to set preference: {e}")
+
+    elif cmd == "/missed":
+        # Report a missed signal
+        missed_text = command.strip()[len("/missed"):].strip()
+        if not missed_text:
+            send_message(chat_id, "Usage: /missed <what was missed>\nExample: /missed AMD competitor impact on NVDA margins")
+            return
+        try:
+            from src.advisor.feedback_manager import record_feedback
+            record_feedback("missed_signal", missed_text)
+            send_message(chat_id, "✓ Missed signal logged. Will be reviewed in next analysis cycle.")
+        except Exception as e:
+            log.exception("Missed command failed")
+            send_message(chat_id, f"Failed to record missed signal: {e}")
+
     else:
         send_message(chat_id, f"Unknown command: {cmd}\nType /help for available commands.")
 
 
-def _run_scheduled_brief() -> None:
-    """Run the scheduled daily advisor brief (called from scheduler thread)."""
-    log.info("Running scheduled advisor brief")
+async def handle_chat_message(text: str, chat_id: str) -> None:
+    """Handle non-command text as conversational Q&A about today's brief.
+
+    Uses ChatSession to maintain context and answer follow-up questions
+    about the daily brief, portfolio, catalysts, etc.
+    """
+    if not authorize_chat(chat_id):
+        send_message(chat_id, "Unauthorized.")
+        return
+
+    log.info("Chat Q&A from %s: %s", chat_id, text[:80])
+
+    try:
+        from src.advisor.chat_session import ChatSession
+
+        session = ChatSession(chat_id)
+
+        # If session has no brief context, prompt user to run /advisor first
+        if not session.has_brief_context():
+            send_message(
+                chat_id,
+                "No daily brief loaded yet. Run /advisor first, then ask follow-up questions."
+            )
+            return
+
+        answer = await session.answer_question(text)
+        send_message(chat_id, answer)
+
+    except ImportError:
+        log.debug("ChatSession not available")
+        send_message(chat_id, "Chat Q&A not available. Type /help for commands.")
+    except Exception as e:
+        log.exception("Chat Q&A failed")
+        send_message(chat_id, f"Sorry, I couldn't process that question. Try /help for available commands.")
+
+
+def _run_scheduled_profile(run_type: str = "morning_full") -> None:
+    """Run a scheduled advisor profile from the scheduler thread."""
+    log.info("Running scheduled advisor profile: %s", run_type)
     try:
         from src.advisor.main import run as run_advisor
         loop = asyncio.new_event_loop()
-        result = loop.run_until_complete(run_advisor())
+        result = loop.run_until_complete(run_advisor(run_type=run_type))
         loop.close()
         if CHAT_ID:
             send_message(CHAT_ID, result["formatted"])
-            log.info("Scheduled advisor brief sent successfully")
+            log.info("Scheduled advisor %s sent successfully", run_type)
 
         # Also send email if configured
         try:
@@ -393,9 +524,9 @@ def _run_scheduled_brief() -> None:
             log.exception("Email delivery failed — Telegram delivery was successful")
 
     except Exception as e:
-        log.error("Scheduled advisor brief failed: %s", e, exc_info=True)
+        log.error("Scheduled advisor profile %s failed: %s", run_type, e, exc_info=True)
         if CHAT_ID:
-            send_message(CHAT_ID, f"<b>Scheduled advisor brief failed</b>\n{e}")
+            send_message(CHAT_ID, f"<b>Scheduled advisor {run_type} failed</b>\n{e}")
 
 
 def _run_scheduled_scorecard() -> None:
@@ -432,10 +563,29 @@ def start_scheduler() -> threading.Thread:
     Schedules the morning brief at 7:00 AM daily.
     Returns the scheduler thread.
     """
-    schedule.every().day.at("07:00").do(_run_scheduled_brief)
+    try:
+        advisor_config = load_config("advisor")
+        schedule_cfg = advisor_config.get("schedule", {})
+    except Exception:
+        log.exception("Failed to load advisor schedule config; using fallback")
+        schedule_cfg = {}
+
+    market_days = schedule_cfg.get("market_days", [{"time": "07:00", "run_type": "morning_full"}])
+    weekends = schedule_cfg.get("weekends", [{"time": "10:00", "run_type": "weekend"}])
+
+    for entry in market_days:
+        schedule.every().monday.at(entry["time"]).do(_run_scheduled_profile, entry["run_type"])
+        schedule.every().tuesday.at(entry["time"]).do(_run_scheduled_profile, entry["run_type"])
+        schedule.every().wednesday.at(entry["time"]).do(_run_scheduled_profile, entry["run_type"])
+        schedule.every().thursday.at(entry["time"]).do(_run_scheduled_profile, entry["run_type"])
+        schedule.every().friday.at(entry["time"]).do(_run_scheduled_profile, entry["run_type"])
+
+    for entry in weekends:
+        schedule.every().saturday.at(entry["time"]).do(_run_scheduled_profile, entry["run_type"])
+
     schedule.every().sunday.at("08:00").do(_run_scheduled_retrospective)
     schedule.every().sunday.at("08:30").do(_run_scheduled_scorecard)
-    log.info("Scheduler configured: daily brief at 07:00, retro Sundays 08:00, scorecard 08:30")
+    log.info("Scheduler configured from advisor.yaml plus Sunday retrospective/scorecard jobs")
 
     def _scheduler_loop():
         while True:
@@ -476,6 +626,9 @@ def run_bot() -> None:
 
                 if text.startswith("/"):
                     loop.run_until_complete(handle_command(text, chat_id))
+                elif text.strip():
+                    # Non-command text → conversational Q&A about today's brief
+                    loop.run_until_complete(handle_chat_message(text, chat_id))
 
         except KeyboardInterrupt:
             log.info("Bot stopped by user")

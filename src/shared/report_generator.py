@@ -6,6 +6,7 @@ Generates email-safe HTML with:
 - Header banner with portfolio summary
 - Table of contents
 """
+from __future__ import annotations
 
 import base64
 import io

@@ -1,354 +1,164 @@
-"""Analyst Committee for AlphaDesk Advisor v2.
-
-Replaces the single Opus synthesis call with a structured multi-perspective
-analysis pipeline:
-  Stage 1: Growth Analyst (revenue, TAM, competitive moat)
-  Stage 2: Value Analyst (valuation, margin of safety, capital allocation)
-  Stage 3: Risk Officer (portfolio-level risk, correlation, drawdown scenarios)
-  Stage 4: Editor/CIO (synthesizes all perspectives into daily brief)
-
-Stages 1-3 run in parallel. Stage 4 runs after all three complete.
-"""
+"""Analyst committee orchestration for AlphaDesk Advisor."""
+from __future__ import annotations
 
 import asyncio
 import json
 from typing import Any
 
 from src.shared import gemini_compat as anthropic
-
-from src.shared.cost_tracker import check_budget, record_usage
+from src.shared.agent_decorator import track_agent
+from src.shared.citations import CitationRegistry
+from src.shared.context_manager import ContextBudget
+from src.shared.prompt_loader import load_prompt
 from src.utils.logger import get_logger
+
+from src.advisor.deep_researcher import MultiStepDeepResearcher
+from src.advisor.research_planner import ResearchPlanner
 
 log = get_logger(__name__)
 
-MODEL = "claude-opus-4-6"
+ANALYST_MODEL = "claude-opus-4-6"
+EDITOR_MODEL = "claude-opus-4-6"
+DELTA_MODEL = "claude-haiku-4-5"
 
 
-# ═══════════════════════════════════════════════════════
-# STAGE 1: GROWTH ANALYST
-# ═══════════════════════════════════════════════════════
+def _call_model(prompt: str, *, model: str, max_tokens: int) -> dict[str, Any]:
+    client = anthropic.Anthropic()
+    response = client.messages.create(
+        model=model,
+        max_tokens=max_tokens,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return {
+        "text": response.content[0].text.strip(),
+        "usage": response.usage,
+        "model": model,
+    }
+
+
+def _make_json_agent(agent_name: str, model: str, max_tokens: int):
+    @track_agent(agent_name)
+    async def _runner(prompt: str) -> dict[str, Any]:
+        return await asyncio.to_thread(_call_model, prompt, model=model, max_tokens=max_tokens)
+
+    return _runner
+
+
+def _make_text_agent(agent_name: str, model: str, max_tokens: int):
+    @track_agent(agent_name)
+    async def _runner(prompt: str) -> dict[str, Any]:
+        return await asyncio.to_thread(_call_model, prompt, model=model, max_tokens=max_tokens)
+
+    return _runner
+
 
 class GrowthAnalyst:
-    """Evaluates tickers from a growth perspective.
-
-    Focuses on: revenue acceleration, TAM expansion, competitive moats,
-    product cycles, management execution, earnings quality.
-    """
-
     AGENT_NAME = "committee_growth"
 
-    def analyze(self, tickers: list[str], data_context: dict) -> dict:
-        """Produce growth analysis for key tickers."""
-        within_budget, _, _ = check_budget()
-        if not within_budget:
-            return {"error": "budget_exceeded", "analyses": {}}
+    def build_prompt(self, tickers: list[str], data_context: dict[str, Any]) -> str:
+        return load_prompt(
+            "growth_analyst",
+            holdings_context=self._build_holdings_context(tickers, data_context),
+        )
 
-        holdings_ctx = self._build_holdings_context(tickers, data_context)
-
-        prompt = f"""You are a growth equity analyst at a top-tier investment firm. You evaluate companies primarily on growth trajectory, competitive positioning, and earnings quality. You are OPTIMISTIC by nature but RIGOROUS about evidence.
-
-PORTFOLIO HOLDINGS AND DATA:
-{holdings_ctx}
-
-For each holding, produce a growth assessment. Respond with ONLY valid JSON:
-{{
-  "analyses": {{
-    "TICKER": {{
-      "growth_thesis": "2-3 sentences on the growth story",
-      "growth_score": 75,
-      "revenue_acceleration": true,
-      "competitive_moat": "strong",
-      "key_growth_risk": "Biggest risk to growth",
-      "growth_catalysts": ["catalyst 1", "catalyst 2"]
-    }}
-  }},
-  "top_growth_pick": "TICKER with strongest growth profile",
-  "growth_concern": "TICKER with most concerning growth trajectory"
-}}
-
-RULES:
-- growth_score > 80 requires revenue acceleration AND expanding margins
-- growth_score > 70 requires at least revenue growth > 15%
-- growth_score < 40 if revenue is decelerating
-- Be specific with numbers."""
-
-        try:
-            client = anthropic.Anthropic()
-            response = client.messages.create(
-                model=MODEL, max_tokens=3500,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            usage = response.usage
-            record_usage(self.AGENT_NAME, usage.input_tokens, usage.output_tokens, model=MODEL)
-            log.info("Growth analyst: %d in, %d out", usage.input_tokens, usage.output_tokens)
-
-            text = response.content[0].text.strip()
-            if "```json" in text:
-                text = text.split("```json")[1].split("```")[0].strip()
-            elif "```" in text:
-                text = text.split("```")[1].split("```")[0].strip()
-            return json.loads(text)
-
-        except json.JSONDecodeError:
-            log.warning("Growth analyst returned truncated JSON — returning partial result")
-            return {"error": "analysis_failed", "analyses": {}, "reason": "json_truncated"}
-        except Exception:
-            log.exception("Growth analyst failed")
-            return {"error": "analysis_failed", "analyses": {}}
-
-    def _build_holdings_context(self, tickers: list[str], ctx: dict) -> str:
+    def _build_holdings_context(self, tickers: list[str], ctx: dict[str, Any]) -> str:
         lines = []
         fundamentals = ctx.get("fundamentals", {})
         holdings_reports = ctx.get("holdings_reports", [])
-        report_map = {r.get("ticker"): r for r in holdings_reports}
+        report_map = {report.get("ticker"): report for report in holdings_reports}
 
-        for t in tickers[:12]:
-            fund = fundamentals.get(t, {})
-            report = report_map.get(t, {})
+        for ticker in tickers[:12]:
+            fund = fundamentals.get(ticker, {})
+            report = report_map.get(ticker, {})
             rev_growth = fund.get("revenue_growth")
-            rev_str = f"{rev_growth:.0%}" if rev_growth is not None else "N/A"
             margin = fund.get("net_margin")
-            margin_str = f"{margin:.0%}" if margin is not None else "N/A"
-            pe = fund.get("pe_trailing", "N/A")
+            pe = fund.get("pe_trailing")
             price = report.get("price", fund.get("current_price", "N/A"))
-            chg = report.get("change_pct")
-            chg_str = f"{chg:+.1f}%" if chg is not None else ""
-            lines.append(f"- {t}: ${price} {chg_str} | Rev growth: {rev_str} | Margin: {margin_str} | P/E: {pe}")
-            # Append top 3 news headlines for this holding
-            key_events = report.get("key_events", [])
-            for evt in key_events[:3]:
-                headline = evt.get("headline", evt) if isinstance(evt, dict) else str(evt)
-                lines.append(f"    news: {headline}")
+            change_pct = report.get("change_pct") or 0.0
+            lines.append(
+                f"- {ticker}: price={price} change={change_pct:+.1f}% "
+                f"rev_growth={self._fmt_pct(rev_growth)} margin={self._fmt_pct(margin)} pe={pe if pe is not None else 'N/A'}"
+            )
+            for event in report.get("key_events", [])[:3]:
+                headline = event.get("headline", event) if isinstance(event, dict) else str(event)
+                lines.append(f"  news: {headline}")
         return "\n".join(lines) if lines else "No holdings data."
 
+    def _fmt_pct(self, value: float | None) -> str:
+        if value is None:
+            return "N/A"
+        return f"{value:.0%}"
 
-# ═══════════════════════════════════════════════════════
-# STAGE 2: VALUE ANALYST
-# ═══════════════════════════════════════════════════════
 
 class ValueAnalyst:
-    """Evaluates tickers from a valuation/risk-reward perspective.
-
-    Focuses on: intrinsic value, margin of safety, peer comparisons,
-    capital allocation, balance sheet quality.
-    """
-
     AGENT_NAME = "committee_value"
 
-    def analyze(self, tickers: list[str], data_context: dict) -> dict:
-        """Produce value analysis for key tickers."""
-        within_budget, _, _ = check_budget()
-        if not within_budget:
-            return {"error": "budget_exceeded", "analyses": {}}
+    def build_prompt(self, tickers: list[str], data_context: dict[str, Any]) -> str:
+        return load_prompt(
+            "value_analyst",
+            holdings_context=self._build_context(tickers, data_context),
+        )
 
-        holdings_ctx = self._build_context(tickers, data_context)
-
-        prompt = f"""You are a value-oriented portfolio manager in the tradition of Buffett/Klarman. You evaluate companies primarily on valuation, margin of safety, and capital allocation quality. You are SKEPTICAL of hype but OPEN to paying up for genuine quality.
-
-PORTFOLIO HOLDINGS AND VALUATIONS:
-{holdings_ctx}
-
-For each holding, produce a value assessment. Respond with ONLY valid JSON:
-{{
-  "analyses": {{
-    "TICKER": {{
-      "value_thesis": "2-3 sentences on valuation",
-      "value_score": 65,
-      "current_regime": "expensive",
-      "margin_of_safety_pct": -15,
-      "key_valuation_risk": "The biggest valuation risk",
-      "what_would_make_it_cheap": "What price/multiple creates margin of safety"
-    }}
-  }},
-  "best_value": "TICKER with best risk-reward",
-  "most_expensive": "TICKER most overvalued relative to fundamentals"
-}}
-
-RULES:
-- value_score > 80 requires margin_of_safety > 20%
-- value_score 50-80 for fairly valued with growth optionality
-- value_score < 30 if trading at >2x fair value
-- Always compare to sector peers, not just absolute multiples"""
-
-        try:
-            client = anthropic.Anthropic()
-            response = client.messages.create(
-                model=MODEL, max_tokens=3500,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            usage = response.usage
-            record_usage(self.AGENT_NAME, usage.input_tokens, usage.output_tokens, model=MODEL)
-            log.info("Value analyst: %d in, %d out", usage.input_tokens, usage.output_tokens)
-
-            text = response.content[0].text.strip()
-            if "```json" in text:
-                text = text.split("```json")[1].split("```")[0].strip()
-            elif "```" in text:
-                text = text.split("```")[1].split("```")[0].strip()
-            return json.loads(text)
-
-        except json.JSONDecodeError:
-            log.warning("Value analyst returned truncated JSON — returning partial result")
-            return {"error": "analysis_failed", "analyses": {}, "reason": "json_truncated"}
-        except Exception:
-            log.exception("Value analyst failed")
-            return {"error": "analysis_failed", "analyses": {}}
-
-    def _build_context(self, tickers: list[str], ctx: dict) -> str:
+    def _build_context(self, tickers: list[str], ctx: dict[str, Any]) -> str:
         lines = []
         fundamentals = ctx.get("fundamentals", {})
         valuations = ctx.get("valuation_data", {})
 
-        for t in tickers[:12]:
-            fund = fundamentals.get(t, {})
-            val = valuations.get(t, {})
-            pe = fund.get("pe_trailing", "N/A")
-            pe_fwd = fund.get("pe_forward", "N/A")
-            cagr = val.get("implied_cagr")
-            mos = val.get("margin_of_safety")
-            target = val.get("target_price")
-            price = fund.get("current_price", "N/A")
-            cagr_str = f"{cagr:.1f}%" if cagr is not None else "N/A"
-            mos_str = f"{mos:.1f}%" if mos is not None else "N/A"
-            target_str = f"${target:.2f}" if target is not None else "N/A"
-            lines.append(f"- {t}: ${price} | P/E: {pe} fwd {pe_fwd} | Target: {target_str} | CAGR: {cagr_str} | MoS: {mos_str}")
+        for ticker in tickers[:12]:
+            fund = fundamentals.get(ticker, {})
+            valuation = valuations.get(ticker, {})
+            lines.append(
+                f"- {ticker}: price={fund.get('current_price', 'N/A')} pe={fund.get('pe_trailing', 'N/A')} "
+                f"forward_pe={fund.get('pe_forward', 'N/A')} target={valuation.get('target_price', 'N/A')} "
+                f"implied_cagr={valuation.get('implied_cagr', 'N/A')} margin_of_safety={valuation.get('margin_of_safety', 'N/A')}"
+            )
         return "\n".join(lines) if lines else "No valuation data."
 
 
-# ═══════════════════════════════════════════════════════
-# STAGE 3: RISK OFFICER
-# ═══════════════════════════════════════════════════════
-
 class RiskOfficer:
-    """Evaluates portfolio-level risk and per-ticker risk.
-
-    Focuses on: correlation risk, concentration, drawdown scenarios,
-    macro sensitivity, liquidity risk, thesis dependency.
-    """
-
     AGENT_NAME = "committee_risk"
 
-    def analyze(self, tickers: list[str], data_context: dict) -> dict:
-        """Produce risk analysis for portfolio and individual tickers."""
-        within_budget, _, _ = check_budget()
-        if not within_budget:
-            return {"error": "budget_exceeded"}
+    def build_prompt(self, tickers: list[str], data_context: dict[str, Any]) -> str:
+        return load_prompt(
+            "risk_officer",
+            portfolio_context=self._build_context(tickers, data_context),
+        )
 
-        portfolio_ctx = self._build_context(tickers, data_context)
-
-        prompt = f"""You are a risk officer at a multi-billion dollar fund. Your job is to identify what could go wrong. You think in scenarios, correlations, and tail risks. You are paid to worry.
-
-PORTFOLIO:
-{portfolio_ctx}
-
-Analyze PORTFOLIO-LEVEL risk and per-ticker risk. Respond with ONLY valid JSON:
-{{
-  "portfolio_risk_flags": [
-    {{
-      "flag": "Description of risk",
-      "exposure_pct": 62,
-      "affected_tickers": ["NVDA", "AVGO"],
-      "scenario": "If X happens, estimated impact: -Y%",
-      "mitigation": "How to reduce this risk"
-    }}
-  ],
-  "correlation_warning": "How many holdings are effectively correlated",
-  "max_drawdown_scenario": {{
-    "scenario": "Worst case scenario name",
-    "estimated_portfolio_drawdown_pct": -35,
-    "which_holdings_survive": ["ticker1"],
-    "which_dont": ["ticker2"]
-  }},
-  "risk_score_portfolio": 42,
-  "top_risk": "Single biggest portfolio risk right now"
-}}
-
-RULES:
-- risk_score: 0-100 where higher = LESS risky (100 = very safe portfolio)
-- Be specific about mechanisms: "Fed raises rates 50bp" not "rates go up"
-- Quantify everything: exposure percentages, drawdown estimates, correlation counts
-- Think about hidden correlations: tech stocks that all depend on the same CapEx cycle"""
-
-        try:
-            client = anthropic.Anthropic()
-            response = client.messages.create(
-                model=MODEL, max_tokens=3500,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            usage = response.usage
-            record_usage(self.AGENT_NAME, usage.input_tokens, usage.output_tokens, model=MODEL)
-            log.info("Risk officer: %d in, %d out", usage.input_tokens, usage.output_tokens)
-
-            text = response.content[0].text.strip()
-            if "```json" in text:
-                text = text.split("```json")[1].split("```")[0].strip()
-            elif "```" in text:
-                text = text.split("```")[1].split("```")[0].strip()
-            return json.loads(text)
-
-        except json.JSONDecodeError:
-            log.warning("Risk officer returned truncated JSON — returning partial result")
-            return {"error": "analysis_failed", "reason": "json_truncated"}
-        except Exception:
-            log.exception("Risk officer failed")
-            return {"error": "analysis_failed"}
-
-    def _build_context(self, tickers: list[str], ctx: dict) -> str:
-        lines = []
+    def _build_context(self, tickers: list[str], ctx: dict[str, Any]) -> str:
         holdings_reports = ctx.get("holdings_reports", [])
         macro_data = ctx.get("macro_data", {})
         strategy = ctx.get("strategy", {})
+        total_value = sum(report.get("market_value", 0) or 0 for report in holdings_reports)
 
-        # Portfolio summary
-        total_value = sum(r.get("market_value", 0) or 0 for r in holdings_reports)
-        lines.append(f"Total portfolio value: ${total_value:,.0f}")
-
-        # Macro
-        vix = macro_data.get("vix", {})
-        vix_val = vix.get("value") if isinstance(vix, dict) else vix
-        lines.append(f"VIX: {vix_val or 'N/A'}")
-
-        lines.append("")
+        lines = [f"Total portfolio value: {total_value:,.0f}"]
+        vix = macro_data.get("vix")
+        if isinstance(vix, dict):
+            vix = vix.get("value")
+        lines.append(f"VIX: {vix if vix is not None else 'N/A'}")
         lines.append("HOLDINGS:")
-        for r in holdings_reports:
-            t = r.get("ticker", "")
-            pct = r.get("position_pct")
-            sector = r.get("sector", "")
-            price = r.get("price")
-            chg = r.get("change_pct")
-            pct_str = f"{pct:.1f}%" if pct is not None else "N/A"
-            chg_str = f"{chg:+.1f}%" if chg is not None else ""
-            lines.append(f"  {t}: {pct_str} of portfolio | ${price} {chg_str} | {sector}")
-
-        # Strategy actions
+        for report in holdings_reports:
+            lines.append(
+                f"  {report.get('ticker', '')}: {report.get('position_pct', 'N/A')} percent of portfolio | "
+                f"price={report.get('price', 'N/A')} change={report.get('change_pct', 0):+.1f}% | sector={report.get('sector', '')}"
+            )
         actions = strategy.get("actions", [])
         if actions:
-            lines.append("")
             lines.append("PENDING STRATEGY ACTIONS:")
-            for a in actions:
-                lines.append(f"  {a.get('action', '').upper()} {a.get('ticker')} — {a.get('reason', '')}")
-
+            for action in actions:
+                lines.append(f"  {action.get('action', '').upper()} {action.get('ticker', '')}: {action.get('reason', '')}")
         return "\n".join(lines)
 
 
-# ═══════════════════════════════════════════════════════
-# STAGE 4: EDITOR / CIO
-# ═══════════════════════════════════════════════════════
-
 class AdvisorEditor:
-    """Synthesizes all analyst outputs into the final daily brief.
-
-    Has access to: growth analysis, value analysis, risk analysis,
-    delta report, retrospective, and all raw data.
-    """
-
     AGENT_NAME = "committee_editor"
 
-    def synthesize(
+    async def synthesize(
         self,
-        growth_report: dict,
-        value_report: dict,
-        risk_report: dict,
+        *,
+        growth_report: dict[str, Any],
+        value_report: dict[str, Any],
+        risk_report: dict[str, Any],
+        missing_reports: list[str],
         delta_summary: str = "",
         retrospective_context: str = "",
         catalyst_section: str = "",
@@ -359,108 +169,54 @@ class AdvisorEditor:
         news_context: str = "",
         reddit_context: str = "",
         substack_context: str = "",
-    ) -> dict:
-        """Synthesize all analyst reports into the final daily brief."""
-        within_budget, _, _ = check_budget()
-        if not within_budget:
-            return {"error": "budget_exceeded", "formatted_brief": ""}
+        calibration_context: str = "",
+        preference_context: str = "",
+        causal_context: str = "",
+        supplementary_research: str = "",
+        mandate_breach_ctx: str = "",
+        citations: str = "",
+    ) -> dict[str, Any]:
+        analyst_budget = ContextBudget(token_budget=2500)
+        analyst_budget.add_section("Growth", json.dumps(growth_report, indent=2), "analyst_reports")
+        analyst_budget.add_section("Value", json.dumps(value_report, indent=2), "analyst_reports")
+        analyst_budget.add_section("Risk", json.dumps(risk_report, indent=2), "analyst_reports")
 
-        signal_intelligence = ""
-        if news_context or reddit_context or substack_context:
-            parts = []
-            if news_context:
-                parts.append(f"TOP NEWS HEADLINES:\n{news_context}")
-            if reddit_context:
-                parts.append(f"REDDIT / RETAIL SENTIMENT:\n{reddit_context}")
-            if substack_context:
-                parts.append(f"EXPERT NEWSLETTER SIGNALS (Substack):\n{substack_context}")
-            signal_intelligence = "\n\n".join(parts)
+        signal_budget = ContextBudget(token_budget=2000)
+        signal_budget.add_section("News", news_context, "news")
+        signal_budget.add_section("Reddit", reddit_context, "reddit")
+        signal_budget.add_section("Substack", substack_context, "substack")
 
-        prompt = f"""You are the Chief Investment Officer writing the daily brief. You have reports from your Growth Analyst, Value Analyst, and Risk Officer, plus raw signal intelligence from news, Reddit, and expert newsletters.
+        prompt = load_prompt(
+            "cio_editor",
+            mandate_breaches=mandate_breach_ctx or "None.",
+            growth_report=_budgeted_json(growth_report, 900),
+            value_report=_budgeted_json(value_report, 900),
+            risk_report=_budgeted_json(risk_report, 900),
+            missing_reports=", ".join(missing_reports) if missing_reports else "None.",
+            delta_summary=delta_summary,
+            retrospective_context=retrospective_context,
+            calibration_context=calibration_context,
+            preference_context=preference_context,
+            causal_context=causal_context,
+            supplementary_research=supplementary_research,
+            catalyst_section=catalyst_section,
+            macro_context=macro_context,
+            holdings_context=holdings_context,
+            strategy_context=strategy_context,
+            conviction_context=conviction_context,
+            signal_intelligence=signal_budget.render(),
+            citations=citations,
+        )
 
-GROWTH ANALYST REPORT:
-{json.dumps(growth_report, indent=2)[:3000]}
-
-VALUE ANALYST REPORT:
-{json.dumps(value_report, indent=2)[:3000]}
-
-RISK OFFICER REPORT:
-{json.dumps(risk_report, indent=2)[:3000]}
-
-{delta_summary}
-
-{retrospective_context}
-
-{catalyst_section}
-
-MACRO CONTEXT:
-{macro_context}
-
-HOLDINGS SNAPSHOT:
-{holdings_context}
-
-STRATEGY ENGINE OUTPUT:
-{strategy_context}
-
-CONVICTION LIST:
-{conviction_context}
-
-{signal_intelligence}
-
-Write the daily brief with these sections:
-
-**SECTION 1 - WHAT CHANGED TODAY** (2-3 sentences)
-Lead with the most important change. If nothing material changed, say so. Reference specific news or signals if they drove the move.
-
-**SECTION 2 - ANALYST CONSENSUS & DISAGREEMENTS** (3-5 bullet points)
-Where do your analysts agree? Where do they disagree? When analysts disagree, who has the stronger evidence?
-Cross-reference with news and Reddit signals — does crowd sentiment confirm or contradict analyst views?
-
-**SECTION 3 - ACTIONS** (if any)
-Specific recommendations with conviction and sizing. Only if evidence warrants. "No action" is always the default.
-If news or Substack signals surfaced a new name, explain whether it clears the conviction bar.
-
-**SECTION 4 - WHAT TO WATCH THIS WEEK**
-Specific upcoming events that matter for this portfolio. Include any notable Reddit threads or newsletter theses to track.
-
-**SECTION 5 - PORTFOLIO HEALTH**
-Risk officer's top concern, concentration, correlation.
-Note any news-driven risks flagged today (e.g. chip export controls, regulatory headlines).
-
-RULES:
-- When Growth Analyst is bullish but Value Analyst says expensive and Risk Officer flags concentration, surface this CONFLICT explicitly.
-- If all three analysts agree, it's high conviction. Say so.
-- If your track record shows a bias, explicitly correct for it.
-- "No action" is always the default. Only recommend changes when evidence is overwhelming.
-- Be direct. Cite specific numbers and specific headlines. No hedging language.
-- Separate sections with blank lines. Use bullet points for Sections 2-5."""
-
-        try:
-            client = anthropic.Anthropic()
-            response = client.messages.create(
-                model=MODEL, max_tokens=3000,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            usage = response.usage
-            record_usage(self.AGENT_NAME, usage.input_tokens, usage.output_tokens, model=MODEL)
-            log.info("Editor synthesis: %d in, %d out", usage.input_tokens, usage.output_tokens)
-
-            brief_text = response.content[0].text.strip()
-            return {
-                "formatted_brief": brief_text,
-                "growth_report": growth_report,
-                "value_report": value_report,
-                "risk_report": risk_report,
-            }
-
-        except Exception:
-            log.exception("Editor synthesis failed")
-            return {"error": "synthesis_failed", "formatted_brief": ""}
+        runner = _make_text_agent(self.AGENT_NAME, EDITOR_MODEL, 4200)
+        return await runner(prompt)
 
 
-# ═══════════════════════════════════════════════════════
-# COMMITTEE ORCHESTRATOR
-# ═══════════════════════════════════════════════════════
+def _budgeted_json(payload: dict[str, Any], token_budget: int) -> str:
+    budget = ContextBudget(token_budget=token_budget)
+    budget.add_section("JSON", json.dumps(payload, indent=2), "analyst_reports")
+    return budget.render()
+
 
 async def run_analyst_committee(
     tickers: list[str],
@@ -475,13 +231,16 @@ async def run_analyst_committee(
     news_context: str = "",
     reddit_context: str = "",
     substack_context: str = "",
-) -> dict:
-    """Run the full analyst committee pipeline.
-
-    Stages 1-3 run in parallel, Stage 4 after all complete.
-
-    Returns dict with: formatted_brief, growth_report, value_report, risk_report.
-    """
+    calibration_context: str = "",
+    preference_context: str = "",
+    causal_context: str = "",
+    supplementary_research: str = "",
+    earnings_context: str = "",
+    superinvestor_context: str = "",
+    deep_research_tickers: list[str] | None = None,
+    config: dict | None = None,
+    mandate_breach_ctx: str = "",
+) -> dict[str, Any]:
     log.info("Running analyst committee for %d tickers", len(tickers))
 
     growth = GrowthAnalyst()
@@ -489,23 +248,147 @@ async def run_analyst_committee(
     risk = RiskOfficer()
     editor = AdvisorEditor()
 
-    # Stages 1-3: parallel
-    growth_result, value_result, risk_result = await asyncio.gather(
-        asyncio.to_thread(growth.analyze, tickers, data_context),
-        asyncio.to_thread(value.analyze, tickers, data_context),
-        asyncio.to_thread(risk.analyze, tickers, data_context),
+    growth_runner = _make_json_agent(growth.AGENT_NAME, ANALYST_MODEL, 3200)
+    value_runner = _make_json_agent(value.AGENT_NAME, ANALYST_MODEL, 3200)
+    risk_runner = _make_json_agent(risk.AGENT_NAME, ANALYST_MODEL, 3200)
+
+    analyst_tasks = {
+        "growth": growth_runner(growth.build_prompt(tickers, data_context)),
+        "value": value_runner(value.build_prompt(tickers, data_context)),
+        "risk": risk_runner(risk.build_prompt(tickers, data_context)),
+    }
+    analyst_results = await asyncio.gather(*analyst_tasks.values(), return_exceptions=True)
+
+    reports: dict[str, dict[str, Any]] = {"growth": {}, "value": {}, "risk": {}}
+    missing_reports: list[str] = []
+    agent_meta: dict[str, dict[str, Any]] = {}
+
+    for name, outcome in zip(analyst_tasks.keys(), analyst_results):
+        if isinstance(outcome, Exception):
+            log.warning("%s analyst failed: %s", name, outcome)
+            reports[name] = {"error": "analysis_failed", "analyst": name, "analyses": {}}
+            missing_reports.append(name)
+            continue
+        if outcome.get("error"):
+            missing_reports.append(name)
+        data = outcome.get("data") or {}
+        if name != "risk":
+            data.setdefault("analyses", {})
+        data.setdefault("analyst", name)
+        reports[name] = data
+        agent_meta[name] = {
+            "cost_usd": outcome.get("cost_usd", 0.0),
+            "elapsed_s": outcome.get("elapsed_s", 0.0),
+        }
+
+    # Stage 3.5: deep research, causal reasoner, and gap resolution with partial-failure tolerance.
+    deep_research_result: dict[str, Any] = {"blocks": {}, "citations": [], "citations_html": ""}
+    enriched_causal_context = causal_context
+    enriched_supplementary = supplementary_research
+    citation_registry = CitationRegistry()
+    for article in data_context.get("news_articles", [])[:15]:
+        citation_registry.register(
+            article.get("url", ""),
+            article.get("title", "Untitled"),
+            article.get("origin", article.get("source", "news_desk")),
+            article.get("published_at", ""),
+        )
+
+    stage35_tasks: list[tuple[str, asyncio.Future[Any] | asyncio.Task[Any] | Any]] = []
+
+    if deep_research_tickers is None:
+        deep_research_tickers = tickers[:6]
+
+    planner = ResearchPlanner()
+    plan = planner.plan(
+        tickers=deep_research_tickers,
+        holdings_reports=data_context.get("holdings_reports", []),
+        news_articles=data_context.get("news_articles", []),
+        signals=data_context.get("signals", []),
+        earnings_data=data_context.get("earnings_data", {}),
+        max_tasks=(config or {}).get("committee", {}).get("deep_research_max_tickers", 6),
     )
 
-    log.info("Committee stages 1-3 complete. Growth: %s, Value: %s, Risk: %s",
-             "OK" if "error" not in growth_result else growth_result["error"],
-             "OK" if "error" not in value_result else value_result["error"],
-             "OK" if "error" not in risk_result else risk_result["error"])
+    if plan.tasks:
+        deep_researcher = MultiStepDeepResearcher(
+            max_full=(config or {}).get("committee", {}).get("deep_research_full_max", 3)
+        )
+        stage35_tasks.append(
+            (
+                "deep_research",
+                deep_researcher.run(
+                    plan,
+                    data_context,
+                    last_signal_id=int(data_context.get("last_signal_id") or 0),
+                ),
+            )
+        )
 
-    # Stage 4: editor synthesis
-    result = editor.synthesize(
-        growth_report=growth_result,
-        value_report=value_result,
-        risk_report=risk_result,
+    if not enriched_causal_context:
+        try:
+            from src.advisor.causal_reasoner import CausalReasoner, format_causal_for_prompt
+
+            reasoner = CausalReasoner()
+            stage35_tasks.append(
+                (
+                    "causal",
+                    reasoner.analyze(
+                        top_tickers=tickers[:5],
+                        analyst_reports={
+                            "growth": reports["growth"].get("analyses", {}),
+                            "value": reports["value"].get("analyses", {}),
+                        },
+                        holdings_data=data_context.get("holdings_reports", []),
+                        macro_context=macro_context,
+                        calibration_context=calibration_context,
+                    ),
+                )
+            )
+        except ImportError:
+            log.debug("Causal reasoner not available")
+
+    if not enriched_supplementary:
+        try:
+            from src.advisor.gap_resolver import GapResolver, format_supplementary_research, parse_gaps_from_analyst_output
+
+            gaps = []
+            for report in reports.values():
+                gaps.extend(parse_gaps_from_analyst_output(report))
+            if gaps:
+                resolver = GapResolver()
+                stage35_tasks.append(("gaps", resolver.resolve_gaps(gaps[:5], data_context)))
+        except ImportError:
+            log.debug("Gap resolver not available")
+
+    if stage35_tasks:
+        stage35_results = await asyncio.gather(*[task for _, task in stage35_tasks], return_exceptions=True)
+        for (name, _), outcome in zip(stage35_tasks, stage35_results):
+            if isinstance(outcome, Exception):
+                log.warning("Stage 3.5 %s failed: %s", name, outcome)
+                continue
+            if name == "deep_research":
+                deep_research_result = outcome
+                for citation in outcome.get("citations", []):
+                    citation_registry.register(
+                        str(citation.get("url", "")),
+                        str(citation.get("title", "Untitled")),
+                        str(citation.get("source_agent", "deep_researcher")),
+                        str(citation.get("published_at", "")),
+                    )
+            elif name == "causal":
+                from src.advisor.causal_reasoner import format_causal_for_prompt
+
+                enriched_causal_context = format_causal_for_prompt(outcome)
+            elif name == "gaps":
+                from src.advisor.gap_resolver import format_supplementary_research
+
+                enriched_supplementary = format_supplementary_research(outcome)
+
+    editor_result = await editor.synthesize(
+        growth_report=reports["growth"],
+        value_report=reports["value"],
+        risk_report=reports["risk"],
+        missing_reports=missing_reports,
         delta_summary=delta_summary,
         retrospective_context=retrospective_context,
         catalyst_section=catalyst_section,
@@ -516,9 +399,26 @@ async def run_analyst_committee(
         news_context=news_context,
         reddit_context=reddit_context,
         substack_context=substack_context,
+        calibration_context=calibration_context,
+        preference_context=preference_context,
+        causal_context=enriched_causal_context,
+        supplementary_research=enriched_supplementary,
+        mandate_breach_ctx=mandate_breach_ctx,
+        citations=citation_registry.format_for_prompt(),
     )
 
-    log.info("Committee complete. Brief length: %d chars",
-             len(result.get("formatted_brief", "")))
-
+    brief_text = editor_result.get("raw_text", "")
+    result = {
+        "formatted_brief": brief_text,
+        "growth_report": reports["growth"],
+        "value_report": reports["value"],
+        "risk_report": reports["risk"],
+        "deep_research": deep_research_result,
+        "missing_reports": missing_reports,
+        "citations": citation_registry.as_list(),
+        "citations_html": citation_registry.format_for_html(),
+        "agent_meta": agent_meta,
+    }
+    if editor_result.get("error"):
+        result["error"] = editor_result["error"]
     return result

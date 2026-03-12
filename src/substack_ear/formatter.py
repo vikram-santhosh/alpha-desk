@@ -4,6 +4,7 @@ Formats analyzed newsletter intelligence into a concise Telegram message
 using HTML parse mode. Sections include theses, macro signals, and
 mentioned tickers relevant to the portfolio/watchlist.
 """
+from __future__ import annotations
 
 from typing import Any
 

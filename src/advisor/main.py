@@ -4,19 +4,25 @@ Runs the full pipeline: loads memory, runs existing agents, fetches
 advisor-specific data, synthesizes with Gemini, saves memory state,
 and returns the 5-section daily brief.
 """
+from __future__ import annotations
 
 import asyncio
 import time
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 from src.shared import gemini_compat as anthropic
 
-from src.shared.agent_bus import consume
-from pathlib import Path
-
+from src.advisor.run_profile import RunProfile
+from src.shared.agent_bus import consume, get_latest_signal_id
 from src.shared.config_loader import load_config
-from src.shared.cost_tracker import check_budget, get_daily_cost, record_usage
+from src.shared.cost_tracker import (
+    check_budget,
+    get_daily_cost,
+    get_run_cost,
+    record_usage,
+)
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -71,7 +77,56 @@ async def _run_agent(name: str, run_fn) -> dict[str, Any]:
         return {"formatted": f"<b>{name}</b>\n<i>Agent error: {e}</i>", "signals": [], "stats": {}}
 
 
-async def run() -> dict[str, Any]:
+async def _run_blocking_step(step_name: str, func, *args, default: Any = None) -> Any:
+    """Run a blocking function in a worker thread with consistent logging."""
+    try:
+        return await asyncio.to_thread(func, *args)
+    except Exception as exc:
+        log.error(
+            "%s failed: %s",
+            step_name,
+            exc,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        return default
+
+
+def _fetch_prediction_bundle(
+    prediction_config: dict[str, Any],
+    min_delta_pct: float,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Fetch and diff prediction-market data in one threaded bundle."""
+    from src.advisor.prediction_market import (
+        detect_significant_shifts,
+        fetch_prediction_markets,
+    )
+
+    prediction_data = fetch_prediction_markets(prediction_config)
+    prediction_shifts = detect_significant_shifts(min_delta_pct=min_delta_pct)
+    return prediction_data, prediction_shifts
+
+
+def _generate_delta_summary_text(delta_report) -> str:
+    """Generate a delta summary with LLM fallback hidden behind one call."""
+    from src.advisor.delta_engine import generate_delta_summary
+
+    try:
+        client = anthropic.Anthropic()
+        return generate_delta_summary(delta_report, anthropic_client=client)
+    except Exception:
+        log.exception("LLM delta summary failed before fallback")
+        return generate_delta_summary(delta_report)
+
+
+async def run(run_type: str = "morning_full") -> dict[str, Any]:
+    """Run the advisor pipeline through the multi-run orchestrator."""
+    from src.advisor.run_orchestrator import RunOrchestrator
+
+    orchestrator = RunOrchestrator()
+    return await orchestrator.execute(run_type=run_type)
+
+
+async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
     """Run the complete Advisor pipeline.
 
     Steps:
@@ -89,7 +144,12 @@ async def run() -> dict[str, Any]:
         Dict with formatted (str), signals (list), stats (dict).
     """
     pipeline_start = time.time()
-    log.info("Advisor pipeline starting")
+    log.info(
+        "Advisor pipeline starting (%s, run_id=%s, budget=$%.2f)",
+        run_profile.run_type,
+        run_profile.run_id,
+        run_profile.budget_usd,
+    )
 
     # ── Step 1: Load memory + config ──────────────────────────────────
     config = _load_advisor_config()
@@ -99,6 +159,7 @@ async def run() -> dict[str, Any]:
         seed_holdings,
         seed_macro_theses,
         save_daily_brief,
+        save_run_snapshot,
         increment_conviction_weeks,
     )
 
@@ -139,15 +200,49 @@ async def run() -> dict[str, Any]:
              len(memory["holdings"]), len(memory["macro_theses"]),
              len(memory["conviction_list"]), len(memory["moonshot_list"]))
 
-    # ── Step 1b: Load retrospective context ────────────────────────────
-    retrospective_context = ""
+    # ── Step 1b-d: Start context loaders in the background ────────────
+    retrospective_task: asyncio.Task[str] | None = None
+    calibration_task: asyncio.Task[str] | None = None
+    preference_task: asyncio.Task[str] | None = None
+
     try:
         from src.advisor.retrospective import get_latest_retrospective_context
-        retrospective_context = get_latest_retrospective_context()
-        if retrospective_context:
-            log.info("Loaded retrospective context (%d chars)", len(retrospective_context))
+
+        retrospective_task = asyncio.create_task(
+            _run_blocking_step(
+                "Load retrospective context",
+                get_latest_retrospective_context,
+                default="",
+            )
+        )
     except Exception:
-        log.exception("Failed to load retrospective context")
+        log.exception("Failed to initialize retrospective context loader")
+
+    try:
+        from src.advisor.reasoning_journal import build_calibration_context
+
+        calibration_task = asyncio.create_task(
+            _run_blocking_step(
+                "Load calibration context",
+                build_calibration_context,
+                default="",
+            )
+        )
+    except Exception:
+        log.exception("Failed to initialize calibration context loader")
+
+    try:
+        from src.advisor.feedback_manager import build_preference_context
+
+        preference_task = asyncio.create_task(
+            _run_blocking_step(
+                "Load user preference context",
+                build_preference_context,
+                default="",
+            )
+        )
+    except Exception:
+        log.exception("Failed to initialize user preference context loader")
 
     # Build ticker universe: holdings + conviction + moonshots
     holding_tickers = [h["ticker"] for h in memory["holdings"]]
@@ -191,84 +286,144 @@ async def run() -> dict[str, Any]:
     _reddit_mood = street_ear_result.get("analysis", {}).get("market_mood", "")
     _reddit_themes = street_ear_result.get("analysis", {}).get("themes", [])
 
-    # ── Step 3: Fetch market data ──────────────────────────────────────
+    discovery_candidates_task: asyncio.Task[list[dict[str, Any]]] | None = None
+    try:
+        from src.alpha_scout.candidate_sourcer import source_all_candidates
+
+        discovery_candidates_task = asyncio.create_task(
+            _run_blocking_step(
+                "Source discovery candidates",
+                source_all_candidates,
+                all_tickers,
+                [{"ticker": t} for t in holding_tickers],
+                config,
+                default=[],
+            )
+        )
+    except Exception:
+        log.exception("Failed to initialize discovery candidate sourcing")
+
+    # ── Step 3-4: Fetch market + advisor data in parallel ─────────────
     from src.portfolio_analyst.price_fetcher import fetch_current_prices, fetch_all_historical
     from src.portfolio_analyst.fundamental_analyzer import fetch_all_fundamentals
     from src.portfolio_analyst.technical_analyzer import analyze_all as run_technical_analysis
-
-    log.info("Step 3: Fetching market data for %d tickers", len(all_tickers))
-    step_start = time.time()
-
-    try:
-        prices = await asyncio.to_thread(fetch_current_prices, all_tickers)
-    except Exception:
-        log.exception("Failed to fetch prices")
-        prices = {}
-
-    try:
-        historical = await asyncio.to_thread(fetch_all_historical, all_tickers)
-    except Exception:
-        log.exception("Failed to fetch historical data")
-        historical = {}
-
-    try:
-        fundamentals = await asyncio.to_thread(fetch_all_fundamentals, all_tickers)
-    except Exception:
-        log.exception("Failed to fetch fundamentals")
-        fundamentals = {}
-
-    try:
-        technicals = run_technical_analysis(all_tickers, historical)
-    except Exception:
-        log.exception("Failed to run technical analysis")
-        technicals = {}
-
-    log.info("Step 3 completed in %.1fs", time.time() - step_start)
-
-    # ── Step 4: Fetch advisor-specific data ────────────────────────────
     from src.advisor.macro_analyst import fetch_macro_data, update_macro_theses
-    from src.advisor.prediction_market import fetch_prediction_markets, detect_significant_shifts
     from src.advisor.earnings_analyzer import run_earnings_analysis
     from src.advisor.superinvestor_tracker import run_superinvestor_tracking
 
-    log.info("Step 4: Fetching advisor data (macro, earnings, prediction markets, superinvestors)")
-    step_start = time.time()
+    async def _fetch_market_data() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+        log.info("Step 3: Fetching market data for %d tickers", len(all_tickers))
+        step_start = time.time()
 
-    try:
-        macro_data = await asyncio.to_thread(fetch_macro_data)
-    except Exception:
-        log.exception("Failed to fetch macro data")
-        macro_data = {}
+        prices_task = asyncio.create_task(
+            _run_blocking_step("Fetch prices", fetch_current_prices, all_tickers, default={})
+        )
+        historical_task = asyncio.create_task(
+            _run_blocking_step("Fetch historical data", fetch_all_historical, all_tickers, default={})
+        )
+        fundamentals_task = asyncio.create_task(
+            _run_blocking_step("Fetch fundamentals", fetch_all_fundamentals, all_tickers, default={})
+        )
 
-    try:
-        prediction_data = await asyncio.to_thread(
-            fetch_prediction_markets, config.get("prediction_markets", {}))
-    except Exception:
-        log.exception("Failed to fetch prediction markets")
-        prediction_data = []
+        historical = await historical_task
+        technicals_task = asyncio.create_task(
+            _run_blocking_step(
+                "Run technical analysis",
+                run_technical_analysis,
+                all_tickers,
+                historical,
+                default={},
+            )
+        )
 
-    try:
-        prediction_shifts = detect_significant_shifts(
-            min_delta_pct=config.get("prediction_markets", {}).get("alert_delta_pct", 10))
-    except Exception:
-        log.exception("Failed to detect prediction shifts")
-        prediction_shifts = []
+        prices, fundamentals, technicals = await asyncio.gather(
+            prices_task,
+            fundamentals_task,
+            technicals_task,
+        )
 
-    try:
-        earnings_data = await asyncio.to_thread(run_earnings_analysis, all_tickers)
-    except Exception:
-        log.exception("Failed to run earnings analysis")
-        earnings_data = {}
+        log.info("Step 3 completed in %.1fs", time.time() - step_start)
+        return prices, fundamentals, technicals
 
-    try:
-        _raw_si_data = await asyncio.to_thread(
-            run_superinvestor_tracking, all_tickers, config)
-        # Unwrap: run_superinvestor_tracking returns {insider_transactions, institutional_holders,
-        # filings_13f, smart_money_summaries}. Downstream code expects {ticker: data} mapping.
-        superinvestor_data = _raw_si_data.get("smart_money_summaries", {}) if isinstance(_raw_si_data, dict) else {}
-    except Exception:
-        log.exception("Failed to run superinvestor tracking")
-        superinvestor_data = {}
+    async def _fetch_advisor_data() -> tuple[
+        dict[str, Any],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        dict[str, Any],
+        dict[str, Any],
+    ]:
+        log.info("Step 4: Fetching advisor data (macro, earnings, prediction markets, superinvestors)")
+        step_start = time.time()
+
+        prediction_config = config.get("prediction_markets", {})
+        min_delta_pct = prediction_config.get("alert_delta_pct", 10)
+
+        macro_task = asyncio.create_task(
+            _run_blocking_step("Fetch macro data", fetch_macro_data, default={})
+        )
+        prediction_task = asyncio.create_task(
+            _run_blocking_step(
+                "Fetch prediction market data",
+                _fetch_prediction_bundle,
+                prediction_config,
+                min_delta_pct,
+                default=([], []),
+            )
+        )
+        earnings_task = asyncio.create_task(
+            _run_blocking_step(
+                "Run earnings analysis",
+                run_earnings_analysis,
+                all_tickers,
+                default={},
+            )
+        )
+        superinvestor_task = asyncio.create_task(
+            _run_blocking_step(
+                "Run superinvestor tracking",
+                run_superinvestor_tracking,
+                all_tickers,
+                config,
+                default={},
+            )
+        )
+
+        macro_data, prediction_bundle, earnings_data, raw_si_data = await asyncio.gather(
+            macro_task,
+            prediction_task,
+            earnings_task,
+            superinvestor_task,
+        )
+        prediction_data, prediction_shifts = prediction_bundle
+        superinvestor_data = (
+            raw_si_data.get("smart_money_summaries", {})
+            if isinstance(raw_si_data, dict)
+            else {}
+        )
+
+        log.info("Step 4 completed in %.1fs", time.time() - step_start)
+        return (
+            macro_data,
+            prediction_data,
+            prediction_shifts,
+            earnings_data,
+            superinvestor_data,
+        )
+
+    (
+        prices,
+        fundamentals,
+        technicals,
+    ), (
+        macro_data,
+        prediction_data,
+        prediction_shifts,
+        earnings_data,
+        superinvestor_data,
+    ) = await asyncio.gather(
+        _fetch_market_data(),
+        _fetch_advisor_data(),
+    )
 
     # Update macro theses with new data — include macro_event signals from bus
     # Use top_articles (full analyzed articles with all fields) instead of signals
@@ -306,8 +461,6 @@ async def run() -> dict[str, Any]:
         log.exception("Failed to update macro theses")
         updated_theses = memory["macro_theses"]
 
-    log.info("Step 4 completed in %.1fs", time.time() - step_start)
-
     # ── Step 5: Monitor holdings ───────────────────────────────────────
     from src.advisor.holdings_monitor import monitor_holdings, build_holdings_narrative
 
@@ -331,14 +484,17 @@ async def run() -> dict[str, Any]:
         build_snapshot,
         save_today_snapshot,
         compute_deltas,
-        generate_delta_summary,
         format_delta_for_prompt,
     )
     from src.advisor.memory import get_latest_snapshot_before
 
     log.info("Step 5b: Delta Engine")
     delta_report = None
+    delta_summary_task: asyncio.Task[str] | None = None
     delta_prompt_section = ""
+    yesterday_snapshot = None
+    save_snapshot_task: asyncio.Task[Any] | None = None
+    daily_snapshot_saved = False
     try:
         today_snapshot = build_snapshot(
             holdings_reports=holdings_reports,
@@ -353,20 +509,41 @@ async def run() -> dict[str, Any]:
             reddit_mood=_reddit_mood,
             reddit_themes=_reddit_themes,
         )
-        save_today_snapshot(today_snapshot)
+        yesterday_snapshot_task = asyncio.create_task(
+            _run_blocking_step(
+                "Load previous snapshot",
+                get_latest_snapshot_before,
+                date.today().isoformat(),
+                default=None,
+            )
+        )
+        if run_profile.run_type == "morning_full":
+            save_snapshot_task = asyncio.create_task(
+                _run_blocking_step(
+                    "Save daily snapshot",
+                    save_today_snapshot,
+                    today_snapshot,
+                    default=None,
+                )
+            )
+        yesterday_snapshot = await yesterday_snapshot_task
+        if save_snapshot_task is not None:
+            await save_snapshot_task
+            daily_snapshot_saved = True
     except Exception:
         log.exception("Failed to build/save daily snapshot")
         today_snapshot = {}
 
     try:
-        yesterday_snapshot = get_latest_snapshot_before(date.today().isoformat())
         delta_report = compute_deltas(today_snapshot, yesterday_snapshot)
-        try:
-            client = anthropic.Anthropic()
-            delta_report.summary = generate_delta_summary(delta_report, anthropic_client=client)
-        except Exception:
-            delta_report.summary = generate_delta_summary(delta_report)
-        delta_prompt_section = format_delta_for_prompt(delta_report)
+        delta_summary_task = asyncio.create_task(
+            _run_blocking_step(
+                "Generate delta summary",
+                _generate_delta_summary_text,
+                delta_report,
+                default="",
+            )
+        )
         log.info("Delta report: %d high, %d medium, %d low",
                  len(delta_report.high_significance),
                  len(delta_report.medium_significance),
@@ -402,48 +579,77 @@ async def run() -> dict[str, Any]:
     # Source candidates from Alpha Scout for conviction/moonshot pipeline
     discovery_candidates = []
     try:
-        from src.alpha_scout.candidate_sourcer import source_all_candidates
         from src.alpha_scout.screener import screen_candidates
 
-        discovery_candidates = source_all_candidates(
-            existing_tickers=all_tickers,
-            holdings=[{"ticker": t} for t in holding_tickers],
-            config=config,
-        )
+        if discovery_candidates_task is not None:
+            discovery_candidates = await discovery_candidates_task
+
         if discovery_candidates:
             # Fetch data for candidates and screen them
             cand_tickers = [c["ticker"] for c in discovery_candidates[:20]]
-            cand_fundamentals = await asyncio.to_thread(
-                fetch_all_fundamentals, cand_tickers
-            )
-            cand_historical = await asyncio.to_thread(
-                fetch_all_historical, cand_tickers
-            )
-            cand_technicals = run_technical_analysis(cand_tickers, cand_historical)
+            cand_si_tickers = [c["ticker"] for c in discovery_candidates[:10]]
 
-            # Fetch superinvestor data for top candidates too
-            try:
-                cand_si_tickers = [c["ticker"] for c in discovery_candidates[:10]]
-                cand_si_data = await asyncio.to_thread(
-                    run_superinvestor_tracking, cand_si_tickers, config
+            cand_fundamentals_task = asyncio.create_task(
+                _run_blocking_step(
+                    "Fetch candidate fundamentals",
+                    fetch_all_fundamentals,
+                    cand_tickers,
+                    default={},
                 )
-                # Merge candidate smart money summaries into main superinvestor_data
+            )
+            cand_historical_task = asyncio.create_task(
+                _run_blocking_step(
+                    "Fetch candidate historical data",
+                    fetch_all_historical,
+                    cand_tickers,
+                    default={},
+                )
+            )
+            cand_superinvestor_task = asyncio.create_task(
+                _run_blocking_step(
+                    "Fetch candidate superinvestor data",
+                    run_superinvestor_tracking,
+                    cand_si_tickers,
+                    config,
+                    default={},
+                )
+            )
+
+            cand_historical = await cand_historical_task
+            cand_technicals_task = asyncio.create_task(
+                _run_blocking_step(
+                    "Run candidate technical analysis",
+                    run_technical_analysis,
+                    cand_tickers,
+                    cand_historical,
+                    default={},
+                )
+            )
+
+            cand_fundamentals, cand_technicals, cand_si_data = await asyncio.gather(
+                cand_fundamentals_task,
+                cand_technicals_task,
+                cand_superinvestor_task,
+            )
+
+            if isinstance(cand_si_data, dict):
                 for t, summary in cand_si_data.get("smart_money_summaries", {}).items():
                     if t not in superinvestor_data:
                         superinvestor_data[t] = summary
-            except Exception:
-                log.exception("Failed to fetch superinvestor data for candidates")
 
-            discovery_candidates = screen_candidates(
-                candidates=discovery_candidates[:20],
-                technicals=cand_technicals,
-                fundamentals=cand_fundamentals,
-                portfolio_tickers=holding_tickers,
-                portfolio_fundamentals=fundamentals,
-                weights=config.get("conviction_weights", {
+            discovery_candidates = await _run_blocking_step(
+                "Screen discovery candidates",
+                screen_candidates,
+                discovery_candidates[:20],
+                cand_technicals,
+                cand_fundamentals,
+                holding_tickers,
+                fundamentals,
+                config.get("conviction_weights", {
                     "technical": 0.30, "fundamental": 0.30,
                     "sentiment": 0.20, "diversification": 0.20,
                 }),
+                default=discovery_candidates[:20],
             )
             # Compute valuations for top candidates
             for cand in discovery_candidates[:10]:
@@ -472,7 +678,7 @@ async def run() -> dict[str, Any]:
         log.exception("Failed to update conviction list")
         conviction_result = {"current_list": memory["conviction_list"], "added": [], "removed": []}
 
-    # ── Step 6b: Catalyst tracking ────────────────────────────────────
+    # ── Step 6b: Catalyst tracking + event detection ─────────────────
     catalyst_data = {}
     catalyst_prompt_section = ""
     try:
@@ -482,6 +688,20 @@ async def run() -> dict[str, Any]:
         log.info("Catalyst tracking: %d catalysts found", len(catalyst_data.get("catalysts", [])))
     except Exception:
         log.exception("Catalyst tracking failed — continuing without catalysts")
+
+    # Extract future-dated events from news articles → persist as catalysts
+    try:
+        from src.advisor.event_detector import run_event_detection
+        top_articles = news_desk_result.get("top_articles", [])
+        existing_cats = catalyst_data.get("catalysts", [])
+        detected_events = run_event_detection(top_articles, existing_cats)
+        if detected_events:
+            log.info("Event detection: %d new events extracted from news", len(detected_events))
+            # Refresh catalyst data to include newly detected events
+            catalyst_data["catalysts"] = existing_cats + detected_events
+            catalyst_prompt_section = format_catalysts_for_prompt(catalyst_data["catalysts"])
+    except Exception:
+        log.exception("Event detection failed — continuing with hardcoded catalysts only")
 
     # Record conviction additions as structured recommendations for outcome tracking
     try:
@@ -573,6 +793,55 @@ async def run() -> dict[str, Any]:
 
     log.info("Step 6 completed in %.1fs", time.time() - step_start)
 
+    # ── Step 6c: Record reasoning journal entries ──────────────────────
+    try:
+        from src.advisor.reasoning_journal import record_daily_reasoning
+        for h in holdings_reports:
+            t = h.get("ticker", "")
+            if not t:
+                continue
+            chg = h.get("change_pct") or 0
+            thesis = h.get("thesis", "")
+            thesis_status = h.get("thesis_status", "intact")
+            # Determine predicted direction from strategy actions
+            action_dir = "flat"
+            for a in strategy.get("actions", []):
+                if a.get("ticker") == t:
+                    act = a.get("action", "").lower()
+                    if act in ("buy", "add", "hold"):
+                        action_dir = "up"
+                    elif act in ("sell", "trim", "reduce"):
+                        action_dir = "down"
+                    break
+            else:
+                # No explicit action → default to "up" if thesis intact
+                action_dir = "up" if thesis_status == "intact" else "flat"
+            record_daily_reasoning(
+                ticker=t,
+                analyst="composite",
+                thesis_snapshot=f"{thesis} (status: {thesis_status})",
+                predicted_direction=action_dir,
+            )
+        log.info("Recorded reasoning journal for %d holdings", len(holdings_reports))
+    except Exception:
+        log.exception("Failed to record reasoning journal")
+
+    if delta_report is not None:
+        if delta_summary_task is not None:
+            delta_report.summary = await delta_summary_task
+        delta_prompt_section = format_delta_for_prompt(delta_report)
+
+    retrospective_context = await retrospective_task if retrospective_task else ""
+    calibration_context = await calibration_task if calibration_task else ""
+    preference_context = await preference_task if preference_task else ""
+
+    if retrospective_context:
+        log.info("Loaded retrospective context (%d chars)", len(retrospective_context))
+    if calibration_context:
+        log.info("Loaded calibration context (%d chars)", len(calibration_context))
+    if preference_context:
+        log.info("Loaded user preference context (%d chars)", len(preference_context))
+
     # ── Step 7: Analyst Committee synthesis ──────────────────────────────
     log.info("Step 7: Analyst Committee synthesis")
 
@@ -600,6 +869,14 @@ async def run() -> dict[str, Any]:
         for a in strategy.get("actions", [])
     ) if strategy.get("actions") else "No action recommended."
 
+    # Build mandate breach context for CIO prompt
+    _breach_lines = [
+        f"{a.get('ticker', '')}: {a.get('reason', '')} [urgency: {a.get('urgency', 'low')}]"
+        for a in strategy.get("actions", [])
+        if "exceeds max" in (a.get("reason", "") or "").lower()
+    ]
+    _mandate_breach_ctx = "\n".join(_breach_lines) if _breach_lines else ""
+
     # Build data context for committee analysts
     _data_context = {
         "fundamentals": fundamentals,
@@ -607,6 +884,10 @@ async def run() -> dict[str, Any]:
         "valuation_data": valuation_data,
         "macro_data": macro_data,
         "strategy": strategy,
+        "news_articles": news_desk_result.get("top_articles", []),
+        "signals": agent_bus_signals,
+        "earnings_data": earnings_data if isinstance(earnings_data, dict) else {},
+        "last_signal_id": get_latest_signal_id(),
     }
 
     # Build signal intelligence context strings for the editor
@@ -673,8 +954,36 @@ async def run() -> dict[str, Any]:
     _substack_ctx_str = "\n".join(_substack_lines) if _substack_lines else ""
 
     synthesis = {}
+    committee_result = None
     try:
         from src.advisor.analyst_committee import run_analyst_committee
+
+        # Build earnings & superinvestor context strings for deep research
+        _earnings_ctx_str = _build_earnings_ctx(
+            earnings_data if isinstance(earnings_data, dict) else {}
+        )
+        _superinvestor_ctx_str = _build_superinvestor_ctx(superinvestor_data)
+
+        # Determine priority tickers for deep research
+        # Priority: holdings with big moves > all holdings > conviction list
+        _deep_tickers: list[str] = []
+        _move_threshold = config.get("committee", {}).get("deep_research_move_threshold", 2.0)
+        _max_deep = config.get("committee", {}).get("deep_research_max_tickers", 6)
+        for h in sorted(holdings_reports, key=lambda x: abs(x.get("change_pct") or 0), reverse=True):
+            t = h.get("ticker", "")
+            if t and abs(h.get("change_pct") or 0) >= _move_threshold:
+                _deep_tickers.append(t)
+        # Fill with remaining holdings
+        for t in all_tickers[:12]:
+            if t not in _deep_tickers:
+                _deep_tickers.append(t)
+            if len(_deep_tickers) >= _max_deep:
+                break
+        # Add conviction list tickers
+        for c in conviction_result.get("current_list", []):
+            ct = c.get("ticker", "")
+            if ct and ct not in _deep_tickers:
+                _deep_tickers.append(ct)
 
         committee_result = await run_analyst_committee(
             tickers=all_tickers[:12],
@@ -689,6 +998,13 @@ async def run() -> dict[str, Any]:
             news_context=_news_ctx_str,
             reddit_context=_reddit_ctx_str,
             substack_context=_substack_ctx_str,
+            calibration_context=calibration_context,
+            preference_context=preference_context,
+            earnings_context=_earnings_ctx_str,
+            superinvestor_context=_superinvestor_ctx_str,
+            deep_research_tickers=_deep_tickers,
+            config=config,
+            mandate_breach_ctx=_mandate_breach_ctx,
         )
 
         brief_text = committee_result.get("formatted_brief", "")
@@ -722,20 +1038,25 @@ async def run() -> dict[str, Any]:
             catalyst_prompt_section=catalyst_prompt_section,
             news_signals=news_signals,
         )
+        # Preserve committee_result (deep research, analyst reports) even when
+        # editor synthesis failed — the verbose formatter can still use them.
+        if committee_result is not None:
+            synthesis["committee_result"] = committee_result
 
     # ── Step 8: Save memory state ──────────────────────────────────────
-    try:
-        # Extract a short macro_summary for memory (first 500 chars of brief)
-        _brief_text = synthesis.get("macro_summary", "")
-        _macro_for_memory = _brief_text[:500] if _brief_text else "No synthesis available."
-        save_daily_brief(
-            macro_summary=_macro_for_memory,
-            portfolio_actions=strategy.get("actions", []),
-            conviction_changes=conviction_result.get("added", []) + conviction_result.get("removed", []),
-            moonshot_changes=moonshot_result.get("added", []) + moonshot_result.get("removed", []),
-        )
-    except Exception:
-        log.exception("Failed to save daily brief to memory")
+    if run_profile.run_type == "morning_full":
+        try:
+            # Extract a short macro_summary for memory (first 500 chars of brief)
+            _brief_text = synthesis.get("macro_summary", "")
+            _macro_for_memory = _brief_text[:500] if _brief_text else "No synthesis available."
+            save_daily_brief(
+                macro_summary=_macro_for_memory,
+                portfolio_actions=strategy.get("actions", []),
+                conviction_changes=conviction_result.get("added", []) + conviction_result.get("removed", []),
+                moonshot_changes=moonshot_result.get("added", []) + moonshot_result.get("removed", []),
+            )
+        except Exception:
+            log.exception("Failed to save daily brief to memory")
 
     # ── Step 9: Format output ──────────────────────────────────────────
     from src.advisor.formatter import (
@@ -847,9 +1168,22 @@ async def run() -> dict[str, Any]:
         log.exception("Failed to format brief")
         formatted = "<b>AlphaDesk Advisor</b>\n\nError formatting daily brief."
 
-    total_time = time.time() - pipeline_start
+    # ── Step 9b: Update chat session context for Q&A ──────────────────
+    try:
+        from src.advisor.chat_session import ChatSession
+        import os
+        _tg_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+        if _tg_chat_id:
+            _chat = ChatSession(_tg_chat_id)
+            _brief_for_chat = synthesis.get("formatted_brief", formatted)
+            _holdings_summary = _holdings_ctx_str
+            _chat.update_brief_context(_brief_for_chat, _holdings_summary)
+            log.info("Chat session context updated for Q&A")
+    except Exception:
+        log.debug("Failed to update chat session context — chat Q&A may lack context")
 
     # ── Step 10: Generate verbose report ─────────────────────────────
+    total_time = time.time() - pipeline_start
     verbose_report_dir = ""
     try:
         from src.advisor.verbose_formatter import VerboseFormatter, save_verbose_report
@@ -950,15 +1284,44 @@ async def run() -> dict[str, Any]:
     except Exception:
         log.exception("Failed to generate verbose report — continuing without it")
 
+    total_time = time.time() - pipeline_start
+    run_cost = get_run_cost()
+    last_signal_id = get_latest_signal_id()
+
+    try:
+        snapshot_payload = dict(today_snapshot) if isinstance(today_snapshot, dict) else {}
+        snapshot_payload["brief_text"] = synthesis.get("formatted_brief", "")
+        save_run_snapshot(
+            run_id=run_profile.run_id,
+            run_type=run_profile.run_type,
+            date_str=date.today().isoformat(),
+            snapshot_data=snapshot_payload,
+            delta=delta_report.to_dict() if delta_report else None,
+            run_cost=run_cost,
+            run_duration=round(total_time, 1),
+            last_signal_id=last_signal_id,
+            mirror_to_daily=run_profile.run_type == "morning_full" and not daily_snapshot_saved,
+        )
+    except Exception:
+        log.exception("Failed to persist run snapshot")
+
     log.info("Advisor pipeline completed in %.1fs", total_time)
 
     return {
         "formatted": formatted,
         "verbose_report_dir": verbose_report_dir,
         "signals": agent_bus_signals,
+        "run_profile": {
+            "run_id": run_profile.run_id,
+            "run_type": run_profile.run_type,
+            "report_format": run_profile.report_format,
+            "budget_usd": run_profile.budget_usd,
+            "hours_since_last_run": run_profile.hours_since_last_run,
+        },
         "stats": {
             "total_time_s": round(total_time, 1),
             "daily_cost": daily_cost,
+            "run_cost": run_cost,
             "holdings_count": len(holdings_reports),
             "conviction_count": len(conviction_result.get("current_list", [])),
             "moonshot_count": len(moonshot_result.get("current_list", [])),

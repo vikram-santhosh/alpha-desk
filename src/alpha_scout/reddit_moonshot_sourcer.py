@@ -4,6 +4,7 @@ Scans small-cap and value-oriented subreddits to find non-obvious ticker
 candidates with unusual Reddit traction. Complements the S&P 500/screener
 pipeline with grassroots discovery.
 """
+from __future__ import annotations
 
 import re
 import time

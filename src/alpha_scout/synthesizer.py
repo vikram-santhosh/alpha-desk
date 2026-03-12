@@ -6,6 +6,7 @@ Takes the top-N screened candidates and uses Gemini to:
 - Categorize as "portfolio" (buy) vs "watchlist" (monitor)
 - Assign conviction: high / medium / low
 """
+from __future__ import annotations
 
 import json
 from datetime import date

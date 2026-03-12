@@ -4,6 +4,7 @@ Challenges every recommendation by finding flaws, assessing what's priced in,
 providing base rate reasoning, and generating specific invalidation conditions.
 Uses Gemini for high-quality contrarian analysis.
 """
+from __future__ import annotations
 
 import json
 from typing import Any

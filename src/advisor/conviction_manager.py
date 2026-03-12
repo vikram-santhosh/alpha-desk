@@ -4,6 +4,7 @@ Maintains a persistent conviction list of 3-5 names that evolves over weeks.
 Names are added based on multi-source evidence scoring and the 25% CAGR gate.
 Names persist until evidence weakens, not because something new appeared.
 """
+from __future__ import annotations
 
 from datetime import date
 

@@ -8,6 +8,7 @@ Telegram HTML supports: <b>, <i>, <a href="">, <code>, <pre>.
 Max message length target: ~2000 characters (Telegram limit is 4096,
 but we aim for readability).
 """
+from __future__ import annotations
 
 from typing import Any
 

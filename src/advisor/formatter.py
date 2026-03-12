@@ -8,6 +8,7 @@ Sections:
   §4 Conviction List — 3-5 Interesting Names
   §5 Moonshot Ideas — 1-2 Asymmetric Bets
 """
+from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
@@ -776,3 +777,82 @@ def split_message(text: str, max_chars: int = 4000) -> list[str]:
         text = text[split_at:].lstrip("\n")
 
     return chunks
+
+
+def format_evening_wrap(
+    *,
+    run_id: str,
+    scorecard: str,
+    delta_summary: str,
+    movers: list[dict[str, Any]],
+    tomorrow_catalysts: list[dict[str, Any]],
+    after_hours: list[str] | None = None,
+) -> str:
+    """Format a compact Telegram-first evening wrap."""
+    lines = [
+        f"🌆 <b>ALPHADESK EVENING WRAP — {sanitize_html(run_id)}</b>",
+        SEPARATOR,
+        "",
+        "<b>1. Scorecard</b>",
+        sanitize_html(scorecard or "Morning calls held; no material invalidations."),
+        "",
+        "<b>2. What Changed</b>",
+        sanitize_html(delta_summary or "No material changes versus the morning run."),
+    ]
+
+    if movers:
+        lines.append("")
+        for mover in movers[:6]:
+            ticker = sanitize_html(mover.get("ticker", ""))
+            change_pct = mover.get("change_pct")
+            move_str = f"{change_pct:+.1f}%" if isinstance(change_pct, (int, float)) else "N/A"
+            summary = sanitize_html(mover.get("summary", ""))
+            lines.append(f"  • {ticker} {move_str} — {summary}")
+
+    lines.extend(["", "<b>3. After-Hours / Tomorrow</b>"])
+    if after_hours:
+        lines.extend(f"  • {sanitize_html(item)}" for item in after_hours[:4])
+    if tomorrow_catalysts:
+        for catalyst in tomorrow_catalysts[:5]:
+            description = sanitize_html(catalyst.get("description", catalyst.get("title", "Catalyst")))
+            when = sanitize_html(str(catalyst.get("date", "Soon")))
+            lines.append(f"  • {description} ({when})")
+    if not after_hours and not tomorrow_catalysts:
+        lines.append("  • No fresh after-hours catalysts detected.")
+
+    return "\n".join(lines)
+
+
+def format_weekend_review(
+    *,
+    run_id: str,
+    thesis_changes: list[str],
+    week_in_review: list[str],
+    next_week_preview: list[str],
+) -> str:
+    """Format a Telegram-first weekend review."""
+    lines = [
+        f"🗓️ <b>ALPHADESK WEEKEND REVIEW — {sanitize_html(run_id)}</b>",
+        SEPARATOR,
+        "",
+        "<b>1. Thesis Dashboard Changes</b>",
+    ]
+
+    if thesis_changes:
+        lines.extend(f"  • {sanitize_html(item)}" for item in thesis_changes[:6])
+    else:
+        lines.append("  • No thesis state changes recorded this week.")
+
+    lines.extend(["", "<b>2. Week In Review</b>"])
+    if week_in_review:
+        lines.extend(f"  • {sanitize_html(item)}" for item in week_in_review[:8])
+    else:
+        lines.append("  • No major review items available.")
+
+    lines.extend(["", "<b>3. Next Week Preview</b>"])
+    if next_week_preview:
+        lines.extend(f"  • {sanitize_html(item)}" for item in next_week_preview[:8])
+    else:
+        lines.append("  • No catalyst preview available.")
+
+    return "\n".join(lines)

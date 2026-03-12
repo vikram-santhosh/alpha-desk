@@ -14,6 +14,7 @@ Sections:
   7. Upcoming (catalysts next 7 days)
   Footer (sources, cost, timestamp)
 """
+from __future__ import annotations
 
 import re
 from datetime import datetime, date
@@ -65,22 +66,26 @@ def _color(val: float | None) -> str:
 def _status_pill(status: str) -> str:
     """HTML pill badge for thesis status."""
     s = status.lower()
-    if s in ("strengthening", "intact"):
-        return '<span style="background:#dcfce7;color:#166534;padding:2px 8px;border-radius:12px;font-size:0.75em;font-weight:600">INTACT</span>'
+    if s == "strengthening":
+        return '<span style="background:#dcfce7;color:#166534;padding:3px 9px;border-radius:12px;font-size:0.8em;font-weight:600">STRENGTHENING</span>'
+    if s in ("stable", "intact"):
+        return '<span style="background:#dbeafe;color:#1e40af;padding:3px 9px;border-radius:12px;font-size:0.8em;font-weight:600">STABLE</span>'
     if s in ("evolving", "monitoring"):
-        return '<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:12px;font-size:0.75em;font-weight:600">EVOLVING</span>'
-    if s in ("weakening", "invalidated"):
-        return '<span style="background:#fecaca;color:#991b1b;padding:2px 8px;border-radius:12px;font-size:0.75em;font-weight:600">WEAKENING</span>'
-    return '<span style="background:#e2e8f0;color:#475569;padding:2px 8px;border-radius:12px;font-size:0.75em;font-weight:600">UNKNOWN</span>'
+        return '<span style="background:#fef3c7;color:#92400e;padding:3px 9px;border-radius:12px;font-size:0.8em;font-weight:600">EVOLVING</span>'
+    if s == "weakening":
+        return '<span style="background:#fed7aa;color:#9a3412;padding:3px 9px;border-radius:12px;font-size:0.8em;font-weight:600">WEAKENING</span>'
+    if s in ("broken", "invalidated"):
+        return '<span style="background:#fecaca;color:#991b1b;padding:3px 9px;border-radius:12px;font-size:0.8em;font-weight:600">BROKEN</span>'
+    return '<span style="background:#e2e8f0;color:#475569;padding:3px 9px;border-radius:12px;font-size:0.8em;font-weight:600">UNKNOWN</span>'
 
 
 def _conviction_pill(conviction: str) -> str:
     c = conviction.lower()
     if c == "high":
-        return '<span style="background:#dcfce7;color:#166534;padding:2px 6px;border-radius:8px;font-size:0.7em;font-weight:600">HIGH</span>'
+        return '<span style="background:#dcfce7;color:#166534;padding:3px 8px;border-radius:8px;font-size:0.78em;font-weight:600">HIGH</span>'
     if c == "medium":
-        return '<span style="background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:8px;font-size:0.7em;font-weight:600">MED</span>'
-    return '<span style="background:#e2e8f0;color:#475569;padding:2px 6px;border-radius:8px;font-size:0.7em;font-weight:600">LOW</span>'
+        return '<span style="background:#fef3c7;color:#92400e;padding:3px 8px;border-radius:8px;font-size:0.78em;font-weight:600">MED</span>'
+    return '<span style="background:#e2e8f0;color:#475569;padding:3px 8px;border-radius:8px;font-size:0.78em;font-weight:600">LOW</span>'
 
 
 def _esc(text: str) -> str:
@@ -145,6 +150,19 @@ class VerboseFormatter:
         self.youtube_signals = youtube_signals or []
         self.daily_cost = daily_cost
         self.total_time = total_time
+        # Deep research blocks: dict of ticker -> {"content": str, "tier": "full"|"summary"}
+        self._deep_research_blocks: dict[str, dict] = {}
+        deep_research = (committee_result or {}).get("deep_research", {})
+        if isinstance(deep_research, dict):
+            raw_blocks = deep_research.get("blocks", {})
+            for ticker, block in raw_blocks.items():
+                if isinstance(block, str):
+                    # Old format — backward compat
+                    self._deep_research_blocks[ticker] = {"content": block, "tier": "full"}
+                elif isinstance(block, dict):
+                    self._deep_research_blocks[ticker] = block
+                else:
+                    self._deep_research_blocks[ticker] = {"content": str(block), "tier": "full"}
 
     # ── public API (same interface as before) ────────────────────
 
@@ -158,13 +176,18 @@ class VerboseFormatter:
             "",
             self._md_header(totals),
             self._md_what_changed(),
+            self._md_mandate_breaches(),
             self._md_market_pulse(),
+            self._md_theme_dashboard(),
             self._md_portfolio(totals),
             self._md_actions_risks(),
+            self._md_deep_research(),
             self._md_signal_intelligence(),
             self._md_prediction_markets(),
             self._md_smart_money(),
             self._md_watchlist(),
+            self._md_cross_asset_risks(),
+            self._md_thesis_breakers(),
             self._md_upcoming(),
             self._md_footer(),
         ]
@@ -178,9 +201,11 @@ class VerboseFormatter:
             '<body><div class="container">',
             self._html_header(totals),
             self._html_what_changed(),
+            self._html_mandate_breaches(),
             self._html_market_pulse(),
             self._html_portfolio(totals),
             self._html_actions_risks(),
+            self._html_deep_research(),
             self._html_signal_intelligence(),
             self._html_prediction_markets(),
             self._html_smart_money(),
@@ -232,7 +257,11 @@ class VerboseFormatter:
         return ""
 
     def _get_cio_sections(self) -> dict[str, str]:
-        """Parse CIO brief into named sections."""
+        """Parse CIO brief into named sections.
+
+        Handles both old format (SECTION 1 - WHAT CHANGED TODAY) and
+        new format (SECTION 1 - EXECUTIVE TAKE, SECTION 2 - THEME DASHBOARD, etc).
+        """
         brief = self.committee_result.get("formatted_brief", "")
         if not brief:
             return {}
@@ -241,7 +270,7 @@ class VerboseFormatter:
         current_lines: list[str] = []
         for line in brief.strip().splitlines():
             stripped = line.strip()
-            # Detect section headers like "**SECTION 1 - WHAT CHANGED TODAY**"
+            # Detect section headers like "**SECTION 1 - EXECUTIVE TAKE**"
             header_match = re.match(r"\*{0,2}(?:SECTION\s+\d+\s*[-—]\s*)?(.+?)\*{0,2}\s*$", stripped)
             if header_match and stripped.startswith("**"):
                 if current_key:
@@ -271,18 +300,31 @@ class VerboseFormatter:
 
     def _md_what_changed(self) -> str:
         cio = self._get_cio_sections()
-        text = cio.get("what changed today", "")
+        text = cio.get("executive take", "") or cio.get("what changed today", "")
         if not text:
             brief = self.committee_result.get("formatted_brief", "")
             if brief:
-                # Take first paragraph
                 paras = brief.strip().split("\n\n")
                 text = paras[0] if paras else ""
         if not text:
             return ""
-        # Strip markdown formatting
         text = re.sub(r"\*{1,2}(.+?)\*{1,2}", r"\1", text)
-        return f"WHAT CHANGED\n{'-' * 40}\n{text}\n"
+        return f"EXECUTIVE TAKE\n{'-' * 40}\n{text}\n"
+
+    def _md_mandate_breaches(self) -> str:
+        """Render mandate breach warnings in plain text."""
+        actions = self.strategy.get("actions", [])
+        breaches = [a for a in actions if "exceeds max" in (a.get("reason", "") or "").lower()]
+        if not breaches:
+            return ""
+        lines = [f"{'!'*50}", "  RISK MANDATE VIOLATIONS", f"{'!'*50}"]
+        for b in breaches:
+            ticker = b.get("ticker", "")
+            reason = b.get("reason", "")
+            urgency = b.get("urgency", "low").upper()
+            lines.append(f"  ⚠ {b.get('action', 'TRIM').upper()} {ticker}: {reason} [{urgency}]")
+        lines.append(f"{'!'*50}")
+        return "\n".join(lines) + "\n"
 
     def _md_market_pulse(self) -> str:
         def _mv(key: str):
@@ -345,6 +387,8 @@ class VerboseFormatter:
 
     def _md_actions_risks(self) -> str:
         actions = self.strategy.get("actions", [])
+        # Filter out mandate breaches (shown in dedicated banner)
+        actions = [a for a in actions if "exceeds max" not in (a.get("reason", "") or "").lower()]
         risk = self.committee_result.get("risk_report", {})
         if not actions and not risk:
             return ""
@@ -373,9 +417,11 @@ class VerboseFormatter:
             for a in self.top_articles[:5]:
                 title = a.get("title", "")
                 source = a.get("source", "")
+                url = a.get("url", "")
                 tickers = a.get("related_tickers") or a.get("affected_tickers", [])
                 ticker_str = f" [{', '.join(tickers[:3])}]" if tickers else ""
-                lines.append(f"  {title}{ticker_str} — {source}")
+                title_str = f'<a href="{url}">{title}</a>' if url else title
+                lines.append(f"  {title_str}{ticker_str} — {source}")
 
         if has_reddit:
             lines.append("\nReddit Threads:")
@@ -384,22 +430,29 @@ class VerboseFormatter:
                 sentiment = s.get("sentiment", "")
                 mentions = s.get("mentions", "")
                 subs = s.get("subreddits", s.get("subreddit", ""))
-                lines.append(f"  {ticker}: sentiment {sentiment}, {mentions} mentions ({subs})")
+                first_sub = str(subs).split(",")[0].strip() if subs else ""
+                reddit_url = f"https://reddit.com/r/{first_sub}/search?q={ticker}&sort=top&t=day" if first_sub and ticker else ""
+                ticker_str = f'<a href="{reddit_url}">{ticker}</a>' if reddit_url else ticker
+                lines.append(f"  {ticker_str}: sentiment {sentiment}, {mentions} mentions ({subs})")
 
         if has_substack:
             lines.append("\nSubstack Newsletters:")
             for s in self.substack_signals[:5]:
                 title = s.get("title", "")
+                url = s.get("url", "")
                 tickers = s.get("tickers", [])
                 ticker_str = f" [{', '.join(tickers[:3])}]" if tickers else ""
-                lines.append(f"  {title}{ticker_str}")
+                title_str = f'<a href="{url}">{title}</a>' if url else title
+                lines.append(f"  {title_str}{ticker_str}")
 
         if has_youtube:
             lines.append("\nYouTube:")
             for y in self.youtube_signals[:3]:
                 title = y.get("title", "")
                 channel = y.get("channel", "")
-                lines.append(f"  {title} — {channel}")
+                url = y.get("url", "")
+                title_str = f'<a href="{url}">{title}</a>' if url else title
+                lines.append(f"  {title_str} — {channel}")
 
         return "\n".join(lines) + "\n"
 
@@ -455,20 +508,25 @@ class VerboseFormatter:
             source = c.get("source", "")
             lines.append(f"\n  {t} [{conv}] — W{c.get('weeks_on_list', 1)}")
             if thesis:
-                lines.append(f"    Thesis: {thesis}")
+                lines.append(f"    {thesis}")
             if source:
                 lines.append(f"    Source: {source}")
             # Cross-reference signals
             intel = self._gather_ticker_intel(t)
             for line in intel:
                 lines.append(f"    {line}")
-            # Pros/cons
+            # Evidence as compact scorecard
             pros = c.get("pros", [])
             cons = c.get("cons", [])
-            if pros:
-                lines.append(f"    Bull: {'; '.join(str(p) for p in pros[:3])}")
-            if cons:
-                lines.append(f"    Bear: {'; '.join(str(p) for p in cons[:3])}")
+            checks: list[str] = []
+            for p in (pros if isinstance(pros, list) else []):
+                label = self._parse_evidence_label(p)
+                checks.append(f"✓ {label}")
+            for co in (cons if isinstance(cons, list) else []):
+                label = self._parse_evidence_label(co)
+                checks.append(f"✗ {label}")
+            if checks:
+                lines.append(f"    Evidence: {' | '.join(checks)}")
 
         for m in moonshots:
             t = m.get("ticker", "?")
@@ -478,13 +536,13 @@ class VerboseFormatter:
             milestone = m.get("key_milestone", "")
             lines.append(f"\n  {t} [MOONSHOT]")
             if thesis:
-                lines.append(f"    Thesis: {thesis}")
+                lines.append(f"    {thesis}")
             if upside:
-                lines.append(f"    Upside: {upside}")
+                lines.append(f"    ▲ Bull: {upside}")
             if downside:
-                lines.append(f"    Downside: {downside}")
+                lines.append(f"    ▼ Bear: {downside}")
             if milestone:
-                lines.append(f"    Milestone: {milestone}")
+                lines.append(f"    Key milestone: {milestone}")
             intel = self._gather_ticker_intel(t)
             for line in intel:
                 lines.append(f"    {line}")
@@ -537,6 +595,60 @@ class VerboseFormatter:
                 intel.append(f"Fundamentals: {' | '.join(parts)}")
         return intel
 
+    def _md_theme_dashboard(self) -> str:
+        """Render theme dashboard from CIO brief's THEME DASHBOARD section."""
+        cio = self._get_cio_sections()
+        text = cio.get("theme dashboard", "")
+        if not text:
+            return ""
+        text = re.sub(r"\*{1,2}(.+?)\*{1,2}", r"\1", text)
+        return f"THEME DASHBOARD\n{'-' * 40}\n{text}\n"
+
+    def _md_deep_research(self) -> str:
+        """Render deep research blocks with tiered depth."""
+        if not self._deep_research_blocks:
+            return ""
+        full_lines = []
+        summary_lines = []
+        for ticker, block_data in self._deep_research_blocks.items():
+            content = block_data.get("content", "") if isinstance(block_data, dict) else str(block_data)
+            tier = block_data.get("tier", "full") if isinstance(block_data, dict) else "full"
+            if not content:
+                continue
+            if tier == "summary":
+                summary_lines.append(f"\n  {ticker}: {content.strip()}")
+            else:
+                full_lines.append(f"\n## {ticker} — Deep Research")
+                full_lines.append(content)
+                full_lines.append("")
+        lines = []
+        if full_lines:
+            lines.append(f"DEEP RESEARCH\n{'=' * 50}")
+            lines.extend(full_lines)
+        if summary_lines:
+            lines.append(f"\nQUICK TAKES\n{'-' * 40}")
+            lines.extend(summary_lines)
+            lines.append("")
+        return "\n".join(lines)
+
+    def _md_cross_asset_risks(self) -> str:
+        """Render cross-asset / macro risks from CIO brief."""
+        cio = self._get_cio_sections()
+        text = cio.get("cross-asset / macro risks", "") or cio.get("cross-asset risks", "")
+        if not text:
+            return ""
+        text = re.sub(r"\*{1,2}(.+?)\*{1,2}", r"\1", text)
+        return f"CROSS-ASSET / MACRO RISKS\n{'-' * 40}\n{text}\n"
+
+    def _md_thesis_breakers(self) -> str:
+        """Render thesis breakers from CIO brief."""
+        cio = self._get_cio_sections()
+        text = cio.get("thesis breakers", "")
+        if not text:
+            return ""
+        text = re.sub(r"\*{1,2}(.+?)\*{1,2}", r"\1", text)
+        return f"THESIS BREAKERS\n{'-' * 40}\n{text}\n"
+
     def _md_upcoming(self) -> str:
         catalysts = self.catalyst_data.get("catalysts", [])
         if not catalysts:
@@ -575,11 +687,12 @@ class VerboseFormatter:
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
     background: #f1f5f9;
     color: #1e293b;
-    line-height: 1.5;
+    line-height: 1.65;
+    font-size: 16px;
     -webkit-text-size-adjust: 100%;
   }}
   .container {{
-    max-width: 640px;
+    max-width: 680px;
     margin: 0 auto;
     background: #ffffff;
   }}
@@ -588,19 +701,19 @@ class VerboseFormatter:
   .header {{
     background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 100%);
     color: #ffffff;
-    padding: 24px 24px 20px;
+    padding: 28px 28px 24px;
   }}
   .header-title {{
-    font-size: 0.8em;
+    font-size: 0.85em;
     text-transform: uppercase;
     letter-spacing: 1.5px;
     color: #94a3b8;
-    margin-bottom: 4px;
+    margin-bottom: 6px;
   }}
   .header-date {{
-    font-size: 1.1em;
+    font-size: 1.2em;
     font-weight: 600;
-    margin-bottom: 16px;
+    margin-bottom: 18px;
   }}
   .header-stats {{
     display: flex;
@@ -611,13 +724,13 @@ class VerboseFormatter:
     text-align: left;
   }}
   .stat-label {{
-    font-size: 0.7em;
+    font-size: 0.75em;
     text-transform: uppercase;
     letter-spacing: 0.5px;
     color: #94a3b8;
   }}
   .stat-value {{
-    font-size: 1.3em;
+    font-size: 1.35em;
     font-weight: 700;
   }}
   .headline {{
@@ -631,26 +744,27 @@ class VerboseFormatter:
 
   /* Section */
   .section {{
-    padding: 20px 24px;
+    padding: 28px 28px;
     border-bottom: 1px solid #e2e8f0;
   }}
   .section:last-of-type {{
     border-bottom: none;
   }}
   .section-title {{
-    font-size: 0.7em;
+    font-size: 0.8em;
     text-transform: uppercase;
     letter-spacing: 1.5px;
     color: #94a3b8;
-    margin-bottom: 12px;
+    margin-bottom: 16px;
     font-weight: 600;
   }}
   .section-body {{
-    font-size: 0.9em;
+    font-size: 1em;
     color: #334155;
+    line-height: 1.65;
   }}
   .section-body p {{
-    margin-bottom: 8px;
+    margin-bottom: 12px;
   }}
 
   /* Market pulse bar */
@@ -666,7 +780,7 @@ class VerboseFormatter:
   .market-item {{
     flex: 1;
     min-width: 80px;
-    padding: 10px 12px;
+    padding: 12px 14px;
     text-align: center;
     border-right: 1px solid #e2e8f0;
   }}
@@ -674,13 +788,13 @@ class VerboseFormatter:
     border-right: none;
   }}
   .market-item-label {{
-    font-size: 0.65em;
+    font-size: 0.75em;
     text-transform: uppercase;
     letter-spacing: 0.5px;
     color: #94a3b8;
   }}
   .market-item-value {{
-    font-size: 0.95em;
+    font-size: 1em;
     font-weight: 600;
     color: #1e293b;
   }}
@@ -689,8 +803,8 @@ class VerboseFormatter:
   .holding-card {{
     background: #f8fafc;
     border-radius: 8px;
-    padding: 14px 16px;
-    margin-bottom: 8px;
+    padding: 16px 20px;
+    margin-bottom: 10px;
     border-left: 4px solid #e2e8f0;
   }}
   .holding-card.up {{
@@ -707,47 +821,47 @@ class VerboseFormatter:
   }}
   .holding-ticker {{
     font-weight: 700;
-    font-size: 1em;
+    font-size: 1.05em;
     color: #0f172a;
   }}
   .holding-change {{
     font-weight: 700;
-    font-size: 1em;
+    font-size: 1.05em;
   }}
   .holding-meta {{
-    font-size: 0.8em;
+    font-size: 0.88em;
     color: #64748b;
-    margin-bottom: 6px;
+    margin-bottom: 8px;
   }}
   .holding-events {{
-    font-size: 0.8em;
+    font-size: 0.88em;
     color: #475569;
-    padding-left: 8px;
+    padding-left: 10px;
     border-left: 2px solid #e2e8f0;
   }}
   .holding-events div {{
-    margin-bottom: 2px;
+    margin-bottom: 4px;
   }}
 
   /* Steady holdings table */
   .steady-table {{
     width: 100%;
     border-collapse: collapse;
-    font-size: 0.85em;
-    margin-top: 12px;
+    font-size: 0.92em;
+    margin-top: 14px;
   }}
   .steady-table th {{
     text-align: left;
-    font-size: 0.7em;
+    font-size: 0.75em;
     text-transform: uppercase;
     letter-spacing: 0.5px;
     color: #94a3b8;
-    padding: 4px 8px;
+    padding: 6px 10px;
     border-bottom: 1px solid #e2e8f0;
     font-weight: 600;
   }}
   .steady-table td {{
-    padding: 6px 8px;
+    padding: 8px 10px;
     color: #334155;
     border-bottom: 1px solid #f1f5f9;
   }}
@@ -757,18 +871,18 @@ class VerboseFormatter:
     background: #fffbeb;
     border: 1px solid #fde68a;
     border-radius: 8px;
-    padding: 12px 16px;
-    margin-bottom: 8px;
+    padding: 14px 18px;
+    margin-bottom: 10px;
   }}
   .action-label {{
     font-weight: 700;
-    font-size: 0.85em;
+    font-size: 0.92em;
     color: #92400e;
   }}
   .action-reason {{
-    font-size: 0.85em;
+    font-size: 0.92em;
     color: #78350f;
-    margin-top: 2px;
+    margin-top: 4px;
   }}
 
   /* Risk block */
@@ -776,30 +890,30 @@ class VerboseFormatter:
     background: #fef2f2;
     border: 1px solid #fecaca;
     border-radius: 8px;
-    padding: 12px 16px;
-    margin-top: 8px;
+    padding: 14px 18px;
+    margin-top: 10px;
   }}
   .risk-label {{
     font-weight: 600;
-    font-size: 0.75em;
+    font-size: 0.8em;
     text-transform: uppercase;
     color: #991b1b;
-    margin-bottom: 4px;
+    margin-bottom: 6px;
   }}
   .risk-text {{
-    font-size: 0.85em;
+    font-size: 0.92em;
     color: #7f1d1d;
-    line-height: 1.4;
+    line-height: 1.55;
   }}
 
   /* Watchlist */
   .watch-item {{
     display: flex;
     align-items: baseline;
-    gap: 8px;
-    padding: 8px 0;
+    gap: 10px;
+    padding: 10px 0;
     border-bottom: 1px solid #f1f5f9;
-    font-size: 0.85em;
+    font-size: 0.95em;
   }}
   .watch-item:last-child {{
     border-bottom: none;
@@ -818,19 +932,19 @@ class VerboseFormatter:
   .event-item {{
     display: flex;
     align-items: baseline;
-    gap: 8px;
-    padding: 6px 0;
-    font-size: 0.85em;
+    gap: 10px;
+    padding: 8px 0;
+    font-size: 0.95em;
     color: #334155;
   }}
   .event-date {{
     font-weight: 600;
     color: #0f172a;
-    min-width: 60px;
-    font-size: 0.8em;
+    min-width: 64px;
+    font-size: 0.88em;
   }}
   .event-days {{
-    font-size: 0.75em;
+    font-size: 0.82em;
     color: #94a3b8;
     white-space: nowrap;
   }}
@@ -839,9 +953,9 @@ class VerboseFormatter:
   .thesis-row {{
     display: flex;
     align-items: baseline;
-    gap: 8px;
-    padding: 6px 0;
-    font-size: 0.85em;
+    gap: 10px;
+    padding: 8px 0;
+    font-size: 0.95em;
     border-bottom: 1px solid #f1f5f9;
   }}
   .thesis-row:last-child {{
@@ -853,26 +967,26 @@ class VerboseFormatter:
   }}
   .thesis-tickers {{
     color: #64748b;
-    font-size: 0.85em;
+    font-size: 0.92em;
   }}
 
   /* Footer */
   .footer {{
-    padding: 16px 24px;
+    padding: 18px 28px;
     background: #f8fafc;
     border-top: 1px solid #e2e8f0;
-    font-size: 0.75em;
+    font-size: 0.82em;
     color: #94a3b8;
     text-align: center;
   }}
 
   /* Responsive */
   @media (max-width: 480px) {{
-    .header {{ padding: 16px; }}
-    .section {{ padding: 16px; }}
+    .header {{ padding: 20px; }}
+    .section {{ padding: 20px; }}
     .header-stats {{ gap: 12px; }}
-    .stat-value {{ font-size: 1.1em; }}
-    .market-item {{ padding: 8px; }}
+    .stat-value {{ font-size: 1.15em; }}
+    .market-item {{ padding: 10px; }}
   }}
 </style>
 </head>"""
@@ -915,19 +1029,17 @@ class VerboseFormatter:
 
     def _html_what_changed(self) -> str:
         cio = self._get_cio_sections()
-        text = cio.get("what changed today", "")
+        # Try new format first, then old
+        text = cio.get("executive take", "") or cio.get("what changed today", "")
         if not text:
             brief = self.committee_result.get("formatted_brief", "")
             if brief:
-                # Take first meaningful paragraph
                 paras = [p.strip() for p in brief.strip().split("\n\n") if len(p.strip()) > 30]
                 text = paras[0] if paras else ""
         if not text:
             return ""
 
-        # Clean up markdown formatting for HTML
         text = re.sub(r"\*{1,2}(.+?)\*{1,2}", r"<strong>\1</strong>", text)
-        # Convert bullet points
         lines = text.strip().splitlines()
         html_lines = []
         for line in lines:
@@ -940,8 +1052,34 @@ class VerboseFormatter:
 
         return f"""
 <div class="section">
-  <div class="section-title">What Changed Today</div>
+  <div class="section-title">Executive Take</div>
   <div class="section-body">{body}</div>
+</div>"""
+
+    def _html_mandate_breaches(self) -> str:
+        """Render mandate breach warnings as a prominent banner."""
+        actions = self.strategy.get("actions", [])
+        breaches = [a for a in actions if "exceeds max" in (a.get("reason", "") or "").lower()]
+        if not breaches:
+            return ""
+
+        items = []
+        for b in breaches:
+            ticker = _esc(b.get("ticker", ""))
+            reason = _esc(b.get("reason", ""))
+            urgency = b.get("urgency", "low")
+            bg = "#fef2f2" if urgency == "high" else "#fffbeb"
+            border = "#dc2626" if urgency == "high" else "#f59e0b"
+            items.append(f"""
+<div style="background:{bg};border:2px solid {border};border-radius:8px;padding:14px 18px;margin-bottom:8px">
+  <div style="font-weight:700;color:{border};font-size:0.9em">&#9888; MANDATE BREACH &mdash; {ticker}</div>
+  <div style="font-size:0.85em;color:#1e293b;margin-top:4px">{reason}. Action: {_esc(b.get('action', 'TRIM').upper())}.</div>
+</div>""")
+
+        return f"""
+<div class="section" style="padding:16px 24px;background:#fef2f2;border-bottom:2px solid #fecaca">
+  <div class="section-title" style="color:#991b1b">&#9888; Risk Mandate Violations</div>
+  {"".join(items)}
 </div>"""
 
     def _html_market_pulse(self) -> str:
@@ -981,9 +1119,19 @@ class VerboseFormatter:
   </div>
 </div>"""
 
-        # Active theses — only show ones with recent evidence
+        # Active theses — prefer CIO's theme dashboard, fallback to simple status
         theses_html = ""
-        if self.updated_theses:
+        cio = self._get_cio_sections()
+        theme_dashboard_text = cio.get("theme dashboard", "")
+        if theme_dashboard_text:
+            # Use the CIO's evidence-based theme dashboard
+            dashboard_html = self._md_to_html(theme_dashboard_text)
+            theses_html = f"""
+<div style="margin-top:10px;font-size:0.92em;color:#334155">
+  <div style="font-size:0.78em;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;font-weight:600;margin-bottom:10px">Theme Dashboard</div>
+  {dashboard_html}
+</div>"""
+        elif self.updated_theses:
             thesis_items = []
             for t in self.updated_theses:
                 title = _esc(t.get("title", ""))
@@ -1099,8 +1247,8 @@ class VerboseFormatter:
   <tbody>{rows_html}</tbody>
 </table>"""
 
-        movers_label = f'<div style="font-size:0.75em;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;margin-bottom:8px;font-weight:600">Movers</div>' if movers else ""
-        steady_label = f'<div style="font-size:0.75em;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;margin-top:16px;margin-bottom:4px;font-weight:600">Steady</div>' if steady else ""
+        movers_label = f'<div style="font-size:0.82em;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;margin-bottom:10px;font-weight:600">Movers</div>' if movers else ""
+        steady_label = f'<div style="font-size:0.82em;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;margin-top:18px;margin-bottom:6px;font-weight:600">Steady</div>' if steady else ""
 
         return f"""
 <div class="section">
@@ -1113,6 +1261,8 @@ class VerboseFormatter:
 
     def _html_actions_risks(self) -> str:
         actions = self.strategy.get("actions", [])
+        # Filter out mandate breaches (shown in dedicated banner)
+        actions = [a for a in actions if "exceeds max" not in (a.get("reason", "") or "").lower()]
         risk = self.committee_result.get("risk_report", {})
         top_risk = risk.get("top_risk", "") if isinstance(risk, dict) else ""
         risk_score = risk.get("risk_score_portfolio") if isinstance(risk, dict) else None
@@ -1188,7 +1338,7 @@ class VerboseFormatter:
                 ticker_html = ""
                 if tickers:
                     pills = " ".join(
-                        f'<span style="background:#e0e7ff;color:#3730a3;padding:1px 5px;border-radius:4px;font-size:0.7em;font-weight:600">{_esc(t)}</span>'
+                        f'<span style="background:#e0e7ff;color:#3730a3;padding:2px 6px;border-radius:4px;font-size:0.78em;font-weight:600">{_esc(t)}</span>'
                         for t in tickers[:3]
                     )
                     ticker_html = f'<span style="margin-left:6px">{pills}</span>'
@@ -1196,14 +1346,16 @@ class VerboseFormatter:
                 if urgency == "high":
                     urgency_dot = '<span style="color:#dc2626;margin-right:4px" title="High urgency">&#9679;</span>'
                 sent_color = _color(sentiment)
+                url = a.get("url", "")
+                title_html = f'<a href="{url}" style="color:#1e293b;text-decoration:none;border-bottom:1px solid #cbd5e1">{title}</a>' if url else f'<span style="color:#1e293b">{title}</span>'
                 items.append(f"""
-<div style="padding:6px 0;border-bottom:1px solid #f1f5f9;font-size:0.85em">
-  {urgency_dot}<span style="color:#1e293b">{title}</span>{ticker_html}
-  <span style="color:#94a3b8;font-size:0.85em;margin-left:6px">{source}</span>
+<div style="padding:7px 0;border-bottom:1px solid #f1f5f9;font-size:0.92em">
+  {urgency_dot}{title_html}{ticker_html}
+  <span style="color:#94a3b8;font-size:0.88em;margin-left:6px">{source}</span>
 </div>""")
             blocks.append(f"""
-<div style="margin-bottom:14px">
-  <div style="font-size:0.7em;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;font-weight:600;margin-bottom:6px">Top Headlines</div>
+<div style="margin-bottom:16px">
+  <div style="font-size:0.78em;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;font-weight:600;margin-bottom:8px">Top Headlines</div>
   {"".join(items)}
 </div>""")
 
@@ -1224,16 +1376,20 @@ class VerboseFormatter:
                     sent_val = 0
                 sent_color = _color(sent_val)
                 sent_str = f"{sent_val:+.1f}" if isinstance(sent_val, float) else str(sentiment)
+                # Build Reddit search URL from first subreddit
+                first_sub = subs.split(",")[0].strip() if isinstance(subs, str) else (subs[0] if isinstance(subs, list) and subs else "")
+                reddit_url = f"https://reddit.com/r/{first_sub}/search?q={ticker}&sort=top&t=day" if first_sub and ticker else ""
+                ticker_link = f'<a href="{reddit_url}" style="font-weight:700;color:#0f172a;text-decoration:none;border-bottom:1px solid #cbd5e1;min-width:44px">{ticker}</a>' if reddit_url else f'<span style="font-weight:700;color:#0f172a;min-width:44px">{ticker}</span>'
                 items.append(f"""
-<div style="display:flex;align-items:baseline;gap:8px;padding:5px 0;border-bottom:1px solid #f1f5f9;font-size:0.85em">
-  <span style="font-weight:700;color:#0f172a;min-width:44px">{ticker}</span>
+<div style="display:flex;align-items:baseline;gap:10px;padding:6px 0;border-bottom:1px solid #f1f5f9;font-size:0.92em">
+  {ticker_link}
   <span style="color:{sent_color};font-weight:600;min-width:36px">{sent_str}</span>
   <span style="color:#64748b">{mentions} mentions</span>
-  <span style="color:#94a3b8;font-size:0.85em">r/{_esc(str(subs))}</span>
+  <span style="color:#94a3b8;font-size:0.88em">r/{_esc(str(subs))}</span>
 </div>""")
             blocks.append(f"""
-<div style="margin-bottom:14px">
-  <div style="font-size:0.7em;text-transform:uppercase;letter-spacing:1px;color:#f97316;font-weight:600;margin-bottom:6px">&#128172; Reddit</div>
+<div style="margin-bottom:16px">
+  <div style="font-size:0.78em;text-transform:uppercase;letter-spacing:1px;color:#f97316;font-weight:600;margin-bottom:8px">&#128172; Reddit</div>
   {"".join(items)}
 </div>""")
 
@@ -1243,24 +1399,26 @@ class VerboseFormatter:
             for s in self.substack_signals[:4]:
                 title = _esc(s.get("title", ""))
                 summary = _esc(s.get("summary", "")[:120])
+                url = s.get("url", "")
                 tickers = s.get("tickers", s.get("affected_tickers", []))
                 ticker_html = ""
                 if tickers:
                     pills = " ".join(
-                        f'<span style="background:#fce7f3;color:#9d174d;padding:1px 5px;border-radius:4px;font-size:0.7em;font-weight:600">{_esc(t)}</span>'
+                        f'<span style="background:#fce7f3;color:#9d174d;padding:2px 6px;border-radius:4px;font-size:0.78em;font-weight:600">{_esc(t)}</span>'
                         for t in tickers[:3]
                     )
                     ticker_html = f'<div style="margin-top:2px">{pills}</div>'
-                summary_html = f'<div style="color:#64748b;font-size:0.85em;margin-top:2px">{summary}</div>' if summary else ""
+                summary_html = f'<div style="color:#64748b;font-size:0.88em;margin-top:3px">{summary}</div>' if summary else ""
+                title_html = f'<a href="{url}" style="color:#1e293b;font-weight:500;text-decoration:none;border-bottom:1px solid #cbd5e1">{title}</a>' if url else f'<span style="color:#1e293b;font-weight:500">{title}</span>'
                 items.append(f"""
-<div style="padding:6px 0;border-bottom:1px solid #f1f5f9;font-size:0.85em">
-  <div style="color:#1e293b;font-weight:500">{title}</div>
+<div style="padding:7px 0;border-bottom:1px solid #f1f5f9;font-size:0.92em">
+  <div>{title_html}</div>
   {summary_html}
   {ticker_html}
 </div>""")
             blocks.append(f"""
-<div style="margin-bottom:14px">
-  <div style="font-size:0.7em;text-transform:uppercase;letter-spacing:1px;color:#8b5cf6;font-weight:600;margin-bottom:6px">&#128220; Substack</div>
+<div style="margin-bottom:16px">
+  <div style="font-size:0.78em;text-transform:uppercase;letter-spacing:1px;color:#8b5cf6;font-weight:600;margin-bottom:8px">&#128220; Substack</div>
   {"".join(items)}
 </div>""")
 
@@ -1270,6 +1428,7 @@ class VerboseFormatter:
             for y in self.youtube_signals[:3]:
                 title = _esc(y.get("title", ""))
                 channel = _esc(y.get("channel", y.get("author", "")))
+                url = y.get("url", "")
                 views = y.get("views", y.get("score", 0))
                 tickers = y.get("tickers", y.get("affected_tickers", []))
                 view_str = ""
@@ -1283,14 +1442,15 @@ class VerboseFormatter:
                 ticker_html = ""
                 if tickers:
                     ticker_html = f' <span style="color:#94a3b8;font-size:0.85em">[{", ".join(tickers[:3])}]</span>'
+                title_html = f'<a href="{url}" style="color:#1e293b;text-decoration:none;border-bottom:1px solid #cbd5e1">{title}</a>' if url else f'<span style="color:#1e293b">{title}</span>'
                 items.append(f"""
-<div style="padding:5px 0;border-bottom:1px solid #f1f5f9;font-size:0.85em">
-  <span style="color:#1e293b">{title}</span>{ticker_html}
-  <div style="color:#94a3b8;font-size:0.85em">{channel}{(' · ' + view_str) if view_str else ''}</div>
+<div style="padding:6px 0;border-bottom:1px solid #f1f5f9;font-size:0.92em">
+  {title_html}{ticker_html}
+  <div style="color:#94a3b8;font-size:0.88em">{channel}{(' · ' + view_str) if view_str else ''}</div>
 </div>""")
             blocks.append(f"""
-<div style="margin-bottom:14px">
-  <div style="font-size:0.7em;text-transform:uppercase;letter-spacing:1px;color:#dc2626;font-weight:600;margin-bottom:6px">&#9654; YouTube</div>
+<div style="margin-bottom:16px">
+  <div style="font-size:0.78em;text-transform:uppercase;letter-spacing:1px;color:#dc2626;font-weight:600;margin-bottom:8px">&#9654; YouTube</div>
   {"".join(items)}
 </div>""")
 
@@ -1357,9 +1517,9 @@ class VerboseFormatter:
 
             badges = []
             if insider:
-                badges.append('<span style="background:#dcfce7;color:#166534;padding:2px 6px;border-radius:8px;font-size:0.7em;font-weight:600">INSIDER BUYING</span>')
+                badges.append('<span style="background:#dcfce7;color:#166534;padding:3px 8px;border-radius:8px;font-size:0.78em;font-weight:600">INSIDER BUYING</span>')
             if count and count > 0:
-                badges.append(f'<span style="background:#e0e7ff;color:#3730a3;padding:2px 6px;border-radius:8px;font-size:0.7em;font-weight:600">{count} SUPER</span>')
+                badges.append(f'<span style="background:#e0e7ff;color:#3730a3;padding:3px 8px;border-radius:8px;font-size:0.78em;font-weight:600">{count} SUPER</span>')
 
             detail_parts = []
             if supers:
@@ -1394,6 +1554,26 @@ class VerboseFormatter:
   {"".join(items)}
 </div>"""
 
+    @staticmethod
+    def _parse_evidence_label(raw: str) -> str:
+        """Extract a short human label from PASS/FAIL evidence strings.
+
+        Input:  'PASS Crowd: Reddit sentiment +0.33'
+        Output: 'Crowd'
+        Input:  'FAIL Valuation: FAIL: CAGR 16.1% < 25.0% minimum'
+        Output: 'Valuation'
+        """
+        text = str(raw)
+        # Strip leading PASS/FAIL
+        for prefix in ("PASS ", "FAIL "):
+            if text.startswith(prefix):
+                text = text[len(prefix):]
+                break
+        # Take text before first colon as the category
+        if ":" in text:
+            return text.split(":")[0].strip()
+        return text[:20].strip()
+
     def _html_watchlist(self) -> str:
         conviction = self.conviction_result.get("current_list", [])
         moonshots = self.moonshot_result.get("current_list", [])
@@ -1411,32 +1591,42 @@ class VerboseFormatter:
             pros = c.get("pros", [])
             cons = c.get("cons", [])
 
-            # Evidence tags
+            # Build compact evidence scorecard (✓ Category / ✗ Category)
             evidence_html = ""
             if pros or cons:
-                tags = []
-                for p in (pros if isinstance(pros, list) else [])[:4]:
-                    p_str = str(p)
-                    tags.append(f'<span style="background:#dcfce7;color:#166534;padding:1px 6px;border-radius:4px;font-size:0.7em;margin:1px">{_esc(p_str)}</span>')
-                for co in (cons if isinstance(cons, list) else [])[:3]:
-                    c_str = str(co)
-                    tags.append(f'<span style="background:#fecaca;color:#991b1b;padding:1px 6px;border-radius:4px;font-size:0.7em;margin:1px">{_esc(c_str)}</span>')
-                evidence_html = f'<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:2px">{"".join(tags)}</div>'
+                items = []
+                for p in (pros if isinstance(pros, list) else []):
+                    label = self._parse_evidence_label(p)
+                    items.append(
+                        f'<span style="color:#16a34a;font-size:0.82em;margin-right:10px">'
+                        f'&#10003; {_esc(label)}</span>'
+                    )
+                for co in (cons if isinstance(cons, list) else []):
+                    label = self._parse_evidence_label(co)
+                    items.append(
+                        f'<span style="color:#94a3b8;font-size:0.82em;margin-right:10px">'
+                        f'&#10007; {_esc(label)}</span>'
+                    )
+                evidence_html = (
+                    f'<div style="margin-top:8px;padding:8px 12px;background:#f1f5f9;'
+                    f'border-radius:6px;display:flex;flex-wrap:wrap;gap:2px">'
+                    f'{"".join(items)}</div>'
+                )
 
             # Cross-reference intel
             intel_html = self._build_intel_html(ticker)
 
             # Source line
-            source_html = f'<div style="font-size:0.75em;color:#94a3b8;margin-top:4px">Source: {source}</div>' if source else ""
+            source_html = f'<div style="font-size:0.82em;color:#94a3b8;margin-top:6px">Source: {source}</div>' if source else ""
 
             all_cards.append(f"""
-<div style="background:#f8fafc;border-radius:8px;padding:14px 16px;margin-bottom:10px;border-left:4px solid #2563eb">
-  <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:4px">
-    <span style="font-weight:700;font-size:1em;color:#0f172a">{_esc(ticker)}</span>
+<div style="background:#f8fafc;border-radius:8px;padding:18px 20px;margin-bottom:12px;border-left:4px solid #2563eb">
+  <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:6px">
+    <span style="font-weight:700;font-size:1.05em;color:#0f172a">{_esc(ticker)}</span>
     {_conviction_pill(conv)}
-    <span style="font-size:0.75em;color:#94a3b8">Week {weeks}</span>
+    <span style="font-size:0.82em;color:#94a3b8">Week {weeks}</span>
   </div>
-  <div style="font-size:0.85em;color:#334155;margin-bottom:4px">{thesis}</div>
+  <div style="font-size:0.95em;color:#334155;line-height:1.55;margin-bottom:4px">{thesis}</div>
   {source_html}
   {evidence_html}
   {intel_html}
@@ -1449,28 +1639,43 @@ class VerboseFormatter:
             downside = _esc(m.get("downside_case", ""))
             milestone = _esc(m.get("key_milestone", ""))
 
-            # Upside/downside row
+            # Upside/downside as two clean rows
             scenarios_html = ""
-            scenario_parts = []
+            rows = []
             if upside:
-                scenario_parts.append(f'<span style="color:#16a34a">&#9650; {upside}</span>')
+                rows.append(
+                    f'<div style="padding:4px 0">'
+                    f'<span style="color:#16a34a;font-weight:600">&#9650; Bull:</span> '
+                    f'<span style="color:#334155">{upside}</span></div>'
+                )
             if downside:
-                scenario_parts.append(f'<span style="color:#dc2626">&#9660; {downside}</span>')
-            if scenario_parts:
-                scenarios_html = f'<div style="font-size:0.8em;margin-top:4px">{" &nbsp;|&nbsp; ".join(scenario_parts)}</div>'
+                rows.append(
+                    f'<div style="padding:4px 0">'
+                    f'<span style="color:#dc2626;font-weight:600">&#9660; Bear:</span> '
+                    f'<span style="color:#334155">{downside}</span></div>'
+                )
+            if rows:
+                scenarios_html = (
+                    f'<div style="font-size:0.9em;margin-top:8px;padding:10px 14px;'
+                    f'background:rgba(255,255,255,0.6);border-radius:6px;'
+                    f'border:1px solid #e9e5f5">{"".join(rows)}</div>'
+                )
 
-            milestone_html = f'<div style="font-size:0.75em;color:#94a3b8;margin-top:4px">Milestone: {milestone}</div>' if milestone else ""
+            milestone_html = (
+                f'<div style="font-size:0.85em;color:#64748b;margin-top:8px">'
+                f'<span style="font-weight:600;color:#5b21b6">Key milestone:</span> {milestone}</div>'
+            ) if milestone else ""
 
             # Cross-reference intel
             intel_html = self._build_intel_html(ticker)
 
             all_cards.append(f"""
-<div style="background:#faf5ff;border-radius:8px;padding:14px 16px;margin-bottom:10px;border-left:4px solid #7c3aed">
-  <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:4px">
-    <span style="font-weight:700;font-size:1em;color:#0f172a">{_esc(ticker)}</span>
-    <span style="background:#ede9fe;color:#5b21b6;padding:2px 6px;border-radius:8px;font-size:0.7em;font-weight:600">MOONSHOT</span>
+<div style="background:#faf5ff;border-radius:8px;padding:18px 20px;margin-bottom:12px;border-left:4px solid #7c3aed">
+  <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:6px">
+    <span style="font-weight:700;font-size:1.05em;color:#0f172a">{_esc(ticker)}</span>
+    <span style="background:#ede9fe;color:#5b21b6;padding:3px 8px;border-radius:8px;font-size:0.75em;font-weight:600">MOONSHOT</span>
   </div>
-  <div style="font-size:0.85em;color:#334155;margin-bottom:2px">{thesis}</div>
+  <div style="font-size:0.95em;color:#334155;line-height:1.55;margin-bottom:4px">{thesis}</div>
   {scenarios_html}
   {milestone_html}
   {intel_html}
@@ -1499,11 +1704,14 @@ class VerboseFormatter:
                 except (ValueError, TypeError):
                     sent_color = "#64748b"
                     sent_str = str(sent)
+                first_sub = str(sub).split(",")[0].strip() if sub else ""
+                reddit_url = f"https://reddit.com/r/{first_sub}/search?q={ticker}&sort=top&t=day" if first_sub else ""
+                sub_html = f' <a href="{reddit_url}" style="color:#94a3b8;text-decoration:none;border-bottom:1px solid #e2e8f0">r/{_esc(str(sub))}</a>' if reddit_url else (f' <span style="color:#94a3b8">r/{_esc(str(sub))}</span>' if sub else "")
                 intel_items.append(
                     f'<span style="color:#f97316">&#128172;</span> '
                     f'<span style="color:{sent_color};font-weight:600">{sent_str}</span> '
                     f'sentiment, {mentions} mentions'
-                    + (f' <span style="color:#94a3b8">r/{_esc(str(sub))}</span>' if sub else "")
+                    + sub_html
                 )
                 break
 
@@ -1513,7 +1721,9 @@ class VerboseFormatter:
             if ticker.upper() in tickers:
                 title = _esc(s.get("title", ""))
                 summary = _esc(s.get("summary", "")[:80])
-                line = f'<span style="color:#8b5cf6">&#128220;</span> {title}'
+                url = s.get("url", "")
+                title_link = f'<a href="{url}" style="color:inherit;text-decoration:none;border-bottom:1px solid #cbd5e1">{title}</a>' if url else title
+                line = f'<span style="color:#8b5cf6">&#128220;</span> {title_link}'
                 if summary:
                     line += f' <span style="color:#94a3b8">— {summary}</span>'
                 intel_items.append(line)
@@ -1525,7 +1735,9 @@ class VerboseFormatter:
             if ticker.upper() in ytickers:
                 title = _esc(y.get("title", ""))
                 channel = _esc(y.get("channel", y.get("author", "")))
-                intel_items.append(f'<span style="color:#dc2626">&#9654;</span> {title} <span style="color:#94a3b8">— {channel}</span>')
+                url = y.get("url", "")
+                title_link = f'<a href="{url}" style="color:inherit;text-decoration:none;border-bottom:1px solid #cbd5e1">{title}</a>' if url else title
+                intel_items.append(f'<span style="color:#dc2626">&#9654;</span> {title_link} <span style="color:#94a3b8">— {channel}</span>')
                 break
 
         # Smart money
@@ -1572,11 +1784,251 @@ class VerboseFormatter:
         if not intel_items:
             return ""
 
-        rows = "\n".join(f'<div style="padding:2px 0">{item}</div>' for item in intel_items)
+        rows = "\n".join(f'<div style="padding:3px 0">{item}</div>' for item in intel_items)
         return f"""
-<div style="margin-top:8px;padding:8px 10px;background:rgba(255,255,255,0.7);border-radius:6px;font-size:0.8em;color:#475569;border:1px solid #e2e8f0">
+<div style="margin-top:10px;padding:10px 14px;background:rgba(255,255,255,0.7);border-radius:6px;font-size:0.88em;color:#475569;border:1px solid #e2e8f0">
   {rows}
 </div>"""
+
+    def _html_deep_research(self) -> str:
+        """Render deep research blocks as two-tier HTML cards."""
+        if not self._deep_research_blocks:
+            return ""
+
+        full_cards = []
+        summary_cards = []
+
+        for ticker, block_data in self._deep_research_blocks.items():
+            content = block_data.get("content", "") if isinstance(block_data, dict) else str(block_data)
+            tier = block_data.get("tier", "full") if isinstance(block_data, dict) else "full"
+            if not content:
+                continue
+
+            if tier == "summary":
+                summary_cards.append(self._render_summary_card_html(ticker, content))
+            else:
+                full_cards.append(self._render_research_block_html(ticker, content))
+
+        parts = []
+        if full_cards:
+            parts.append(f"""
+<div class="section" style="padding:20px 24px">
+  <div class="section-title">Deep Research</div>
+  {"".join(full_cards)}
+</div>""")
+
+        if summary_cards:
+            parts.append(f"""
+<div class="section" style="padding:20px 24px">
+  <div class="section-title">Quick Takes</div>
+  <div style="display:grid;gap:8px">{"".join(summary_cards)}</div>
+</div>""")
+
+        return "\n".join(parts) if parts else ""
+
+    def _render_summary_card_html(self, ticker: str, content: str) -> str:
+        """Render a compact summary card for a ticker."""
+        report_map = {r.get("ticker"): r for r in self.holdings_reports}
+        report = report_map.get(ticker, {})
+        chg = report.get("change_pct")
+        price = report.get("price")
+        pct = report.get("position_pct")
+
+        chg_html = ""
+        if chg is not None:
+            chg_color = _color(chg)
+            chg_html = f'<span style="color:{chg_color};font-weight:700;font-size:0.9em;margin-left:6px">{chg:+.1f}%</span>'
+
+        price_html = f'<span style="color:#64748b;font-size:0.85em;margin-left:6px">${price}</span>' if price else ""
+        pct_html = f'<span style="color:#94a3b8;font-size:0.75em;margin-left:6px">{pct:.1f}%</span>' if pct is not None else ""
+
+        # Extract stance from content if present
+        stance = ""
+        stance_match = re.search(r'Stance:\s*(Add|Hold|Trim|Avoid|Watch)', content, re.IGNORECASE)
+        if stance_match:
+            stance = stance_match.group(1).upper()
+        stance_pill = self._stance_pill(stance) if stance else ""
+
+        # Clean content for display — remove header lines and stance line
+        content_clean = re.sub(r'##.*?\n', '', content).strip()
+        content_clean = re.sub(r'Stance:\s*(Add|Hold|Trim|Avoid|Watch).*', '', content_clean, flags=re.IGNORECASE).strip()
+        # Convert markdown bold/italic
+        content_clean = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', content_clean)
+        content_clean = re.sub(r'\*(.+?)\*', r'<em>\1</em>', content_clean)
+        # Truncate if too long
+        if len(content_clean) > 400:
+            content_clean = content_clean[:400].rsplit(' ', 1)[0] + '…'
+
+        return f"""
+<div style="background:#f8fafc;border-radius:8px;padding:12px 16px;border-left:3px solid #e2e8f0">
+  <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">
+    <div>
+      <span style="font-weight:700;font-size:0.95em">{_esc(ticker)}</span>{price_html}{chg_html}{pct_html}
+    </div>
+    {stance_pill}
+  </div>
+  <div style="font-size:0.85em;color:#334155;line-height:1.5">{content_clean}</div>
+</div>"""
+
+    @staticmethod
+    def _stance_pill(stance: str) -> str:
+        """Render a colored pill for an action stance."""
+        colors = {
+            "ADD": ("#dcfce7", "#166534"),
+            "HOLD": ("#dbeafe", "#1e40af"),
+            "TRIM": ("#fed7aa", "#9a3412"),
+            "AVOID": ("#fecaca", "#991b1b"),
+            "WATCH": ("#fef3c7", "#92400e"),
+        }
+        bg, fg = colors.get(stance.upper(), ("#e2e8f0", "#475569"))
+        return f'<span style="background:{bg};color:{fg};padding:3px 9px;border-radius:12px;font-size:0.8em;font-weight:600">{_esc(stance)}</span>'
+
+    def _render_research_block_html(self, ticker: str, block_text: str) -> str:
+        """Render a full deep research block as an HTML card.
+
+        Detects format: if >= 3 subsection headers (### ), renders with sectioned boxes.
+        Otherwise renders as flowing prose.
+        """
+        header_count = len(re.findall(r'^###\s', block_text, re.MULTILINE))
+
+        if header_count >= 3:
+            body_html = self._render_sectioned_body(block_text)
+        else:
+            body_html = self._render_prose_body(block_text)
+
+        # Get position info for card header
+        report_map = {r.get("ticker"): r for r in self.holdings_reports}
+        report = report_map.get(ticker, {})
+        chg = report.get("change_pct")
+        price = report.get("price")
+        pct = report.get("position_pct")
+        meta_parts = []
+        if price is not None:
+            meta_parts.append(f"${price}")
+        if chg is not None:
+            meta_parts.append(f"{chg:+.1f}%")
+        if pct is not None:
+            meta_parts.append(f"{pct:.1f}% of portfolio")
+        meta_str = " · ".join(meta_parts)
+
+        return f"""
+<div style="margin-bottom:20px;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden">
+  <div style="background:linear-gradient(135deg,#0f172a,#1e3a5f);padding:14px 18px;color:#fff">
+    <span style="font-weight:700;font-size:1.1em">{_esc(ticker)}</span>
+    <span style="color:#94a3b8;font-size:0.85em;margin-left:10px">{_esc(meta_str)}</span>
+  </div>
+  <div style="padding:14px 18px">
+    {body_html}
+  </div>
+</div>"""
+
+    def _render_sectioned_body(self, block_text: str) -> str:
+        """Render research block body as bordered subsection boxes (old 10-section format)."""
+        subsections: list[tuple[str, str]] = []
+        current_title = ""
+        current_lines: list[str] = []
+
+        for line in block_text.strip().splitlines():
+            stripped = line.strip()
+            if stripped.startswith("### "):
+                if current_title or current_lines:
+                    subsections.append((current_title, "\n".join(current_lines).strip()))
+                current_title = stripped[4:].strip()
+                current_title = re.sub(r'^\d+\.\s*', '', current_title)
+                current_lines = []
+            else:
+                current_lines.append(line)
+        if current_title or current_lines:
+            subsections.append((current_title, "\n".join(current_lines).strip()))
+
+        sections_html_parts = []
+        for title, content in subsections:
+            if not content.strip():
+                continue
+            content_html = self._md_to_html(content)
+            title_html = _esc(title) if title else ""
+
+            border_color = "#e2e8f0"
+            title_lower = title.lower()
+            if "thesis scorecard" in title_lower or "what we could be wrong" in title_lower:
+                border_color = "#2563eb"
+            elif "actionability" in title_lower or "action" in title_lower and "catalyst" in title_lower:
+                border_color = "#16a34a"
+            elif "bull" in title_lower and "bear" in title_lower:
+                border_color = "#7c3aed"
+            elif "key question" in title_lower:
+                border_color = "#0ea5e9"
+
+            sections_html_parts.append(f"""
+<div style="margin-bottom:14px;padding:12px 16px;background:#f8fafc;border-radius:6px;border-left:3px solid {border_color}">
+  <div style="font-size:0.82em;text-transform:uppercase;letter-spacing:0.5px;color:#64748b;font-weight:600;margin-bottom:8px">{title_html}</div>
+  <div style="font-size:0.95em;color:#334155;line-height:1.6">{content_html}</div>
+</div>""")
+
+        return "".join(sections_html_parts)
+
+    def _render_prose_body(self, block_text: str) -> str:
+        """Render research block body as flowing prose paragraphs (new format)."""
+        # Split on ### headers but render as light section dividers, not boxes
+        parts = []
+        current_title = ""
+        current_lines: list[str] = []
+
+        for line in block_text.strip().splitlines():
+            stripped = line.strip()
+            if stripped.startswith("### "):
+                if current_lines:
+                    content = "\n".join(current_lines).strip()
+                    if content:
+                        content_html = self._md_to_html(content)
+                        if current_title:
+                            parts.append(f"""
+<div style="margin-bottom:16px">
+  <div style="font-size:0.85em;font-weight:700;color:#0f172a;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;padding-bottom:5px;border-bottom:1px solid #e2e8f0">{_esc(current_title)}</div>
+  <div style="font-size:0.95em;color:#334155;line-height:1.65">{content_html}</div>
+</div>""")
+                        else:
+                            parts.append(f'<div style="font-size:0.95em;color:#334155;line-height:1.65;margin-bottom:16px">{content_html}</div>')
+                current_title = stripped[4:].strip()
+                current_title = re.sub(r'^\d+\.\s*', '', current_title)
+                current_lines = []
+            else:
+                current_lines.append(line)
+
+        if current_lines:
+            content = "\n".join(current_lines).strip()
+            if content:
+                content_html = self._md_to_html(content)
+                if current_title:
+                    parts.append(f"""
+<div style="margin-bottom:16px">
+  <div style="font-size:0.85em;font-weight:700;color:#0f172a;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;padding-bottom:5px;border-bottom:1px solid #e2e8f0">{_esc(current_title)}</div>
+  <div style="font-size:0.95em;color:#334155;line-height:1.65">{content_html}</div>
+</div>""")
+                else:
+                    parts.append(f'<div style="font-size:0.95em;color:#334155;line-height:1.65;margin-bottom:16px">{content_html}</div>')
+
+        return "".join(parts) if parts else self._md_to_html(block_text)
+
+    def _md_to_html(self, text: str) -> str:
+        """Convert simple markdown to HTML for research blocks."""
+        # Bold
+        text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
+        text = re.sub(r'__(.+?)__', r'<strong>\1</strong>', text)
+        # Italic
+        text = re.sub(r'\*(.+?)\*', r'<em>\1</em>', text)
+
+        lines = text.strip().splitlines()
+        html_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                html_lines.append("<br>")
+            elif stripped.startswith("- "):
+                html_lines.append(f'<div style="padding:3px 0 3px 16px">• {stripped[2:]}</div>')
+            else:
+                html_lines.append(f"<div style='margin-bottom:4px'>{stripped}</div>")
+        return "\n".join(html_lines)
 
     def _html_upcoming(self) -> str:
         catalysts = self.catalyst_data.get("catalysts", [])
@@ -1630,11 +2082,13 @@ class VerboseFormatter:
             sources.append("SEC 13F")
         sources.append("Gemini")
         sources_str = " · ".join(sources)
+        citations_html = self.committee_result.get("citations_html", "")
 
         return f"""
 <div class="footer">
   AlphaDesk v2.0 · ${self.daily_cost:.2f} · {self.total_time:.0f}s · {ts}<br>
   {sources_str}
+  {citations_html}
 </div>"""
 
     # ── catalyst helpers ─────────────────────────────────────────

@@ -8,6 +8,7 @@ Scores candidates across four dimensions:
 
 Produces a weighted composite score used to rank candidates for Gemini synthesis.
 """
+from __future__ import annotations
 
 from typing import Any
 

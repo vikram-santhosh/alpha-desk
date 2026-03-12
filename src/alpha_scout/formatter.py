@@ -4,6 +4,7 @@ Produces two sections:
 - Portfolio Recommendations (buy) with conviction badges
 - Watchlist Recommendations (monitor) with conviction badges
 """
+from __future__ import annotations
 
 from typing import Any
 

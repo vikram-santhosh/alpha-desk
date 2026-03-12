@@ -37,8 +37,10 @@ flowchart TD
             GR["Growth Analyst"]
             VA["Value Analyst"]
             RO["Risk Officer"]
+            DR["Deep Research Analyst"]
             SK["Skeptic Agent"]
         end
+        CR["Causal Reasoner"]
         CM["Conviction Manager"]
         MM["Moonshot Manager"]
         ST["Strategy Engine"]
@@ -88,7 +90,8 @@ flowchart TD
     COST -.->|tracks spend| SHIM
 ```
 
-**Typical runtime:** ~3.5 minutes. **Typical cost:** ~$8/run (Gemini 2.5 Pro + Flash).
+**Typical runtime:** morning full ~5 minutes, evening wrap <2 minutes, weekend review <2 minutes.
+**Typical cost:** morning full ~$9-12, evening wrap ~$1-3, weekend review ~$1-2.
 
 ## LLM Backend
 
@@ -112,7 +115,7 @@ AlphaDesk uses **Google Gemini** via an Anthropic-compatible shim (`src/shared/g
 | **YouTube Ear** | Finance video transcripts | Configured YouTube channels | Video summaries, key insights from creators |
 | **Alpha Scout** | Ticker discovery | All agents + screening | Buy/watch recommendations with investment theses |
 | **Portfolio Analyst** | Holdings analysis | yfinance, agent bus signals | Technicals, fundamentals, risk metrics |
-| **Advisor** | Investment synthesis | All of the above + memory | 5-section daily brief with actions |
+| **Advisor** | Investment synthesis | All of the above + memory | 7-section daily brief with deep research blocks |
 
 ### Analyst Committee (inside Advisor)
 
@@ -121,9 +124,35 @@ AlphaDesk uses **Google Gemini** via an Anthropic-compatible shim (`src/shared/g
 | **Growth Analyst** | Revenue acceleration, TAM, competitive moats | Growth scores, catalysts, moat assessment |
 | **Value Analyst** | Valuation, margin of safety, capital allocation | Value scores, regime classification, fair value |
 | **Risk Officer** | Correlation, concentration, drawdown scenarios | Risk flags, max drawdown scenario, correlation warnings |
+| **Deep Research Analyst** | 10-section research note per priority ticker | Thesis scorecards, signal→interpretation chains, bull/bear/base |
+| **Causal Reasoner** | Second-order effects, cross-stock read-throughs | Assumption chains with confidence estimates |
 | **Skeptic Agent** | Adversarial challenge to every recommendation | Confidence modifier, invalidation conditions, base rates |
 | **Delta Engine** | Day-over-day change detection | High/medium/low significance changes |
 | **Catalyst Tracker** | Event calendar (FOMC, CPI, earnings) | Next 30 days of catalysts with impact estimates |
+
+### Deep Research Pipeline
+
+Priority tickers now run through a multi-step research flow rather than a single synthesis call:
+
+1. **Plan** — research tasks are ranked by information density, uncertainty, and conflicting signals
+2. **Gather** — fetch top article bodies, memory context, and related signals
+3. **Analyze** — identify contradictions, second-order effects, and explicit data gaps
+4. **Fill gaps** — resolve missing competitor/fundamental context and pull late-arriving signals
+5. **Synthesize** — produce the final deep research block with citations
+
+This improves the old headlines-only deep research path by letting the system read article bodies, cross-validate evidence, and degrade gracefully if one research step fails.
+
+### CIO Brief Format
+
+The editor/CIO synthesizes all analyst views into a 7-section memo:
+
+1. **Executive Take** — 3-bullet action-oriented summary
+2. **Theme Dashboard** — Evidence-based status (Strengthening/Stable/Weakening/Broken) with confidence scores
+3. **Portfolio Actions** — Specific trades with sizing rationale
+4. **Cross-Asset / Macro Risks** — Correlation, contagion, and tail risk
+5. **Thesis Breakers** — What evidence would invalidate current theses
+6. **Upcoming Catalysts** — Next 7 days with expected impact
+7. **Analyst Consensus & Disagreements** — Where Growth/Value/Risk agree and disagree
 
 ## Quick Start
 
@@ -203,18 +232,37 @@ channels:
 ### 5. First run
 
 ```bash
-# Full morning brief (all agents + synthesis)
-python -m src.shared.morning_brief
+# Auto-select run type from config/schedule
+python run_daily.py --run-type=auto
+
+# Full morning brief
+python run_daily.py --run-type=morning_full
+
+# Evening wrap
+python run_daily.py --run-type=evening_wrap
+
+# Weekend review
+python run_daily.py --run-type=weekend
 
 # Or start the Telegram bot (long-running with daily schedule)
 python -m src.shared.telegram_bot
 ```
 
+## Run Profiles
+
+| Run Type | Intended Time | Scope | Delivery |
+|---|---|---|---|
+| `morning_full` | 07:00 market days | Full 10-step advisor pipeline + analyst committee + verbose report | Telegram + optional email |
+| `evening_wrap` | 19:00 market days | Headlines-only news, closing prices, delta vs morning, Flash delta analyst | Telegram |
+| `weekend` | 10:00 Saturday | Thesis review, run history summary, next-week catalysts | Telegram |
+
+The active schedule lives in `config/advisor.yaml` under `schedule:` and drives both `determine_run_profile()` and the Telegram scheduler fallback.
+
 ## Configuration
 
 | File | Purpose |
 |------|---------|
-| `config/advisor.yaml` | Holdings, macro theses, strategy params, v2 settings |
+| `config/advisor.yaml` | Holdings, macro theses, strategy params, multi-run schedule |
 | `config/portfolio.yaml` | Holdings with shares and cost basis |
 | `config/watchlist.yaml` | Additional tickers to track |
 | `config/scout.yaml` | Alpha Scout screening parameters |
@@ -226,38 +274,34 @@ python -m src.shared.telegram_bot
 
 ## Sample Output
 
+**Telegram brief** (condensed):
 ```
-☀️ ALPHADESK DAILY BRIEF — Mar 01, 2026
+☀️ ALPHADESK DAILY BRIEF — Mar 08, 2026
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-SECTION 1 - WHAT CHANGED TODAY
-Quiet day — VIX at 14.5, 10Y at 4.25%. NVDA up 2.3% on
-continued CapEx guidance from MSFT earnings call. No thesis
-changes.
+💬 TODAY'S TAKE
+  Geopolitical shocks test conviction. MRVL +18% divergence
+  on export control read-through. Trimming META overexposure.
 
-SECTION 2 - ANALYST CONSENSUS & DISAGREEMENTS
-• Growth and Value agree: NVDA remains best risk-reward in semis
-• Risk Officer flags 65% portfolio exposure to AI CapEx narrative
-• Value Analyst says AVGO is stretched at 38x forward P/E
+  • Hold MRVL — thesis strengthening, custom silicon tailwind
+  • Trim META to 15% — mechanical overweight, not conviction change
+  • Monitor 50% "Fed Easing" concentration into CPI Mar 12
 
-SECTION 3 - ACTIONS
-No action. All theses intact.
-
-SECTION 4 - WHAT TO WATCH THIS WEEK
-• FOMC minutes Wednesday — watch for rate cut language
-• NVDA earnings Thursday — CapEx thesis validation
-
-SECTION 5 - PORTFOLIO HEALTH
-Risk score: 42/100. Concentration in semis/AI remains primary concern.
+📊 YOUR PORTFOLIO
+  Total: $2,504 | Today: $-24
+  ⚡ MOVING: META -2.4% | AMZN -2.6% | NVDA -3.0%
+  🟢 MRVL +18.4% (custom silicon beneficiary of export controls)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-AlphaDesk | ~$8.00 today | 3m 36s
+AlphaDesk v2.0 | $7.82 today
 ```
+
+**Email report** includes: full CIO memo, deep research blocks for each priority ticker (10-section structured notes), thesis scorecards with confidence scores, cross-stock read-throughs, and interactive HTML formatting.
 
 ## Cost Estimate
 
 | Mode | Estimated Cost | Notes |
 |------|---------------|-------|
-| Full daily brief | ~$7–10/run | News Desk (46 batches on Flash) is the main driver |
+| Full daily brief | ~$7–10/run | News Desk + deep research analyst are the main drivers |
 | Individual command | ~$0.10–0.50 | Single section (e.g., `/holdings`, `/macro`) |
 | Backtest (5 days) | ~$4–6 | Full pipeline replay with real LLM calls |
 | Backtest (skip committee) | ~$0.10–0.50 | Rule-based engines only, near-zero API cost |
@@ -279,10 +323,10 @@ Default daily cap: **$20** (configurable via `DAILY_COST_CAP` in `.env`). When e
 | Phase 1 | Street Ear + News Desk + Substack Ear + YouTube Ear (parallel) | ~135s |
 | Phase 2 | Alpha Scout | ~20s |
 | Phase 3 | Portfolio Analyst | ~15s |
-| Phase 4 | Advisor synthesis | ~25s |
-| **Total** | | **~3–4 minutes** |
+| Phase 4 | Advisor synthesis + deep research | ~100s |
+| **Total** | | **~5 minutes** |
 
-**News Desk is the bottleneck.** It splits articles into batches of 5 and calls Gemini 2.5 Flash concurrently (up to 10 workers). Each Flash call takes ~3s; with 46 batches and 10 workers that's ~5 rounds. Pro-tier synthesis calls take ~25s each due to the mandatory thinking phase.
+**News Desk and deep research are the bottlenecks.** News Desk splits articles into batches of 5 and calls Gemini 2.5 Flash concurrently (up to 10 workers). Deep research produces structured 10-section notes for up to 6 tickers in a single ~8000-token Pro call. The causal reasoner and gap resolver run in parallel with deep research.
 
 ## Telegram Commands
 
@@ -316,6 +360,20 @@ Default daily cap: **$20** (configurable via `DAILY_COST_CAP` in `.env`). When e
 | `/scorecard` | Recommendation track record |
 | `/retro` | Weekly retrospective & self-assessment |
 | `/report` | Latest verbose report file path |
+| `/runs` | Recent run history (type, cost, duration) |
+
+### Feedback
+
+| Command | Description |
+|---------|-------------|
+| `/rate` | Rate today's brief (great/good/ok/bad) |
+| `/feedback` | Free-text feedback for the AI |
+| `/prefer` | Set analysis preferences |
+| `/missed` | Report a missed signal |
+
+### Chat
+
+Type any question (without `/`) to ask about today's brief — the AI has full context of the daily analysis and can answer follow-up questions.
 
 ### System
 
@@ -338,12 +396,22 @@ alphadesk/
 │   ├── youtube_channels.yaml   # YouTube channels for YouTube Ear
 │   └── substack_feeds.yaml     # Substack RSS feeds
 ├── src/
-│   ├── advisor/                # Investment advisor (24 modules)
-│   │   ├── main.py             # Pipeline orchestrator
+│   ├── advisor/                # Investment advisor (30 modules)
+│   │   ├── main.py             # Public advisor entrypoint
+│   │   ├── run_orchestrator.py # Morning/evening/weekend execution router
+│   │   ├── run_profile.py      # Schedule-driven run classification
 │   │   ├── memory.py           # SQLite persistent memory
 │   │   ├── formatter.py        # Telegram output formatter
 │   │   ├── verbose_formatter.py # Full investment memo generator
-│   │   ├── analyst_committee.py # Growth + Value + Risk + CIO synthesis
+│   │   ├── analyst_committee.py # Growth + Value + Risk + Deep Research + CIO synthesis
+│   │   ├── research_planner.py # Planner for multi-step deep research
+│   │   ├── deep_researcher.py  # Iterative search/fetch/analyze/synthesize research engine
+│   │   ├── causal_reasoner.py  # Second-order effects & cross-stock read-throughs
+│   │   ├── gap_resolver.py     # Resolves data gaps identified by analysts
+│   │   ├── event_detector.py   # LLM-powered event extraction from news
+│   │   ├── reasoning_journal.py # Tracks reasoning chains for audit trail
+│   │   ├── chat_session.py     # Telegram Q&A session with brief context
+│   │   ├── feedback_manager.py # User feedback collection and preference learning
 │   │   ├── skeptic_agent.py    # Adversarial recommendation testing
 │   │   ├── delta_engine.py     # Day-over-day change detection
 │   │   ├── catalyst_tracker.py # Event calendar (FOMC, CPI, earnings)
@@ -368,9 +436,13 @@ alphadesk/
 │   ├── report/                 # Report delivery CLI
 │   ├── shared/                 # Cross-agent infrastructure
 │   │   ├── agent_bus.py        # SQLite pub/sub for inter-agent signals
+│   │   ├── agent_decorator.py  # Shared budget/timing/JSON extraction wrapper
+│   │   ├── context_manager.py  # Priority-aware prompt truncation
+│   │   ├── citations.py        # URL/source citation registry
 │   │   ├── gemini_compat.py    # Anthropic→Gemini compatibility shim
 │   │   ├── config_loader.py    # YAML config loading
 │   │   ├── cost_tracker.py     # API cost tracking with budget cap
+│   │   ├── prompt_loader.py    # External prompt template loader
 │   │   ├── morning_brief.py    # Primary pipeline orchestrator
 │   │   ├── telegram_bot.py     # Bot commands + scheduling
 │   │   ├── email_reporter.py   # SMTP email delivery
@@ -381,6 +453,8 @@ alphadesk/
 │       ├── logger.py           # Structured logging
 │       └── cleanup.py          # Data cleanup utilities
 ├── tests/
+├── prompts/
+│   └── agents/                 # Externalized prompts for committee/reasoner/delta analyst
 ├── Dockerfile
 ├── docker-compose.yaml
 ├── requirements.txt
@@ -409,7 +483,7 @@ alphadesk/
 
 ### Option A: Telegram bot (recommended)
 
-Fires the full morning briefing daily at 07:00, delivers to Telegram:
+Reads `config/advisor.yaml` and registers all configured run types locally:
 
 ```bash
 python -m src.shared.telegram_bot
@@ -421,7 +495,73 @@ python -m src.shared.telegram_bot
 docker compose up -d
 ```
 
-### Option C: systemd (Linux)
+### Option C: Cloud Run Job + Cloud Scheduler
+
+`run_daily.py` is the production entrypoint for batch execution. It:
+
+1. syncs SQLite databases from `/app/data` to `/tmp/data`
+2. runs the requested profile
+3. syncs updated databases back to `/app/data`
+4. syncs generated reports between local `reports/` and `/app/data/reports`
+
+Build and deploy the image:
+
+```bash
+gcloud builds submit --tag us-central1-docker.pkg.dev/PROJECT_ID/alphadesk/alphadesk
+
+gcloud run jobs deploy alphadesk-advisor \
+  --image us-central1-docker.pkg.dev/PROJECT_ID/alphadesk/alphadesk \
+  --region us-central1 \
+  --tasks 1 \
+  --max-retries 1 \
+  --memory 2Gi \
+  --cpu 2 \
+  --set-env-vars ALPHADESK_DATA_DIR=/tmp/data \
+  --set-secrets GEMINI_API_KEY=GEMINI_API_KEY:latest,TELEGRAM_BOT_TOKEN=TELEGRAM_BOT_TOKEN:latest,TELEGRAM_CHAT_ID=TELEGRAM_CHAT_ID:latest,FINNHUB_API_KEY=FINNHUB_API_KEY:latest,NEWSAPI_KEY=NEWSAPI_KEY:latest,FRED_API_KEY=FRED_API_KEY:latest,FMP_API_KEY=FMP_API_KEY:latest
+```
+
+The image uses `ENTRYPOINT ["python"]`, so Cloud Run Job argument overrides resolve to:
+
+- `python run_daily.py --run-type=morning_full`
+- `python run_daily.py --run-type=evening_wrap`
+- `python run_daily.py --run-type=weekend`
+
+Create scheduler triggers:
+
+```bash
+gcloud scheduler jobs create http alphadesk-morning \
+  --location us-central1 \
+  --schedule "0 7 * * 1-5" \
+  --uri "https://run.googleapis.com/apis/run.googleapis.com/v1/namespaces/PROJECT_ID/jobs/alphadesk-advisor:run" \
+  --http-method POST \
+  --oauth-service-account-email SCHEDULER_SA@PROJECT_ID.iam.gserviceaccount.com \
+  --message-body '{\"overrides\":{\"containerOverrides\":[{\"args\":[\"run_daily.py\",\"--run-type=morning_full\"]}]}}'
+
+gcloud scheduler jobs create http alphadesk-evening \
+  --location us-central1 \
+  --schedule "0 19 * * 1-5" \
+  --uri "https://run.googleapis.com/apis/run.googleapis.com/v1/namespaces/PROJECT_ID/jobs/alphadesk-advisor:run" \
+  --http-method POST \
+  --oauth-service-account-email SCHEDULER_SA@PROJECT_ID.iam.gserviceaccount.com \
+  --message-body '{\"overrides\":{\"containerOverrides\":[{\"args\":[\"run_daily.py\",\"--run-type=evening_wrap\"]}]}}'
+
+gcloud scheduler jobs create http alphadesk-weekend \
+  --location us-central1 \
+  --schedule "0 10 * * 6" \
+  --uri "https://run.googleapis.com/apis/run.googleapis.com/v1/namespaces/PROJECT_ID/jobs/alphadesk-advisor:run" \
+  --http-method POST \
+  --oauth-service-account-email SCHEDULER_SA@PROJECT_ID.iam.gserviceaccount.com \
+  --message-body '{\"overrides\":{\"containerOverrides\":[{\"args\":[\"run_daily.py\",\"--run-type=weekend\"]}]}}'
+```
+
+Required IAM:
+
+- the Cloud Scheduler service account needs `roles/run.invoker` on the Cloud Run job
+- the Cloud Run job service account needs access to the referenced Secret Manager secrets
+
+Before deployment, make sure the image includes `prompts/agents/`. The current `Dockerfile` already copies that directory.
+
+### Option D: systemd (Linux)
 
 ```ini
 [Unit]
@@ -446,6 +586,14 @@ WantedBy=multi-user.target
 python -m pytest
 ```
 
+Focused verification for the multi-run system:
+
+```bash
+python run_daily.py --run-type=evening_wrap
+python run_daily.py --run-type=weekend
+pytest tests/test_run_foundation.py tests/test_multirun_orchestrator.py tests/test_run_daily_cli.py -q
+```
+
 ## Backtesting
 
 ```bash
@@ -467,7 +615,7 @@ Output: `backtests/{date}/results.json`, `summary.md`, `signals.csv` with per-ag
 
 - [x] 7 AI agents: Street Ear, News Desk, Substack Ear, YouTube Ear, Alpha Scout, Portfolio Analyst, Advisor
 - [x] SQLite agent bus for inter-agent pub/sub
-- [x] Analyst committee (Growth + Value + Risk + CIO Editor)
+- [x] Analyst committee (Growth + Value + Risk + Deep Research + CIO Editor)
 - [x] Delta engine (day-over-day change detection)
 - [x] Catalyst tracker (FOMC, CPI, earnings calendar)
 - [x] Skeptic agent (adversarial recommendation testing)
@@ -475,8 +623,14 @@ Output: `backtests/{date}/results.json`, `summary.md`, `signals.csv` with per-ag
 - [x] Moonshot manager (disruptors, catalyst plays, turnarounds)
 - [x] Outcome tracking + weekly retrospective
 - [x] Backtesting framework with per-agent metrics
-- [x] Verbose investment memos (Markdown + HTML)
+- [x] Deep research blocks (10-section structured notes per priority ticker)
+- [x] Causal reasoner (assumption chains, cross-stock read-throughs)
+- [x] Evidence-based theme dashboard (Strengthening/Stable/Weakening/Broken with confidence scores)
+- [x] 7-section CIO brief format (Executive Take → Analyst Consensus)
+- [x] Verbose investment memos (Markdown + HTML with deep research)
 - [x] Email delivery with sparkline charts
+- [x] Telegram chat Q&A (ask questions about the daily brief)
+- [x] User feedback loop (/rate, /feedback, /prefer, /missed)
 - [x] Prediction market integration (Polymarket + Kalshi)
 - [x] Superinvestor tracking (13F filings)
 - [x] Concurrent news batch processing (10 workers, ~9x speedup)
@@ -484,10 +638,10 @@ Output: `backtests/{date}/results.json`, `summary.md`, `signals.csv` with per-ag
 
 ### Planned
 
-- [ ] Correlation risk analysis (portfolio-level thesis concentration)
 - [ ] Position sizing guidance (target weight recommendations)
 - [ ] Tax-lot awareness (hold period before trim recs)
 - [ ] Web dashboard for report browsing
+- [ ] Options overlay analysis (covered calls, protective puts)
 
 ## License
 
