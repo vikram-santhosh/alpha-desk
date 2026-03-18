@@ -2,7 +2,7 @@
 
 **Multi-agent investment intelligence that replaces 2 hours of daily research with a single Telegram briefing.**
 
-Seven AI agents scan Reddit, news, Substack, YouTube, your portfolio, the broader market, and macro/conviction signals — then a synthesis layer produces an actionable daily brief delivered via Telegram.
+Seven AI agents scan Reddit, news, Substack, YouTube, your portfolio, the broader market, and macro/conviction signals — then a synthesis layer produces an actionable daily brief delivered via Telegram and email.
 
 ## Architecture
 
@@ -13,7 +13,7 @@ flowchart TD
         N["News APIs\nFinnhub · NewsAPI"]
         S["Substack RSS\nConfigured newsletters"]
         Y["YouTube API\nConfigured channels"]
-        PF["Portfolio\nyfinance · FRED · FMP · Kalshi"]
+        PF["Portfolio\nyfinance · FRED · FMP · Kalshi · LunarCrush"]
     end
 
     subgraph phase1["Phase 1 — Parallel Ingestion"]
@@ -43,6 +43,9 @@ flowchart TD
         CR["Causal Reasoner"]
         CM["Conviction Manager"]
         MM["Moonshot Manager"]
+        MS["Macro Scanner"]
+        IG["Idea Generator"]
+        SC["Supply Chain Screener"]
         ST["Strategy Engine"]
     end
 
@@ -78,6 +81,9 @@ flowchart TD
     AD --- committee
     AD --- CM
     AD --- MM
+    AD --- MS
+    AD --- IG
+    AD --- SC
     AD --- ST
 
     AD --> TG
@@ -129,6 +135,9 @@ AlphaDesk uses **Google Gemini** via an Anthropic-compatible shim (`src/shared/g
 | **Skeptic Agent** | Adversarial challenge to every recommendation | Confidence modifier, invalidation conditions, base rates |
 | **Delta Engine** | Day-over-day change detection | High/medium/low significance changes |
 | **Catalyst Tracker** | Event calendar (FOMC, CPI, earnings) | Next 30 days of catalysts with impact estimates |
+| **Macro Scanner** | Emerging theme discovery from news+social signals | New macro theses not yet tracked |
+| **Idea Generator** | Weekly novel idea generation (second-order plays) | Creative investment ideas across themes |
+| **Supply Chain Screener** | Second-order plays via supplier/customer/competitor maps | Candidates from holdings with large moves |
 
 ### Deep Research Pipeline
 
@@ -192,6 +201,9 @@ KALSHI_API_KEY=your_kalshi_key
 
 # YouTube Ear (optional)
 YOUTUBE_API_KEY=your_youtube_data_api_v3_key
+
+# LunarCrush (optional — social sentiment for moonshot sourcing)
+LUNARCRUSH_API_KEY=your_lunarcrush_key
 
 # Daily spend cap (default $20)
 DAILY_COST_CAP=20.00
@@ -269,6 +281,8 @@ The active schedule lives in `config/advisor.yaml` under `schedule:` and drives 
 | `config/subreddits.yaml` | Reddit sources for Street Ear |
 | `config/youtube_channels.yaml` | YouTube channels for YouTube Ear |
 | `config/substack_feeds.yaml` | Substack RSS feeds for Substack Ear |
+| `config/report_style.yaml` | Per-section word limits and toggle flags |
+| `config/supply_chain.yaml` | Supply chain relationship map for second-order plays |
 | `private/portfolio.yaml` | Private holdings override (git-ignored) |
 | `.env` | API keys and secrets (git-ignored) |
 
@@ -288,14 +302,18 @@ The active schedule lives in `config/advisor.yaml` under `schedule:` and drives 
   • Monitor 50% "Fed Easing" concentration into CPI Mar 12
 
 📊 YOUR PORTFOLIO
-  Total: $2,504 | Today: $-24
+  9 positions tracked
   ⚡ MOVING: META -2.4% | AMZN -2.6% | NVDA -3.0%
   🟢 MRVL +18.4% (custom silicon beneficiary of export controls)
+
+💡 Novel Ideas
+💡 [NEW IDEA] AI Cooling Infrastructure — COOL
+   Data center power demand is outpacing supply...
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-AlphaDesk v2.0 | $7.82 today
+AlphaDesk v2.1 | $7.82 today
 ```
 
-**Email report** includes: full CIO memo, deep research blocks for each priority ticker (10-section structured notes), thesis scorecards with confidence scores, cross-stock read-throughs, and interactive HTML formatting.
+**Email report** includes: full CIO memo, deep research blocks for each priority ticker (10-section structured notes), thesis scorecards with confidence scores, cross-stock read-throughs, and interactive HTML formatting with an inline-CSS Gmail-compatible template.
 
 ## Cost Estimate
 
@@ -388,13 +406,15 @@ Type any question (without `/`) to ask about today's brief — the AI has full c
 ```
 alphadesk/
 ├── config/
-│   ├── advisor.yaml            # Holdings, theses, strategy, v2 settings
+│   ├── advisor.yaml            # Holdings, theses, strategy, v2 settings, moonshot archetypes
 │   ├── portfolio.yaml          # Holdings with shares + cost basis
 │   ├── watchlist.yaml          # Additional tickers to track
 │   ├── scout.yaml              # Alpha Scout screening config
 │   ├── subreddits.yaml         # Reddit sources for Street Ear
 │   ├── youtube_channels.yaml   # YouTube channels for YouTube Ear
-│   └── substack_feeds.yaml     # Substack RSS feeds
+│   ├── substack_feeds.yaml     # Substack RSS feeds
+│   ├── report_style.yaml       # Per-section word limits and toggle flags
+│   └── supply_chain.yaml       # Supply chain map (supplier/customer/competitor)
 ├── src/
 │   ├── advisor/                # Investment advisor (30 modules)
 │   │   ├── main.py             # Public advisor entrypoint
@@ -419,8 +439,11 @@ alphadesk/
 │   │   ├── moonshot_manager.py # Asymmetric bet tracking
 │   │   ├── strategy_engine.py  # Add/trim/hold recommendations
 │   │   ├── valuation_engine.py # DCF-based target prices
-│   │   ├── macro_analyst.py    # FRED macro indicators + thesis testing
-│   │   ├── holdings_monitor.py # Daily holdings check-in with memory
+│   │   ├── macro_analyst.py    # FRED macro indicators + commodity tracking + thesis testing
+│   │   ├── macro_scanner.py   # Emerging macro theme discovery via LLM
+│   │   ├── holdings_monitor.py # Daily holdings check-in with stateful mandate breach detection
+│   │   ├── idea_generator.py  # Weekly novel idea generation (second-order plays)
+│   │   ├── supply_chain.py    # Supply chain relationship map + second-order screener
 │   │   ├── earnings_analyzer.py # Earnings calls + management guidance
 │   │   ├── prediction_market.py # Polymarket + Kalshi crowd sentiment
 │   │   ├── superinvestor_tracker.py # 13F filings + insider activity
@@ -446,6 +469,9 @@ alphadesk/
 │   │   ├── morning_brief.py    # Primary pipeline orchestrator
 │   │   ├── telegram_bot.py     # Bot commands + scheduling
 │   │   ├── email_reporter.py   # SMTP email delivery
+│   │   ├── email_template.py  # Inline-CSS HTML email template (Gmail-compatible)
+│   │   ├── html_utils.py      # Markdown-to-Telegram-HTML converter
+│   │   ├── lunarcrush.py      # LunarCrush v4 API client (social sentiment)
 │   │   ├── report_generator.py # HTML report with sparklines
 │   │   ├── security.py         # Env validation, input sanitization
 │   │   └── schemas.py          # Shared data schemas
@@ -475,6 +501,7 @@ alphadesk/
 | `YOUTUBE_API_KEY` | Optional | [Google Cloud Console](https://console.cloud.google.com/) | YouTube Data API v3 for YouTube Ear |
 | `FMP_API_KEY` | Optional | [financialmodelingprep.com](https://site.financialmodelingprep.com/) | Earnings transcripts + guidance |
 | `KALSHI_API_KEY` | Optional | [kalshi.com](https://kalshi.com/) | Prediction market data |
+| `LUNARCRUSH_API_KEY` | Optional | [lunarcrush.com](https://lunarcrush.com/developers/api) | Social sentiment, trending stocks, galaxy scores |
 | `SMTP_USER` | Optional | Your email provider | Email report delivery |
 | `SMTP_PASS` | Optional | Your email provider | Email report delivery |
 | `REPORT_EMAIL_TO` | Optional | — | Email recipient address |
@@ -635,6 +662,17 @@ Output: `backtests/{date}/results.json`, `summary.md`, `signals.csv` with per-ag
 - [x] Superinvestor tracking (13F filings)
 - [x] Concurrent news batch processing (10 workers, ~9x speedup)
 - [x] Gemini 2.5 Pro + Flash dual-model backend with Anthropic-compatible shim
+- [x] Dynamic macro thesis discovery (emerging theme scanner)
+- [x] Non-tech moonshot archetypes (defense, gold miners, energy, uranium, infrastructure, commodities)
+- [x] LunarCrush social sentiment integration (galaxy scores, trending stocks)
+- [x] Supply chain / second-order play screener
+- [x] Weekly novel idea generator (creative cross-theme investment ideas)
+- [x] Stateful mandate breach detection (suppresses duplicate alerts)
+- [x] Tiered research depth (status_quo / incremental / deep_dive)
+- [x] Geopolitical keyword scoring for news relevance boosting
+- [x] Inline-CSS HTML email template (Gmail-compatible)
+- [x] Commodity tracking (oil, gold, copper, USD index, natural gas)
+- [x] Configurable report verbosity (config/report_style.yaml)
 
 ### Planned
 

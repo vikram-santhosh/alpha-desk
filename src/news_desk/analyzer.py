@@ -373,6 +373,15 @@ def analyze_news(
             enriched["related_tickers"] = merged_tickers
             analyzed.append(enriched)
 
+    # Boost relevance for geopolitically significant articles
+    for a in analyzed:
+        geo_bonus = score_geopolitical_relevance(a)
+        if geo_bonus > 0:
+            original = a.get("relevance", 0)
+            a["relevance"] = min(original + geo_bonus, 10)
+            if geo_bonus >= 3:
+                a["urgency"] = "high"
+
     # Filter: keep articles with relevance >= 7 or urgency == "high"
     filtered = [
         a for a in analyzed
@@ -392,6 +401,32 @@ def analyze_news(
     )
 
     return filtered
+
+
+GEOPOLITICAL_KEYWORDS = {
+    "tariff": 3, "sanction": 3, "embargo": 3, "trade war": 3,
+    "nato": 2, "invasion": 3, "military": 2, "nuclear": 2,
+    "opec": 2, "oil supply": 2, "rare earth": 2, "chip ban": 3,
+    "export control": 3, "fed rate": 2, "central bank": 2,
+    "fiscal stimulus": 2, "debt ceiling": 2, "government shutdown": 2,
+    "inflation": 1, "recession": 2, "default": 2, "currency": 1,
+}
+
+
+def score_geopolitical_relevance(article: dict[str, Any]) -> int:
+    """Score an article's geopolitical relevance based on keyword matching.
+
+    Returns a bonus score (0-6) to add to the article's base relevance.
+    """
+    text = (
+        (article.get("title", "") + " " + article.get("summary", ""))
+        .lower()
+    )
+    score = 0
+    for keyword, weight in GEOPOLITICAL_KEYWORDS.items():
+        if keyword in text:
+            score += weight
+    return min(score, 6)
 
 
 def publish_signals(articles: list[dict[str, Any]]) -> list[dict[str, Any]]:

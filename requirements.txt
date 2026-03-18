@@ -11,4 +11,5 @@ matplotlib
 feedparser
 youtube-transcript-api
 google-api-python-client
+markdown
 pytest

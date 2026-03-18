@@ -107,14 +107,27 @@ def format_macro_section(macro_data: dict[str, Any], theses: list[dict[str, Any]
         lines.append("")
 
     if theses:
+        from datetime import date as _date, timedelta as _td
+        _today = _date.today()
+
         lines.append("<b>Active Theses:</b>")
         for i, t in enumerate(theses, 1):
             status = t.get("current_status", t.get("status", "intact"))
             emoji = _status_emoji(status)
             title = sanitize_html(t.get("title", ""))
             affected = t.get("affected_tickers", [])
+            # Tag recently discovered themes
+            created = t.get("created_date", "")
+            is_new = False
+            if created:
+                try:
+                    created_dt = _date.fromisoformat(created)
+                    is_new = (_today - created_dt) <= _td(days=3)
+                except (ValueError, TypeError):
+                    pass
 
-            lines.append(f"  {i}. {title} [{status.upper()}] {emoji}")
+            new_tag = " \U0001f195" if is_new else ""
+            lines.append(f"  {i}. {title} [{status.upper()}]{new_tag} {emoji}")
             if affected:
                 lines.append(f"     Tickers: {', '.join(affected[:6])}")
 
@@ -183,13 +196,9 @@ def format_holdings_section(holdings_reports: list[dict[str, Any]]) -> str:
             if entry and entry > 0:
                 total_unrealized_pnl += (price - entry) * shares
 
-    # Portfolio header with dollar values
+    # Minimal portfolio footer (position count)
     if total_value > 0:
-        lines.append(
-            f"  Total: <b>${total_value:,.0f}</b> | "
-            f"Today: <b>{_fmt_dollar(total_daily_pnl)}</b> | "
-            f"Unrealized: <b>{_fmt_dollar(total_unrealized_pnl)}</b>"
-        )
+        lines.append(f"  <i>{len(holdings_reports)} positions tracked</i>")
         lines.append("")
 
     # Sort by position size descending
@@ -637,15 +646,10 @@ def format_committee_brief(editor_output: dict[str, Any]) -> str:
     if not brief:
         return "<i>Committee synthesis unavailable.</i>"
 
-    # The editor outputs plain text with **SECTION** headers — convert to HTML
+    from src.shared.html_utils import md_to_telegram_html
+
     formatted = sanitize_html(brief)
-    # Bold section headers (patterns like "SECTION 1 - ..." or "**SECTION...**")
-    import re
-    formatted = re.sub(
-        r"\*\*(.+?)\*\*",
-        r"<b>\1</b>",
-        formatted,
-    )
+    formatted = md_to_telegram_html(formatted)
     return formatted
 
 

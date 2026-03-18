@@ -572,6 +572,87 @@ def _moonshot_fallback(
 # HELPERS
 # ═══════════════════════════════════════════════════════
 
+def get_macro_driven_candidates(
+    macro_theses: list[dict],
+    moonshot_config: dict,
+) -> list[dict]:
+    """Map active macro themes to relevant thematic sector archetypes.
+
+    When a macro thesis is active (intact/strengthening), surface tickers
+    from matching thematic sectors as moonshot candidates.
+    """
+    # Map macro theme keywords to thematic sector keys
+    theme_to_sector = {
+        "defense": "defense_aerospace",
+        "aerospace": "defense_aerospace",
+        "gold": "gold_miners",
+        "inflation": "gold_miners",
+        "energy": "energy_infrastructure",
+        "oil": "energy_infrastructure",
+        "uranium": "uranium",
+        "nuclear": "uranium",
+        "infrastructure": "infrastructure_build",
+        "fiscal": "infrastructure_build",
+        "commodity": "commodity_supercycle",
+        "copper": "commodity_supercycle",
+    }
+
+    thematic_sectors = moonshot_config.get("thematic_sectors", {})
+    candidates: list[dict] = []
+    seen_tickers: set[str] = set()
+
+    for thesis in macro_theses:
+        status = thesis.get("status") or thesis.get("current_status", "intact")
+        if status in ("invalidated",):
+            continue
+        title_lower = thesis.get("title", "").lower()
+
+        for keyword, sector_key in theme_to_sector.items():
+            if keyword in title_lower and sector_key in thematic_sectors:
+                for ticker in thematic_sectors[sector_key][:2]:
+                    if ticker not in seen_tickers:
+                        candidates.append({
+                            "ticker": ticker,
+                            "source": f"macro_theme/{thesis.get('title', '')}",
+                            "signal_type": "macro_driven",
+                            "signal_data": {"macro_thesis": thesis.get("title", ""), "sector": sector_key},
+                            "scores": {"composite": 48},
+                            "fundamentals_summary": {},
+                            "archetype": "thematic_sector",
+                        })
+                        seen_tickers.add(ticker)
+
+    log.info("Macro-driven candidates: %d from %d theses", len(candidates), len(macro_theses))
+    return candidates
+
+
+def get_lunarcrush_candidates(limit: int = 5) -> list[dict]:
+    """Source moonshot candidates from LunarCrush trending stocks."""
+    try:
+        from src.shared.lunarcrush import get_trending_stocks
+        trending = get_trending_stocks(limit=limit)
+        candidates = []
+        for item in trending:
+            symbol = item.get("symbol", "")
+            if not symbol:
+                continue
+            candidates.append({
+                "ticker": symbol,
+                "source": "lunarcrush/trending",
+                "signal_type": "social_trending",
+                "signal_data": {
+                    "galaxy_score": item.get("galaxy_score"),
+                    "name": item.get("name", ""),
+                },
+                "scores": {"composite": 42, "sentiment": item.get("galaxy_score", 0)},
+                "fundamentals_summary": {},
+            })
+        return candidates
+    except Exception:
+        log.debug("LunarCrush candidates unavailable")
+        return []
+
+
 def _find_candidate(ticker: str, candidates: list[dict]) -> dict | None:
     """Find a candidate by ticker in the candidates list."""
     for c in candidates:

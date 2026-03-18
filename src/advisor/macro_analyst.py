@@ -23,6 +23,11 @@ FRED_SERIES = {
 YF_TICKERS = {
     "^VIX": "vix",
     "^GSPC": "sp500",
+    "CL=F": "oil_wti",
+    "GC=F": "gold",
+    "HG=F": "copper",
+    "DX-Y.NYB": "usd_index",
+    "NG=F": "nat_gas",
 }
 
 

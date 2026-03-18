@@ -1,0 +1,34 @@
+# ═══════════════════════════════════════════════════
+# AlphaDesk Report Style Configuration
+# Controls verbosity and section visibility
+# ═══════════════════════════════════════════════════
+
+# Per-section word limits for the Telegram brief
+telegram:
+  todays_take_max_words: 100
+  macro_section: true
+  holdings_section: true
+  strategy_section: true
+  conviction_section: true
+  moonshot_section: true
+  key_headlines: true
+  catalyst_calendar: true
+  thesis_exposure: true
+  reddit_mood: true
+  novel_ideas: true
+
+# Per-section word limits for the verbose email report
+email:
+  macro_max_words: 300
+  holdings_max_words: 500
+  strategy_max_words: 200
+  conviction_max_words: 200
+  moonshot_max_words: 150
+  deep_research_max_words: 400
+  novel_ideas_max_words: 200
+
+# Research depth word limits (used by strategy_engine.py)
+research_depth:
+  status_quo_words: 50
+  incremental_words: 100
+  deep_dive_words: 200

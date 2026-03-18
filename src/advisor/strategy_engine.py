@@ -13,6 +13,61 @@ from src.utils.logger import get_logger
 log = get_logger(__name__)
 
 
+def determine_research_depth(
+    holding: dict,
+    earnings_data: dict | None = None,
+) -> str:
+    """Determine research depth for a holding based on current conditions.
+
+    Returns:
+        "deep_dive": |change| >= 3%, thesis weakening/invalidated, earnings within 7 days
+        "incremental": relevant news but thesis holds
+        "status_quo": nothing changed (minimal update)
+    """
+    change_pct = abs(holding.get("change_pct") or 0)
+    thesis_status = holding.get("thesis_status", "intact")
+    key_events = holding.get("key_events", [])
+    earnings_approaching = holding.get("earnings_approaching", False)
+    earnings_days_out = holding.get("earnings_days_out")
+
+    # Deep dive triggers
+    if change_pct >= 3:
+        return "deep_dive"
+    if thesis_status in ("weakening", "invalidated"):
+        return "deep_dive"
+    if earnings_approaching and earnings_days_out is not None and earnings_days_out <= 7:
+        return "deep_dive"
+
+    # Incremental: has news or events but thesis holds
+    if key_events or earnings_approaching:
+        return "incremental"
+
+    return "status_quo"
+
+
+# Research prompt templates by depth
+RESEARCH_PROMPTS = {
+    "status_quo": (
+        "Write a 2-3 sentence status update for {ticker}. "
+        "Price: ${price}, change: {change_pct}%. Thesis ({thesis_status}): {thesis}. "
+        "Keep it concise — nothing material has changed."
+    ),
+    "incremental": (
+        "Write a ~100-word update for {ticker}. "
+        "Price: ${price}, change: {change_pct}%. Thesis ({thesis_status}): {thesis}. "
+        "Key events: {key_events}. "
+        "Focus on what's new and whether it affects the investment thesis."
+    ),
+    "deep_dive": (
+        "Write a ~200-word deep analysis for {ticker}. "
+        "Price: ${price}, change: {change_pct}%. Thesis ({thesis_status}): {thesis}. "
+        "Key events: {key_events}. "
+        "Cover: 1) What happened and why, 2) Impact on thesis, "
+        "3) Risk/reward at current levels, 4) Action recommendation."
+    ),
+}
+
+
 def should_trim(
     holding: dict,
     valuation: dict,

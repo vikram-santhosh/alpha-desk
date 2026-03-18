@@ -158,6 +158,12 @@ moonshot:
     quantum_computing: [IONQ, RGTI, QBTS]
     nuclear_energy: [SMR, OKLO, NNE, LEU]
     robotics_ai: [PLTR, PATH, SERV]
+    defense_aerospace: [LMT, RTX, NOC, GD, LHX]
+    gold_miners: [NEM, GOLD, AEM, FNV, WPM]
+    energy_infrastructure: [ET, WMB, KMI, OKE, TRGP]
+    uranium: [CCJ, UEC, NXE, DNN]
+    infrastructure_build: [CAT, DE, VMC, MLM, URI]
+    commodity_supercycle: [BHP, RIO, VALE, FCX, SCCO]
 
 # Output limits
 output:

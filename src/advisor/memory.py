@@ -239,6 +239,28 @@ def _get_db() -> sqlite3.Connection:
             notes TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS mandate_breaches (
+            id INTEGER PRIMARY KEY,
+            ticker TEXT NOT NULL,
+            breach_type TEXT NOT NULL,
+            first_detected TEXT NOT NULL,
+            last_alerted_weight REAL,
+            last_alerted_date TEXT,
+            acknowledged INTEGER DEFAULT 0,
+            UNIQUE(ticker, breach_type)
+        );
+
+        CREATE TABLE IF NOT EXISTS generated_ideas (
+            id INTEGER PRIMARY KEY,
+            idea_date TEXT NOT NULL,
+            ticker TEXT,
+            theme TEXT NOT NULL,
+            thesis TEXT NOT NULL,
+            source_signals TEXT,
+            status TEXT DEFAULT 'new',
+            created_at TEXT NOT NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_snapshots_ticker_date ON holding_snapshots(ticker, date);
         CREATE INDEX IF NOT EXISTS idx_daily_snapshots_date ON daily_snapshots(date);
         CREATE INDEX IF NOT EXISTS idx_run_snapshots_date ON run_snapshots(date);
@@ -1419,3 +1441,109 @@ def get_ticker_deep_context(ticker: str, lookback_days: int = 90) -> dict[str, A
             result = json.loads(serialized[:serialized.rfind("}") + 1] + "}")
 
     return result
+
+
+# ═══════════════════════════════════════════════════════
+# MANDATE BREACHES
+# ═══════════════════════════════════════════════════════
+
+def get_breach_state(ticker: str, breach_type: str) -> dict[str, Any] | None:
+    """Get the current breach state for a ticker/breach_type combo."""
+    conn = _get_db()
+    row = conn.execute("""
+        SELECT ticker, breach_type, first_detected, last_alerted_weight,
+               last_alerted_date, acknowledged
+        FROM mandate_breaches WHERE ticker = ? AND breach_type = ?
+    """, (ticker, breach_type)).fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {
+        "ticker": row[0],
+        "breach_type": row[1],
+        "first_detected": row[2],
+        "last_alerted_weight": row[3],
+        "last_alerted_date": row[4],
+        "acknowledged": bool(row[5]),
+    }
+
+
+def upsert_breach_state(
+    ticker: str,
+    breach_type: str,
+    weight: float,
+) -> None:
+    """Insert or update a mandate breach record."""
+    conn = _get_db()
+    today = date.today().isoformat()
+    conn.execute("""
+        INSERT INTO mandate_breaches (ticker, breach_type, first_detected,
+                                       last_alerted_weight, last_alerted_date)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(ticker, breach_type) DO UPDATE SET
+            last_alerted_weight = excluded.last_alerted_weight,
+            last_alerted_date = excluded.last_alerted_date
+    """, (ticker, breach_type, today, weight, today))
+    conn.commit()
+    conn.close()
+
+
+def clear_breach_state(ticker: str, breach_type: str) -> None:
+    """Remove a breach record when the condition is resolved."""
+    conn = _get_db()
+    conn.execute(
+        "DELETE FROM mandate_breaches WHERE ticker = ? AND breach_type = ?",
+        (ticker, breach_type),
+    )
+    conn.commit()
+    conn.close()
+
+
+# ═══════════════════════════════════════════════════════
+# GENERATED IDEAS
+# ═══════════════════════════════════════════════════════
+
+def save_generated_idea(
+    theme: str,
+    thesis: str,
+    ticker: str | None = None,
+    source_signals: str = "",
+) -> None:
+    """Save a novel idea from the idea generator."""
+    conn = _get_db()
+    now = datetime.now().isoformat()
+    today = date.today().isoformat()
+    conn.execute("""
+        INSERT INTO generated_ideas (idea_date, ticker, theme, thesis, source_signals, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (today, ticker, theme, thesis, source_signals, now))
+    conn.commit()
+    conn.close()
+
+
+def get_recent_ideas(lookback_days: int = 7) -> list[dict[str, Any]]:
+    """Get recently generated ideas."""
+    conn = _get_db()
+    cutoff = date.today().isoformat()
+    rows = conn.execute("""
+        SELECT id, idea_date, ticker, theme, thesis, source_signals, status
+        FROM generated_ideas
+        WHERE idea_date >= date(?, '-' || ? || ' days')
+        ORDER BY idea_date DESC
+    """, (cutoff, lookback_days)).fetchall()
+    conn.close()
+    return [
+        {"id": r[0], "idea_date": r[1], "ticker": r[2], "theme": r[3],
+         "thesis": r[4], "source_signals": r[5], "status": r[6]}
+        for r in rows
+    ]
+
+
+def get_last_idea_date() -> str | None:
+    """Get the date of the most recent generated idea."""
+    conn = _get_db()
+    row = conn.execute(
+        "SELECT MAX(idea_date) FROM generated_ideas"
+    ).fetchone()
+    conn.close()
+    return row[0] if row and row[0] else None

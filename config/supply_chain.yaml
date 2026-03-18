@@ -54,3 +54,21 @@ MSFT:
   customers: []
   competitors: [GOOG, AMZN, CRM, SAP, ORCL]
   adjacent: [TEAM, ADBE, NOW, SNOW, MDB]
+
+AAPL:
+  suppliers: [TSM, AVGO, QCOM, TXN, SWKS, CRUS]
+  customers: []
+  competitors: [SAMSUNG, GOOG, MSFT]
+  adjacent: [SPOT, SQ, AAPL]
+
+AMD:
+  suppliers: [TSM, ASML, KLAC, LRCX]
+  customers: [MSFT, GOOG, META, AMZN]
+  competitors: [NVDA, INTC, QCOM]
+  adjacent: [XLNX, MRVL, AVGO]
+
+TSM:
+  suppliers: [ASML, KLAC, LRCX, AMAT, SNPS, CDNS]
+  customers: [AAPL, NVDA, AMD, AVGO, QCOM, MRVL]
+  competitors: [INTC, SAMSUNG, GFS]
+  adjacent: [UMC, ASX]

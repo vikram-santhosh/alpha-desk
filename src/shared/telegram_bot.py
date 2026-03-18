@@ -505,24 +505,6 @@ def _run_scheduled_profile(run_type: str = "morning_full") -> None:
             send_message(CHAT_ID, result["formatted"])
             log.info("Scheduled advisor %s sent successfully", run_type)
 
-        # Also send email if configured
-        try:
-            from src.shared.email_reporter import EmailReporter
-            reporter = EmailReporter()
-            if reporter.is_configured():
-                verbose_path = result.get("verbose_report_dir", "")
-                if verbose_path:
-                    from pathlib import Path
-                    html_path = Path(verbose_path)
-                    md_path = html_path.with_suffix(".md")
-                    reporter.send_report_from_file(
-                        str(html_path),
-                        str(md_path) if md_path.exists() else None,
-                    )
-                    log.info("Scheduled email report sent")
-        except Exception:
-            log.exception("Email delivery failed — Telegram delivery was successful")
-
     except Exception as e:
         log.error("Scheduled advisor profile %s failed: %s", run_type, e, exc_info=True)
         if CHAT_ID:

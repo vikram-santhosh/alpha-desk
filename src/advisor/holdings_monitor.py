@@ -102,15 +102,43 @@ def monitor_holdings(
         pct = r.get("position_pct") or 0
         sector_weight[sector] = sector_weight.get(sector, 0) + pct
 
+    from src.advisor.memory import get_breach_state, upsert_breach_state, clear_breach_state
+
     for sector, weight in sector_weight.items():
+        # Use sector as both ticker and breach_type key — mandate_breaches
+        # table tracks sector-level breaches, not per-ticker breaches.
+        breach_key = f"sector_{sector}"
+        breach_type = "sector_concentration"
         if weight >= 80:
-            for r in reports:
-                r_sector = r.get("sector") or "Unknown"
-                if r_sector == sector:
-                    r.setdefault("key_events", []).append(
-                        f"WARNING: {sector} sector concentration {weight:.0f}% of portfolio"
-                    )
-            log.warning("Sector concentration: %s = %.0f%%", sector, weight)
+            prev = get_breach_state(breach_key, breach_type)
+            should_alert = False
+            severity = "NEW" if prev is None else "WORSENED"
+            if prev is None:
+                should_alert = True
+            elif prev.get("last_alerted_weight") is not None:
+                delta = abs(weight - prev["last_alerted_weight"])
+                if delta > 2:
+                    should_alert = True
+                else:
+                    severity = "SUPPRESSED"
+
+            if should_alert:
+                upsert_breach_state(breach_key, breach_type, weight)
+                for r in reports:
+                    r_sector = r.get("sector") or "Unknown"
+                    if r_sector == sector:
+                        r.setdefault("key_events", []).append(
+                            f"[{severity}] {sector} sector concentration {weight:.0f}% of portfolio"
+                        )
+                log.warning("Sector concentration alert (%s): %s = %.0f%%", severity, sector, weight)
+            else:
+                log.info("Sector concentration %s = %.0f%% — suppressed (no material change)", sector, weight)
+        else:
+            # Breach resolved
+            prev = get_breach_state(breach_key, breach_type)
+            if prev is not None:
+                clear_breach_state(breach_key, breach_type)
+                log.info("Sector concentration resolved: %s now %.0f%%", sector, weight)
 
     log.info("Built %d holding reports", len(reports))
     return reports

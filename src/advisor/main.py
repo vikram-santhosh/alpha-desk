@@ -490,8 +490,40 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
                 "sentiment": payload.get("sentiment", 0),
                 "summary": payload.get("summary", ""),
             })
+    # Scan for emerging macro themes before updating existing theses
+    try:
+        from src.advisor.macro_scanner import scan_for_emerging_themes
+        emerging = scan_for_emerging_themes(
+            news_signals=news_signals,
+            existing_theses=memory["macro_theses"],
+            reddit_themes=_reddit_themes,
+        )
+        if emerging:
+            from src.advisor.memory import seed_macro_theses as _seed_mt
+            seed_entries = [
+                {"title": t["title"], "description": t["description"],
+                 "affected_tickers": t.get("affected_tickers", [])}
+                for t in emerging
+            ]
+            _seed_mt(seed_entries)
+            log.info("Discovered %d emerging macro themes", len(emerging))
+    except Exception:
+        log.exception("Macro scanner failed — continuing with existing theses")
+
     try:
         updated_theses = update_macro_theses(macro_data, news_signals)
+        # Enrich theses with prediction market context
+        if prediction_shifts:
+            for thesis in updated_theses:
+                affected = set(t.upper() for t in thesis.get("affected_tickers", []))
+                for shift in prediction_shifts:
+                    shift_tickers = set(t.upper() for t in (shift.get("affected_tickers") or []))
+                    if affected & shift_tickers:
+                        thesis.setdefault("prediction_context", []).append({
+                            "market": shift.get("market_title", ""),
+                            "probability": shift.get("probability", 0),
+                            "delta": shift.get("delta", 0),
+                        })
     except Exception:
         log.exception("Failed to update macro theses")
         updated_theses = memory["macro_theses"]
@@ -608,6 +640,7 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
     conviction_result = {"current_list": memory["conviction_list"], "added": [], "removed": []}
     moonshot_result = {"current_list": memory["moonshot_list"], "added": [], "removed": []}
     strategy = {"actions": [], "flags": [], "summary": "Skipped."}
+    novel_ideas: list[dict] = []
     catalyst_data = {}
     catalyst_prompt_section = ""
 
@@ -819,6 +852,15 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
         except Exception:
             log.exception("Failed to record conviction recommendations for outcome tracking")
     
+        # Enrich moonshot candidates with macro-driven and LunarCrush sources
+        try:
+            from src.advisor.moonshot_manager import get_macro_driven_candidates, get_lunarcrush_candidates
+            macro_candidates = get_macro_driven_candidates(updated_theses, config.get("moonshot", {}))
+            lc_candidates = get_lunarcrush_candidates(limit=5)
+            discovery_candidates = list(discovery_candidates) + macro_candidates + lc_candidates
+        except Exception:
+            log.debug("Macro/LunarCrush candidate enrichment failed — continuing with base candidates")
+
         # Update moonshot list
         try:
             moonshot_result = update_moonshot_list(
@@ -832,6 +874,34 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
             log.exception("Failed to update moonshot list")
             moonshot_result = {"current_list": memory["moonshot_list"], "added": [], "removed": []}
     
+        # Generate novel ideas (weekly, runs on Monday or if never run)
+        try:
+            from src.advisor.idea_generator import should_run_ideas, generate_novel_ideas
+            if should_run_ideas():
+                novel_ideas = generate_novel_ideas(
+                    holdings=memory["holdings"],
+                    macro_theses=updated_theses,
+                    news_signals=news_signals,
+                    conviction_list=conviction_result.get("current_list", []),
+                    moonshot_list=moonshot_result.get("current_list", []),
+                )
+                log.info("Generated %d novel ideas", len(novel_ideas))
+        except Exception:
+            log.exception("Idea generator failed — continuing without novel ideas")
+
+        # Wire supply chain candidates into discovery
+        try:
+            from src.advisor.supply_chain import find_second_order_plays
+            sc_candidates = find_second_order_plays(
+                holdings_reports=holdings_reports,
+                existing_tickers=set(all_tickers) | set(c.get("ticker", "") for c in discovery_candidates),
+            )
+            if sc_candidates:
+                discovery_candidates = list(discovery_candidates) + sc_candidates
+                log.info("Added %d supply-chain candidates", len(sc_candidates))
+        except Exception:
+            log.debug("Supply chain screener unavailable — continuing")
+
         # Generate strategy
         try:
             strategy = generate_strategy(
@@ -1221,6 +1291,16 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
             # Moonshots
             sections.extend(["", SEPARATOR, "", moonshot_section])
 
+            # Novel ideas (if generated this run)
+            try:
+                if novel_ideas:
+                    from src.advisor.idea_generator import format_ideas_section
+                    ideas_section = format_ideas_section(novel_ideas)
+                    if ideas_section:
+                        sections.extend(["", SEPARATOR, "", ideas_section])
+            except Exception:
+                log.debug("Failed to format novel ideas section")
+
             # Reddit mood
             if reddit_mood and reddit_mood != "unknown":
                 theme_suffix = ""
@@ -1233,7 +1313,7 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
             sections.extend([
                 "",
                 SEPARATOR,
-                f"AlphaDesk v2.0 | ${daily_cost:.2f} today",
+                f"AlphaDesk v2.1 | ${daily_cost:.2f} today",
                 "/advisor /delta /catalysts /scorecard /retro /cost",
             ])
 
@@ -1364,7 +1444,12 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
                     _first_line = (_cio_text.strip().splitlines() or [""])[0].strip(" #*")
                     _today_str = date.today().strftime("%b %d, %Y")
                     _subject = f"AlphaDesk {_today_str} — {_first_line}" if _first_line else f"AlphaDesk Daily Report — {_today_str}"
-                    ok = reporter.send_report(html_report, subject=_subject, plain_text=md_report)
+                    try:
+                        from src.shared.email_template import wrap_email_html
+                        html_report_wrapped = wrap_email_html(html_report, subject=_subject)
+                    except Exception:
+                        html_report_wrapped = html_report
+                    ok = reporter.send_report(html_report_wrapped, subject=_subject, plain_text=md_report)
                     if ok:
                         log.info("Verbose report emailed: %s", _subject)
                 else:
