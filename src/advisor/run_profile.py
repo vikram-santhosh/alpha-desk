@@ -30,6 +30,7 @@ RUN_STEP_MATRIX = {
         "news_desk",
         "substack_ear",
         "youtube_ear",
+        "sector_scanner",
         "market_data_full",
         "advisor_data",
         "holdings_monitor",

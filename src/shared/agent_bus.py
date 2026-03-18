@@ -49,6 +49,9 @@ SIGNAL_TYPES = {
     # YouTube Ear signals
     "expert_analysis",            # Deep analysis from finance YouTuber
     "narrative_amplification",    # Thesis gaining traction (views spiking)
+    # Sector Scanner signals
+    "sector_momentum",            # Directional sector moves (multiple articles)
+    "sector_catalyst",            # Specific high-relevance sector event
 }
 
 

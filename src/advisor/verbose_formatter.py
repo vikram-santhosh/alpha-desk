@@ -123,9 +123,15 @@ class VerboseFormatter:
         reddit_signals: list[dict] | None = None,
         substack_signals: list[dict] | None = None,
         youtube_signals: list[dict] | None = None,
+        novel_ideas: list[dict] | None = None,
+        sector_scanner_signals: list[dict] | None = None,
+        sector_scanner_formatted: str = "",
         daily_cost: float = 0.0,
         total_time: float = 0.0,
     ):
+        self.novel_ideas = novel_ideas or []
+        self.sector_scanner_signals = sector_scanner_signals or []
+        self.sector_scanner_formatted = sector_scanner_formatted
         self.holdings_reports = holdings_reports or []
         self.fundamentals = fundamentals or {}
         self.technicals = technicals or {}
@@ -186,6 +192,8 @@ class VerboseFormatter:
             self._md_prediction_markets(),
             self._md_smart_money(),
             self._md_watchlist(),
+            self._md_novel_ideas(),
+            self._md_sector_scanner(),
             self._md_cross_asset_risks(),
             self._md_thesis_breakers(),
             self._md_upcoming(),
@@ -210,6 +218,8 @@ class VerboseFormatter:
             self._html_prediction_markets(),
             self._html_smart_money(),
             self._html_watchlist(),
+            self._html_novel_ideas(),
+            self._html_sector_scanner(),
             self._html_upcoming(),
             self._html_footer(),
             '</div></body></html>',
@@ -543,6 +553,50 @@ class VerboseFormatter:
             intel = self._gather_ticker_intel(t)
             for line in intel:
                 lines.append(f"    {line}")
+        return "\n".join(lines) + "\n"
+
+    def _md_novel_ideas(self) -> str:
+        if not self.novel_ideas:
+            return ""
+        lines = [f"NOVEL IDEAS\n{'-' * 40}"]
+        for idea in self.novel_ideas:
+            ticker = idea.get("ticker")
+            theme = idea.get("theme", "")
+            thesis = idea.get("thesis", "")
+            source = idea.get("source_signals", "")
+            ticker_str = f" {ticker}" if ticker else ""
+            lines.append(f"\n  💡{ticker_str} — {theme}")
+            if thesis:
+                lines.append(f"    {thesis}")
+            if source:
+                lines.append(f"    Signals: {source}")
+        return "\n".join(lines) + "\n"
+
+    def _md_sector_scanner(self) -> str:
+        if not self.sector_scanner_signals:
+            return ""
+        direction_arrow = {"bullish": "↑", "bearish": "↓", "mixed": "↔", "neutral": "—"}
+        lines = [f"SECTOR SCANNER\n{'-' * 40}"]
+        # Group by sector
+        sectors: dict[str, list[dict]] = {}
+        for sig in self.sector_scanner_signals:
+            sector = sig.get("sector", "unknown")
+            sectors.setdefault(sector, []).append(sig)
+        for sector, sigs in sorted(sectors.items()):
+            label = sector.replace("_", " ").title()
+            momentum = [s for s in sigs if s.get("type") == "sector_momentum"]
+            catalysts = [s for s in sigs if s.get("type") == "sector_catalyst"]
+            if momentum:
+                m = momentum[0]
+                arrow = direction_arrow.get(m.get("direction", ""), "—")
+                lines.append(f"\n  {arrow} {label} ({m.get('article_count', 0)} articles)")
+                if m.get("top_summary"):
+                    lines.append(f"    {m['top_summary']}")
+            for c in catalysts[:2]:
+                lines.append(f"    • {c.get('summary', c.get('title', ''))}")
+                tickers = c.get("tickers", [])
+                if tickers:
+                    lines.append(f"      Tickers: {', '.join(tickers[:5])}")
         return "\n".join(lines) + "\n"
 
     def _gather_ticker_intel(self, ticker: str) -> list[str]:
@@ -1663,6 +1717,88 @@ class VerboseFormatter:
   {"".join(all_cards)}
 </div>"""
 
+    def _html_novel_ideas(self) -> str:
+        if not self.novel_ideas:
+            return ""
+
+        cards = []
+        for idea in self.novel_ideas:
+            ticker = idea.get("ticker")
+            theme = _esc(idea.get("theme", ""))
+            thesis = _esc(idea.get("thesis", ""))
+            source = _esc(idea.get("source_signals", ""))
+
+            ticker_html = f'<span style="font-weight:700;font-size:1.05em;color:#0f172a">{_esc(ticker)}</span>' if ticker else ""
+            source_html = f'<div style="font-size:0.82em;color:#94a3b8;margin-top:6px"><em>Signals: {source}</em></div>' if source else ""
+
+            cards.append(f"""
+<div style="background:#fffbeb;border-radius:8px;padding:18px 20px;margin-bottom:12px;border-left:4px solid #f59e0b">
+  <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:6px">
+    {ticker_html}
+    <span style="background:#fef3c7;color:#92400e;padding:3px 8px;border-radius:8px;font-size:0.75em;font-weight:600">NEW IDEA</span>
+    <span style="font-size:0.9em;color:#92400e;font-weight:600">{theme}</span>
+  </div>
+  <div style="font-size:0.95em;color:#334155;line-height:1.55">{thesis}</div>
+  {source_html}
+</div>""")
+
+        return f"""
+<div class="section">
+  <div class="section-title">Novel Ideas</div>
+  {"".join(cards)}
+</div>"""
+
+    def _html_sector_scanner(self) -> str:
+        if not self.sector_scanner_signals:
+            return ""
+        direction_colors = {
+            "bullish": ("#dcfce7", "#166534", "🟢"),
+            "bearish": ("#fee2e2", "#991b1b", "🔴"),
+            "mixed": ("#fef9c3", "#854d0e", "🟡"),
+            "neutral": ("#f1f5f9", "#475569", "⚪"),
+        }
+        sectors: dict[str, list[dict]] = {}
+        for sig in self.sector_scanner_signals:
+            sector = sig.get("sector", "unknown")
+            sectors.setdefault(sector, []).append(sig)
+
+        cards = []
+        for sector, sigs in sorted(sectors.items()):
+            label = _esc(sector.replace("_", " ").title())
+            momentum = [s for s in sigs if s.get("type") == "sector_momentum"]
+            catalysts = [s for s in sigs if s.get("type") == "sector_catalyst"]
+
+            direction = momentum[0].get("direction", "neutral") if momentum else "neutral"
+            bg, color, emoji = direction_colors.get(direction, direction_colors["neutral"])
+            article_count = momentum[0].get("article_count", 0) if momentum else len(catalysts)
+            tickers = list(dict.fromkeys(t for s in sigs for t in s.get("tickers", [])[:5]))
+
+            catalyst_html = ""
+            for c in catalysts[:2]:
+                summary = _esc(c.get("summary", c.get("title", "")))
+                cat_type = _esc(c.get("catalyst_type", ""))
+                tag = f'<span style="background:#e2e8f0;color:#475569;padding:1px 6px;border-radius:4px;font-size:0.75em">{cat_type}</span>' if cat_type and cat_type != "other" else ""
+                catalyst_html += f'<div style="font-size:0.9em;color:#334155;margin-top:4px">• {summary} {tag}</div>'
+
+            ticker_html = f'<div style="font-size:0.82em;color:#94a3b8;margin-top:6px">{", ".join(_esc(t) for t in tickers[:6])}</div>' if tickers else ""
+
+            cards.append(f"""
+<div style="background:{bg};border-radius:8px;padding:16px 18px;margin-bottom:10px;border-left:4px solid {color}">
+  <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:4px">
+    <span>{emoji}</span>
+    <span style="font-weight:700;font-size:1em;color:#0f172a">{label}</span>
+    <span style="font-size:0.82em;color:{color}">{article_count} articles</span>
+  </div>
+  {catalyst_html}
+  {ticker_html}
+</div>""")
+
+        return f"""
+<div class="section">
+  <div class="section-title">Sector Scanner</div>
+  {"".join(cards)}
+</div>"""
+
     def _build_intel_html(self, ticker: str) -> str:
         """Build cross-referenced intelligence HTML for a ticker."""
         intel_items: list[str] = []
@@ -1996,14 +2132,40 @@ class VerboseFormatter:
 
         lines = text.strip().splitlines()
         html_lines = []
+        in_table = False
         for line in lines:
             stripped = line.strip()
-            if not stripped:
-                html_lines.append("<br>")
-            elif stripped.startswith("- "):
-                html_lines.append(f'<div style="padding:3px 0 3px 16px">• {stripped[2:]}</div>')
+            # Detect markdown table rows (pipes)
+            if stripped.startswith("|") and stripped.endswith("|"):
+                cells = [c.strip() for c in stripped.strip("|").split("|")]
+                # Skip separator rows like |---|---|
+                if all(re.match(r'^[-:]+$', c) for c in cells):
+                    continue
+                if not in_table:
+                    in_table = True
+                    html_lines.append('<table style="width:100%;border-collapse:collapse;font-size:0.88em;margin:8px 0">')
+                    # First row is header
+                    html_lines.append("<tr>" + "".join(
+                        f'<th style="text-align:left;padding:8px 10px;border-bottom:2px solid #e2e8f0;color:#1e293b;font-weight:600">{c}</th>'
+                        for c in cells
+                    ) + "</tr>")
+                else:
+                    html_lines.append("<tr>" + "".join(
+                        f'<td style="padding:8px 10px;border-bottom:1px solid #f1f5f9;color:#334155;vertical-align:top">{c}</td>'
+                        for c in cells
+                    ) + "</tr>")
             else:
-                html_lines.append(f"<div style='margin-bottom:4px'>{stripped}</div>")
+                if in_table:
+                    html_lines.append("</table>")
+                    in_table = False
+                if not stripped:
+                    html_lines.append("<br>")
+                elif stripped.startswith("- "):
+                    html_lines.append(f'<div style="padding:3px 0 3px 16px">• {stripped[2:]}</div>')
+                else:
+                    html_lines.append(f"<div style='margin-bottom:4px'>{stripped}</div>")
+        if in_table:
+            html_lines.append("</table>")
         return "\n".join(html_lines)
 
     def _html_upcoming(self) -> str:

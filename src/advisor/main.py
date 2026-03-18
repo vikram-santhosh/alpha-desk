@@ -275,14 +275,26 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
             log.debug("YouTube Ear not available or failed")
             return {"formatted": "", "signals": [], "stats": {}}
 
+    async def _safe_run_sector_scanner():
+        try:
+            from src.sector_scanner.main import run as run_sector
+            return await run_sector(
+                config=config,
+                exclude_tickers=set(all_tickers),
+            )
+        except Exception:
+            log.debug("Sector Scanner not available or failed")
+            return {"formatted": "", "signals": [], "stats": {}}
+
     _default_agent_result = {"formatted": "", "signals": [], "stats": {}}
 
-    log.info("Step 2: Running Street Ear + News Desk + Substack Ear + YouTube Ear")
+    log.info("Step 2: Running Street Ear + News Desk + Substack Ear + YouTube Ear + Sector Scanner")
     _step2_tasks: list[tuple[str, str, Any]] = [
         ("street_ear", "Street Ear", run_street_ear),
         ("news_desk", "News Desk", run_news_desk),
         ("substack_ear", "Substack Ear", _safe_run_substack),
         ("youtube_ear", "YouTube Ear", _safe_run_youtube),
+        ("sector_scanner", "Sector Scanner", _safe_run_sector_scanner),
     ]
     _step2_coros = []
 
@@ -296,7 +308,7 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
         else:
             _step2_coros.append(_run_agent(agent_label, agent_fn))
 
-    street_ear_result, news_desk_result, substack_result, youtube_result = await asyncio.gather(
+    street_ear_result, news_desk_result, substack_result, youtube_result, sector_scanner_result = await asyncio.gather(
         *_step2_coros
     )
 
@@ -490,6 +502,22 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
                 "sentiment": payload.get("sentiment", 0),
                 "summary": payload.get("summary", ""),
             })
+    # Enrich with sector scanner signals so macro_scanner + idea_generator see sector trends
+    for sector_sig in sector_scanner_result.get("signals", []):
+        tickers = sector_sig.get("tickers", [])
+        direction = sector_sig.get("direction", "neutral")
+        sentiment = 1 if direction == "bullish" else -1 if direction == "bearish" else 0
+        news_signals.append({
+            "headline": sector_sig.get("top_summary", sector_sig.get("title", "")),
+            "source": "sector_scanner",
+            "tickers": tickers,
+            "ticker": tickers[0] if tickers else "",
+            "category": "sector",
+            "sentiment": sentiment,
+            "summary": sector_sig.get("summary", sector_sig.get("top_summary", "")),
+            "sector": sector_sig.get("sector", ""),
+        })
+
     # Scan for emerging macro themes before updating existing theses
     try:
         from src.advisor.macro_scanner import scan_for_emerging_themes
@@ -886,6 +914,11 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
                     moonshot_list=moonshot_result.get("current_list", []),
                 )
                 log.info("Generated %d novel ideas", len(novel_ideas))
+            else:
+                # Load today's ideas from DB so they appear in the report
+                from src.advisor.memory import get_recent_ideas
+                novel_ideas = get_recent_ideas(lookback_days=1)
+                log.info("Loaded %d previously generated ideas from DB", len(novel_ideas))
         except Exception:
             log.exception("Idea generator failed — continuing without novel ideas")
 
@@ -1291,6 +1324,11 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
             # Moonshots
             sections.extend(["", SEPARATOR, "", moonshot_section])
 
+            # Sector scanner
+            _sector_formatted = sector_scanner_result.get("formatted", "")
+            if _sector_formatted:
+                sections.extend(["", SEPARATOR, "", _sector_formatted])
+
             # Novel ideas (if generated this run)
             try:
                 if novel_ideas:
@@ -1377,6 +1415,18 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
             except Exception:
                 log.debug("Could not fetch scorecard for verbose report")
     
+            # Build sector scanner signals: current run + earlier signals from bus
+            _all_sector_signals: list[dict] = list(sector_scanner_result.get("signals", []))
+            _seen_sector_ids = {s.get("id") for s in _all_sector_signals}
+            for _bus_sig in agent_bus_signals:
+                if _bus_sig.get("source_agent") == "sector_scanner" and _bus_sig.get("id") not in _seen_sector_ids:
+                    _payload = _bus_sig.get("payload", {})
+                    _all_sector_signals.append({
+                        "id": _bus_sig.get("id"),
+                        "type": _bus_sig.get("signal_type", ""),
+                        **_payload,
+                    })
+
             # Build structured signal lists from agent bus for Signal Intelligence section
             _reddit_sigs: list[dict] = []
             _substack_sigs: list[dict] = []
@@ -1434,6 +1484,9 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
                 reddit_signals=_reddit_sigs,
                 substack_signals=_substack_sigs,
                 youtube_signals=_youtube_sigs,
+                novel_ideas=novel_ideas,
+                sector_scanner_signals=_all_sector_signals,
+                sector_scanner_formatted=sector_scanner_result.get("formatted", ""),
                 daily_cost=daily_cost,
                 total_time=total_time,
             )

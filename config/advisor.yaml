@@ -165,6 +165,13 @@ moonshot:
     infrastructure_build: [CAT, DE, VMC, MLM, URI]
     commodity_supercycle: [BHP, RIO, VALE, FCX, SCCO]
 
+# Sector Scanner — broad thematic sector intelligence
+sector_scanner:
+  enabled: true
+  tickers_per_sector: 2
+  max_articles: 60
+  min_relevance: 6
+
 # Output limits
 output:
   max_conviction_list: 5
