@@ -14,25 +14,28 @@ ${observations}
 Citations:
 ${citations}
 
-Write a research note using this exact structure:
+Write a CONCISE research note using this exact structure:
 ## ${ticker} — Deep Research Block
 
 ### The Key Question
 One sentence framing the core question.
 
 ### What We Know
-3-5 short paragraphs that interpret the evidence instead of restating headlines.
+- 3-5 bullet points summarizing the key evidence and what it means for the thesis
+- Each bullet should be 1-2 sentences max
+- Cite evidence using [n] references where possible
 
 ### What We Could Be Wrong About
-1-2 paragraphs on the strongest counterargument.
+- 1-2 bullet points on the strongest counterarguments
 
 ### Action & Catalysts
-- Stance: Add, Hold, Trim, or Avoid
-- 2-3 sentences on why now
-- Next 2-3 catalysts with approximate dates
-- 1-2 unresolved questions
+- **Stance:** Add, Hold, Trim, or Avoid
+- **Why now:** 1 sentence
+- **Next catalysts:** 2-3 upcoming events with approximate dates
+- **Open question:** 1 unresolved question
 
 Requirements:
-- Cite evidence using [n] references where possible.
-- Prefer mechanisms over adjectives.
+- TOTAL output must be 5-8 bullet points across all sections.
+- Be terse. Prefer mechanisms over adjectives.
 - If evidence conflicts, state the conflict explicitly.
+- Do NOT write multi-paragraph prose. Use bullet points only.

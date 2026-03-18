@@ -265,6 +265,8 @@ class VerboseFormatter:
         brief = self.committee_result.get("formatted_brief", "")
         if not brief:
             return {}
+        # Strip memo headers (TO:/FROM:/DATE:/SUBJECT:) that the LLM may produce
+        brief = re.sub(r'(?m)^\*{0,2}(?:TO|FROM|DATE|SUBJECT)\*{0,2}\s*:.*$', '', brief)
         sections = {}
         current_key = ""
         current_lines: list[str] = []
@@ -288,15 +290,10 @@ class VerboseFormatter:
     # ══════════════════════════════════════════════════════════════
 
     def _md_header(self, totals: dict) -> str:
-        pnl = totals["daily_pnl"]
-        sign = "+" if pnl >= 0 else ""
-        lines = [
-            f"Portfolio: {_dollar(totals['value'])}  |  Today: {sign}{_dollar(pnl)}  |  {totals['holdings_count']} holdings",
-        ]
         headline = self._get_headline()
         if headline:
-            lines.append(f"\n> {headline}")
-        return "\n".join(lines) + "\n"
+            return f"> {headline}\n"
+        return ""
 
     def _md_what_changed(self) -> str:
         cio = self._get_cio_sections()
@@ -993,9 +990,6 @@ class VerboseFormatter:
 
     def _html_header(self, totals: dict) -> str:
         today = datetime.now().strftime("%B %d, %Y")
-        pnl = totals["daily_pnl"]
-        pnl_color = "#4ade80" if pnl >= 0 else "#f87171"
-        pnl_sign = "+" if pnl >= 0 else ""
         headline = _esc(self._get_headline())
 
         headline_html = ""
@@ -1006,24 +1000,6 @@ class VerboseFormatter:
 <div class="header">
   <div class="header-title">AlphaDesk Daily Brief</div>
   <div class="header-date">{today}</div>
-  <div class="header-stats">
-    <div class="stat">
-      <div class="stat-label">Portfolio</div>
-      <div class="stat-value">{_dollar(totals['value'])}</div>
-    </div>
-    <div class="stat">
-      <div class="stat-label">Today</div>
-      <div class="stat-value" style="color:{pnl_color}">{pnl_sign}{_dollar(pnl)}</div>
-    </div>
-    <div class="stat">
-      <div class="stat-label">Unrealized</div>
-      <div class="stat-value">{_dollar(totals['unrealized'])}</div>
-    </div>
-    <div class="stat">
-      <div class="stat-label">Holdings</div>
-      <div class="stat-value">{totals['holdings_count']}</div>
-    </div>
-  </div>
   {headline_html}
 </div>"""
 

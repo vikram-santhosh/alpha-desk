@@ -139,7 +139,7 @@ class RiskOfficer:
         for report in holdings_reports:
             lines.append(
                 f"  {report.get('ticker', '')}: {report.get('position_pct', 'N/A')} percent of portfolio | "
-                f"price={report.get('price', 'N/A')} change={report.get('change_pct', 0):+.1f}% | sector={report.get('sector', '')}"
+                f"price={report.get('price', 'N/A')} change={report.get('change_pct') or 0:+.1f}% | sector={report.get('sector', '')}"
             )
         actions = strategy.get("actions", [])
         if actions:

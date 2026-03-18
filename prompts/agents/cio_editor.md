@@ -67,6 +67,7 @@ Write the daily brief with these exact section headers:
 **SECTION 7 - ANALYST CONSENSUS & DISAGREEMENTS**
 
 Rules:
+- Do NOT include a memo header (no TO/FROM/DATE/SUBJECT lines). Start directly with the section content.
 - Lead with mandate breaches if any exist.
 - Work with partial analyst coverage if reports are missing.
 - Surface explicit tension when Growth, Value, and Risk disagree.

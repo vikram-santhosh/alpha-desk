@@ -1,21 +1,26 @@
-"""Anthropic-compatible shim backed by Google Gemini.
+"""LLM shim for AlphaDesk.
 
-Drop-in replacement for the ``anthropic`` package used throughout AlphaDesk.
+Auto-selects backend based on available API keys:
+  1. ANTHROPIC_API_KEY → Anthropic Claude API
+  2. GEMINI_API_KEY or GOOGLE_API_KEY → Google Gemini API
+
 Exposes the same interface so every call-site can keep using:
 
-    client = anthropic.Anthropic()
+    client = Anthropic()
     response = client.messages.create(model=..., max_tokens=..., messages=[...])
     text = response.content[0].text
     tokens_in = response.usage.input_tokens
     tokens_out = response.usage.output_tokens
 
-Model mapping:
-  claude-haiku-*  → gemini-2.5-flash  (batch/extraction tasks, thinking disabled)
-  claude-sonnet-* → gemini-2.5-pro    (thinking capped at 1024 tokens)
-  claude-opus-*   → gemini-2.5-pro    (dynamic thinking for synthesis)
+Model mapping (Anthropic):
+  claude-haiku-*  → claude-haiku-4-5-20251001
+  claude-sonnet-* → claude-sonnet-4-6-20250514
+  claude-opus-*   → claude-opus-4-6-20250514
 
-google.genai is imported lazily inside _Messages.create() so that test
-modules can import this shim without needing the SDK installed.
+Model mapping (Gemini):
+  claude-haiku-*  → gemini-2.0-flash
+  claude-sonnet-* → gemini-2.5-flash
+  claude-opus-*   → gemini-2.5-pro
 """
 from __future__ import annotations
 
@@ -23,23 +28,46 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-# ── Model mapping ────────────────────────────────────────────────────────────
+# ── Anthropic model mapping ──────────────────────────────────────────────────
 
-GEMINI_MODEL = "gemini-2.5-pro"
-GEMINI_FLASH_MODEL = "gemini-2.5-flash"
+OPUS_MODEL = "claude-opus-4-6"
+SONNET_MODEL = "claude-sonnet-4-6"
+HAIKU_MODEL = "claude-haiku-4-5"
 
 
-def _resolve_model(model: str) -> str:
-    """Map Claude model names to Gemini equivalents.
-
-    haiku  → gemini-2.5-flash  (fast, cheap, thinking-optional)
-    others → gemini-2.5-pro    (full reasoning)
-    """
+def _resolve_anthropic_model(model: str) -> str:
+    """Map shorthand Claude model names to full Anthropic model IDs."""
     if model.startswith("claude-haiku"):
-        return GEMINI_FLASH_MODEL
+        return HAIKU_MODEL
+    if model.startswith("claude-opus"):
+        return OPUS_MODEL
+    if model.startswith("claude-sonnet"):
+        return SONNET_MODEL
     if model.startswith("claude"):
-        return GEMINI_MODEL
+        return SONNET_MODEL
     return model
+
+
+# ── Gemini model mapping ────────────────────────────────────────────────────
+
+GEMINI_OPUS = "gemini-2.5-pro"
+GEMINI_SONNET = "gemini-2.5-flash"
+GEMINI_HAIKU = "gemini-2.0-flash"
+
+
+def _resolve_gemini_model(model: str) -> str:
+    """Map Claude model names to Gemini equivalents."""
+    if model.startswith("claude-haiku") or model.startswith("gemini-2.0-flash"):
+        return GEMINI_HAIKU
+    if model.startswith("claude-opus") or model.startswith("gemini-2.5-pro"):
+        return GEMINI_OPUS
+    if model.startswith("claude-sonnet") or model.startswith("gemini-2.5-flash"):
+        return GEMINI_SONNET
+    if model.startswith("claude"):
+        return GEMINI_SONNET
+    if model.startswith("gemini"):
+        return model  # pass through native Gemini model names
+    return GEMINI_SONNET
 
 
 # ── Response objects (mimic Anthropic SDK shapes) ───────────────────────────
@@ -65,7 +93,7 @@ class _Message:
 # ── Exception hierarchy ──────────────────────────────────────────────────────
 
 class APIError(Exception):
-    """Base Anthropic-style API error."""
+    """Base API error."""
 
 
 class APIStatusError(APIError):
@@ -80,11 +108,23 @@ class APIConnectionError(APIError):
     """Mirrors anthropic.APIConnectionError."""
 
 
+# ── Backend detection ───────────────────────────────────────────────────────
+
+def _detect_backend(api_key: str | None = None) -> str:
+    """Return 'anthropic' or 'gemini' based on available keys."""
+    if api_key or os.getenv("ANTHROPIC_API_KEY"):
+        return "anthropic"
+    if os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"):
+        return "gemini"
+    return "none"
+
+
 # ── Messages resource ────────────────────────────────────────────────────────
 
 class _Messages:
-    def __init__(self, api_key: str | None):
+    def __init__(self, api_key: str | None, backend: str):
         self._api_key = api_key
+        self._backend = backend
 
     def create(
         self,
@@ -95,83 +135,106 @@ class _Messages:
         system: str | None = None,
         **kwargs,
     ) -> _Message:
-        """Send a request to Gemini and return an Anthropic-compatible response."""
-        # Lazy imports — keeps module importable in test environments without the SDK
-        from google import genai
-        from google.genai import types
-        from google.api_core import exceptions as google_exceptions
-
-        gemini_model = _resolve_model(model)
-
-        api_key = self._api_key or os.getenv("GEMINI_API_KEY")
-        if not api_key:
-            raise APIError("GEMINI_API_KEY is not set")
-
-        client = genai.Client(api_key=api_key)
-
-        # Thinking configuration per model family:
-        #   gemini-2.5-flash — disable thinking (budget=0): batch JSON extraction
-        #     tasks don't benefit from chain-of-thought reasoning.
-        #   gemini-2.5-pro — cap thinking at 512 tokens for all callers. This
-        #     keeps a predictable output budget regardless of max_tokens size;
-        #     dynamic thinking can otherwise consume the entire max_tokens budget
-        #     and leave nothing for visible output.
-        if GEMINI_FLASH_MODEL in gemini_model:
-            thinking_cfg = types.ThinkingConfig(thinking_budget=0)
+        if self._backend == "anthropic":
+            return self._create_anthropic(model, max_tokens, messages, system)
+        elif self._backend == "gemini":
+            return self._create_gemini(model, max_tokens, messages, system)
         else:
-            thinking_cfg = types.ThinkingConfig(thinking_budget=512)
-
-        config = types.GenerateContentConfig(
-            system_instruction=system,
-            max_output_tokens=max_tokens,
-            thinking_config=thinking_cfg,
-        )
-
-        # Convert Anthropic message list → google.genai Content objects
-        contents = [
-            types.Content(
-                role="user" if msg["role"] == "user" else "model",
-                parts=[types.Part(text=msg["content"])],
+            raise APIError(
+                "No API key found. Set ANTHROPIC_API_KEY or GEMINI_API_KEY / GOOGLE_API_KEY."
             )
-            for msg in messages
-        ]
+
+    # ── Anthropic backend ───────────────────────────────────────────────────
+
+    def _create_anthropic(
+        self, model: str, max_tokens: int, messages: list[dict], system: str | None
+    ) -> _Message:
+        import anthropic as _anthropic
+
+        resolved_model = _resolve_anthropic_model(model)
+        api_key = self._api_key or os.getenv("ANTHROPIC_API_KEY")
+
+        client = _anthropic.Anthropic(api_key=api_key)
+        create_kwargs: dict[str, Any] = {
+            "model": resolved_model,
+            "max_tokens": max_tokens,
+            "messages": messages,
+        }
+        if system:
+            create_kwargs["system"] = system
 
         try:
-            response = client.models.generate_content(
-                model=gemini_model,
-                contents=contents,
-                config=config,
-            )
-        except google_exceptions.NotFound as exc:
-            raise APIStatusError(str(exc), status_code=404) from exc
-        except google_exceptions.PermissionDenied as exc:
-            raise APIStatusError(str(exc), status_code=403) from exc
-        except google_exceptions.ResourceExhausted as exc:
-            raise APIStatusError(str(exc), status_code=429) from exc
-        except google_exceptions.GoogleAPICallError as exc:
-            status = getattr(exc, "code", None)
-            if status is not None:
-                raise APIStatusError(str(exc), status_code=int(status)) from exc
+            response = client.messages.create(**create_kwargs)
+        except _anthropic.APIStatusError as exc:
+            raise APIStatusError(str(exc), status_code=exc.status_code) from exc
+        except _anthropic.APIConnectionError as exc:
             raise APIConnectionError(str(exc)) from exc
-        except (APIError, APIStatusError, APIConnectionError):
-            raise
+        except _anthropic.APIError as exc:
+            raise APIError(str(exc)) from exc
         except Exception as exc:
-            # Catch httpx / network-level errors (e.g. RemoteProtocolError)
             exc_type = type(exc).__name__
             if exc_type in ("RemoteProtocolError", "ConnectError", "ReadError",
                             "WriteError", "TimeoutException", "NetworkError"):
                 raise APIConnectionError(str(exc)) from exc
             raise APIError(str(exc)) from exc
 
-        text = response.text if hasattr(response, "text") and response.text else ""
+        text = ""
+        for block in response.content:
+            if hasattr(block, "text"):
+                text = block.text
+                break
 
-        meta = getattr(response, "usage_metadata", None)
-        input_tokens = getattr(meta, "prompt_token_count", 0) if meta else 0
-        # Include thinking tokens in output count — both are billed by Google.
-        # candidates_token_count can be None when thinking consumes the full budget.
-        visible = getattr(meta, "candidates_token_count", None) or 0
-        thinking = getattr(meta, "thoughts_token_count", None) or 0
-        output_tokens = visible + thinking
+        return _Message(
+            content=[_ContentBlock(type="text", text=text)],
+            usage=_Usage(
+                input_tokens=response.usage.input_tokens,
+                output_tokens=response.usage.output_tokens,
+            ),
+        )
+
+    # ── Gemini backend ──────────────────────────────────────────────────────
+
+    def _create_gemini(
+        self, model: str, max_tokens: int, messages: list[dict], system: str | None
+    ) -> _Message:
+        from google import genai
+        from google.genai import types
+
+        resolved_model = _resolve_gemini_model(model)
+        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+
+        client = genai.Client(api_key=api_key)
+
+        # Convert Anthropic-style messages to Gemini contents
+        contents = []
+        for msg in messages:
+            role = "model" if msg["role"] == "assistant" else "user"
+            text = msg["content"] if isinstance(msg["content"], str) else str(msg["content"])
+            contents.append(types.Content(role=role, parts=[types.Part(text=text)]))
+
+        config = types.GenerateContentConfig(
+            max_output_tokens=max_tokens,
+        )
+        if system:
+            config.system_instruction = system
+
+        try:
+            response = client.models.generate_content(
+                model=resolved_model,
+                contents=contents,
+                config=config,
+            )
+        except Exception as exc:
+            exc_type = type(exc).__name__
+            if "status" in str(exc).lower() or "http" in exc_type.lower():
+                raise APIStatusError(str(exc)) from exc
+            if any(k in exc_type for k in ("Connection", "Network", "Timeout")):
+                raise APIConnectionError(str(exc)) from exc
+            raise APIError(str(exc)) from exc
+
+        text = response.text or ""
+        input_tokens = getattr(response.usage_metadata, "prompt_token_count", 0) or 0
+        output_tokens = getattr(response.usage_metadata, "candidates_token_count", 0) or 0
 
         return _Message(
             content=[_ContentBlock(type="text", text=text)],
@@ -182,8 +245,14 @@ class _Messages:
 # ── Public client ────────────────────────────────────────────────────────────
 
 class Anthropic:
-    """Drop-in replacement for ``anthropic.Anthropic()``."""
+    """Drop-in LLM client. Uses Anthropic if ANTHROPIC_API_KEY is set, else Gemini."""
 
     def __init__(self, api_key: str | None = None, **kwargs):
         self._api_key = api_key
-        self.messages = _Messages(api_key=api_key)
+        self._backend = _detect_backend(api_key)
+        self.messages = _Messages(api_key=api_key, backend=self._backend)
+
+    @property
+    def backend(self) -> str:
+        """Which backend is active: 'anthropic', 'gemini', or 'none'."""
+        return self._backend

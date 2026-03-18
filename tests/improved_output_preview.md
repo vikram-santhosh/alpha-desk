@@ -1,4 +1,4 @@
-☀️ ALPHADESK DAILY BRIEF — Mar 10, 2026
+☀️ ALPHADESK DAILY BRIEF — Mar 17, 2026
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 💬 TODAY&apos;S TAKE
@@ -25,7 +25,7 @@ Active Theses:
 
 📊 YOUR PORTFOLIO
 
-  Total: $6,068 | Today: $-19 | Unrealized: +$1.2K
+  3 positions tracked
 
   ⚡ MOVING ON NEWS:
   🟢 NVDA  $190.10  +0.1%  (8%)

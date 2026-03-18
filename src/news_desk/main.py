@@ -57,7 +57,7 @@ def _load_api_keys() -> dict[str, str | None]:
     load_dotenv()
 
     keys = {
-        "gemini_key": os.getenv("GEMINI_API_KEY"),
+        "gemini_key": os.getenv("ANTHROPIC_API_KEY") or os.getenv("GEMINI_API_KEY"),
         "finnhub_key": os.getenv("FINNHUB_API_KEY"),
         "newsapi_key": os.getenv("NEWSAPI_KEY"),
     }
@@ -68,7 +68,7 @@ def _load_api_keys() -> dict[str, str | None]:
     log.info("API keys loaded: %s available, %s missing", available, missing)
 
     if not keys["gemini_key"]:
-        log.error("GEMINI_API_KEY is required for news analysis")
+        log.error("ANTHROPIC_API_KEY or GEMINI_API_KEY is required for news analysis")
 
     return keys
 

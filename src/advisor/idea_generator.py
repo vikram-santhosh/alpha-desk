@@ -63,34 +63,20 @@ Return ONLY the JSON array, no other text."""
 
 
 def should_run_ideas() -> bool:
-    """Return True if it's Monday or if ideas have never been generated."""
+    """Return True if ideas haven't been generated today yet."""
     today = date.today()
 
-    # Always run if ideas have never been generated
     last_date_str = get_last_idea_date()
     if last_date_str is None:
         log.info("No previous ideas found — will generate.")
         return True
 
-    # Run on Mondays (weekday 0)
-    if today.weekday() == 0:
-        # Check if we already ran this Monday
-        last_date = date.fromisoformat(last_date_str)
-        if last_date >= today:
-            log.info("Ideas already generated today (%s) — skipping.", last_date_str)
-            return False
-        log.info("Monday detected — will generate new ideas.")
-        return True
-
-    # Check if last run was in the current week (Mon-Sun)
     last_date = date.fromisoformat(last_date_str)
-    days_since_monday = today.weekday()
-    current_week_monday = today - timedelta(days=days_since_monday)
-    if last_date >= current_week_monday:
-        log.debug("Ideas already generated this week (%s) — skipping.", last_date_str)
+    if last_date >= today:
+        log.info("Ideas already generated today (%s) — skipping.", last_date_str)
         return False
 
-    log.info("No ideas this week yet — will generate.")
+    log.info("No ideas generated today — will generate.")
     return True
 
 

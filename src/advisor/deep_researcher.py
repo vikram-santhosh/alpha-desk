@@ -408,7 +408,7 @@ class MultiStepDeepResearcher:
         response = await asyncio.to_thread(
             self.client.messages.create,
             model=PRO_MODEL,
-            max_tokens=2400 if tier == "full" else 700,
+            max_tokens=1200 if tier == "full" else 500,
             messages=[{"role": "user", "content": prompt}],
         )
         return {"raw_text": response.content[0].text.strip(), "usage": response.usage, "model": PRO_MODEL}

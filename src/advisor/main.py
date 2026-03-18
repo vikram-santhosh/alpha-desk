@@ -1332,6 +1332,16 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
                 reddit_mood=reddit_mood,
                 reddit_themes=reddit_themes,
             )
+            # Append novel ideas to v1 format as well
+            try:
+                if novel_ideas:
+                    from src.advisor.idea_generator import format_ideas_section
+                    ideas_section = format_ideas_section(novel_ideas)
+                    if ideas_section:
+                        SEPARATOR = "\u2501" * 35
+                        formatted += f"\n{SEPARATOR}\n{ideas_section}"
+            except Exception:
+                log.debug("Failed to append novel ideas to v1 brief")
     except Exception:
         log.exception("Failed to format brief")
         formatted = "<b>AlphaDesk Advisor</b>\n\nError formatting daily brief."
