@@ -6,7 +6,7 @@ import { CommandBar } from "./CommandBar";
 
 const roster: ModelOption[] = [
   { model_id: "anthropic/claude-opus-4.8", label: "Claude Opus 4.8", provider: "Anthropic", enabled: true },
-  { model_id: "google/gemini-3.1-pro", label: "Gemini 3.1 Pro", provider: "Google", enabled: true }
+  { model_id: "google/gemini-3.1-pro-preview", label: "Gemini 3.1 Pro", provider: "Google", enabled: true }
 ];
 
 describe("CommandBar", () => {
@@ -20,7 +20,7 @@ describe("CommandBar", () => {
 
     expect(onRun).toHaveBeenCalledWith({
       ticker: "NVDA",
-      models: ["anthropic/claude-opus-4.8", "google/gemini-3.1-pro"]
+      models: ["anthropic/claude-opus-4.8", "google/gemini-3.1-pro-preview"]
     });
   });
 

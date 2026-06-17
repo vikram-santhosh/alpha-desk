@@ -134,6 +134,25 @@ def test_council_stream_surfaces_cost_cap_without_silent_failure(monkeypatch):
     assert "COUNCIL_COST_CAP_USD is 0" in events[-1][1]["degraded_reasons"][0]
 
 
+def test_council_stream_times_out_without_silent_failure(monkeypatch):
+    api_app = importlib.reload(importlib.import_module("src.api.app"))
+    monkeypatch.setenv("COUNCIL_STREAM_TIMEOUT_S", "0.01")
+
+    async def slow_run_council(ticker, models):
+        await api_app.asyncio.sleep(1)
+        return _sample_result(ticker)
+
+    monkeypatch.setattr(api_app, "_run_council", slow_run_council)
+    client = TestClient(api_app.app)
+
+    response = client.get("/api/council/stream?ticker=NVDA&models=claude")
+
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+    assert [name for name, _ in events] == ["panel_started", "done"]
+    assert events[-1][1]["degraded_reasons"] == ["Council timed out before completion."]
+
+
 def test_portfolio_endpoint_flags_concentration(monkeypatch):
     api_app = importlib.reload(importlib.import_module("src.api.app"))
 
@@ -173,9 +192,30 @@ def test_council_models_return_openrouter_roster_when_fusion_is_configured(monke
     payload = response.json()
     assert [model["model_id"] for model in payload] == [
         "anthropic/claude-opus-4.8",
-        "google/gemini-3.1-pro",
+        "google/gemini-3.1-pro-preview",
         "x-ai/grok-4.3",
     ]
+
+
+def test_council_models_allow_openrouter_roster_override(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv(
+        "OPENROUTER_ANALYSIS_MODELS",
+        "anthropic/claude-opus-4.8-fast,google/gemini-3.1-flash-lite,x-ai/grok-4.20",
+    )
+    api_app = importlib.reload(importlib.import_module("src.api.app"))
+    client = TestClient(api_app.app)
+
+    response = client.get("/api/council/models")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [model["model_id"] for model in payload] == [
+        "anthropic/claude-opus-4.8-fast",
+        "google/gemini-3.1-flash-lite",
+        "x-ai/grok-4.20",
+    ]
+    assert payload[0]["label"] == "Claude Opus 4 8 Fast"
 
 
 def test_openrouter_fusion_adapter_uses_selected_models(monkeypatch):
@@ -212,7 +252,11 @@ def test_openrouter_fusion_adapter_uses_selected_models(monkeypatch):
     assert result.verdict.ticker == "RKLB"
     assert result.cost_usd == 0.31
     assert captured["model"] == "openrouter/fusion"
+    assert captured["response_format"]["type"] == "json_schema"
+    assert captured["response_format"]["json_schema"]["strict"] is True
+    assert captured["max_tokens"] == 2400
     assert captured["extra_body"]["tool_choice"] == "required"
+    assert captured["extra_body"]["plugins"] == [{"id": "response-healing"}]
     assert captured["extra_body"]["tools"][0]["parameters"]["analysis_models"] == [
         "anthropic/claude-opus-4.8",
         "x-ai/grok-4.3",
@@ -249,6 +293,75 @@ def test_openrouter_fusion_maps_gcp_model_ids(monkeypatch):
 
     assert captured["extra_body"]["tools"][0]["parameters"]["analysis_models"] == [
         "anthropic/claude-opus-4.8",
-        "google/gemini-3.1-pro",
+        "google/gemini-3.1-pro-preview",
         "x-ai/grok-4.3",
     ]
+
+
+def test_openrouter_fusion_repairs_partial_payload(monkeypatch):
+    api_app = importlib.reload(importlib.import_module("src.api.app"))
+    partial = _sample_result("NVDA")
+    partial.pop("cost_usd")
+    partial["verdict"].pop("catalysts")
+    partial["verdict"].pop("risks")
+
+    captured = {}
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(partial)))],
+                usage=SimpleNamespace(cost=0.18),
+            )
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeClient))
+
+    result = api_app._run_openrouter_fusion_sync("NVDA", ["x-ai/grok-4.3"])
+
+    assert result.cost_usd == 0.18
+    assert result.verdict.catalysts == []
+    assert result.verdict.risks == []
+    assert any("omitted verdict.catalysts" in reason for reason in result.degraded_reasons)
+
+
+def test_openrouter_fusion_repairs_panel_only_payload(monkeypatch):
+    api_app = importlib.reload(importlib.import_module("src.api.app"))
+    partial = {
+        "panel": [
+            {
+                "model_id": "x-ai/grok-4.20",
+                "label": "Grok",
+                "rating": "Overweight",
+                "dissent": False,
+            }
+        ]
+    }
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(partial)))],
+                usage=SimpleNamespace(cost=0.09),
+            )
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeClient))
+
+    result = api_app._run_openrouter_fusion_sync("NVDA", ["x-ai/grok-4.20"])
+
+    assert result.panel[0].confidence == 0.0
+    assert result.panel[0].thesis == "Fusion returned an incomplete panel entry."
+    assert result.verdict.ticker == "NVDA"
+    assert result.verdict.rating == "Overweight"
+    assert result.judge.blind_spots == ["Fusion omitted structured judge analysis."]
+    assert any("structured verdict" in reason for reason in result.degraded_reasons)

@@ -98,7 +98,7 @@ class ModelOption(BaseModel):
     enabled: bool
 
 
-OPENROUTER_ANALYSIS_MODELS = [
+DEFAULT_OPENROUTER_ANALYSIS_MODELS = [
     ModelOption(
         model_id="anthropic/claude-opus-4.8",
         label="Claude Opus 4.8",
@@ -106,7 +106,7 @@ OPENROUTER_ANALYSIS_MODELS = [
         enabled=True,
     ),
     ModelOption(
-        model_id="google/gemini-3.1-pro",
+        model_id="google/gemini-3.1-pro-preview",
         label="Gemini 3.1 Pro",
         provider="google",
         enabled=True,
@@ -121,7 +121,7 @@ OPENROUTER_ANALYSIS_MODELS = [
 
 OPENROUTER_MODEL_ALIASES = {
     "claude-opus-4-8": "anthropic/claude-opus-4.8",
-    "gemini-3.1-pro-preview": "google/gemini-3.1-pro",
+    "gemini-3.1-pro-preview": "google/gemini-3.1-pro-preview",
     "xai/grok-4.20-reasoning": "x-ai/grok-4.3",
 }
 
@@ -140,7 +140,7 @@ app.add_middleware(
 def get_council_models() -> list[ModelOption]:
     """Return the configured council roster for UI chips."""
     if os.getenv("OPENROUTER_API_KEY"):
-        return OPENROUTER_ANALYSIS_MODELS
+        return _openrouter_model_options()
 
     roster = enabled_roster(require_gcp_project=False)
     return [
@@ -188,7 +188,12 @@ async def stream_council(
                 yield _sse("done", done)
                 return
 
-            result = _apply_cost_guardrail(await _run_council(ticker_value, model_ids))
+            result = _apply_cost_guardrail(
+                await asyncio.wait_for(
+                    _run_council(ticker_value, model_ids),
+                    timeout=_stream_timeout_s(),
+                )
+            )
             for panel_result in result.panel:
                 yield _sse("panel_model_result", panel_result)
             yield _sse("judge_result", result.judge)
@@ -292,6 +297,7 @@ def _run_openrouter_fusion_sync(ticker: str, models: list[str]) -> CouncilResult
                 },
             }
         ]
+    extra_body["plugins"] = [{"id": "response-healing"}]
 
     response = client.chat.completions.create(
         model=os.getenv("OPENROUTER_FUSION_MODEL", "openrouter/fusion"),
@@ -310,13 +316,27 @@ def _run_openrouter_fusion_sync(ticker: str, models: list[str]) -> CouncilResult
             "HTTP-Referer": os.getenv("OPENROUTER_SITE_URL", "http://localhost:5173"),
             "X-Title": "AlphaDesk Cockpit",
         },
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "alphadesk_council_result",
+                "strict": True,
+                "schema": _council_result_json_schema(),
+            },
+        },
+        max_tokens=_openrouter_max_tokens(),
         timeout=float(os.getenv("COUNCIL_MODEL_TIMEOUT_S", "60")),
     )
     content = response.choices[0].message.content
     if not content:
         raise RuntimeError("Fusion call returned an empty response.")
     parsed = _extract_json_object(content)
-    result = CouncilResult.model_validate(parsed)
+    repaired, repair_reasons = _repair_openrouter_payload(parsed, ticker)
+    result = CouncilResult.model_validate(repaired)
+    if repair_reasons:
+        result = result.model_copy(
+            update={"degraded_reasons": [*result.degraded_reasons, *repair_reasons]}
+        )
 
     usage = getattr(response, "usage", None)
     cost = _openrouter_cost(response)
@@ -327,8 +347,117 @@ def _run_openrouter_fusion_sync(ticker: str, models: list[str]) -> CouncilResult
     return result
 
 
+def _repair_openrouter_payload(payload: dict[str, Any], ticker: str) -> tuple[dict[str, Any], list[str]]:
+    repaired = dict(payload)
+    reasons: list[str] = []
+
+    if not isinstance(repaired.get("panel"), list):
+        repaired["panel"] = []
+        reasons.append("Fusion payload omitted panel results; rendered an empty panel.")
+    repaired["panel"] = [_repair_panel_item(item, reasons) for item in repaired["panel"]]
+
+    if "judge" not in repaired or not isinstance(repaired.get("judge"), dict):
+        repaired["judge"] = {
+            "consensus": [],
+            "contradictions": [],
+            "blind_spots": ["Fusion omitted structured judge analysis."],
+            "crowded_narrative_flag": None,
+        }
+        reasons.append("Fusion payload omitted structured judge analysis.")
+
+    if "verdict" not in repaired or not isinstance(repaired.get("verdict"), dict):
+        repaired["verdict"] = _fallback_verdict(ticker, repaired["panel"])
+        reasons.append("Fusion payload omitted structured verdict; rendered a degraded fallback.")
+
+    if "cost_usd" not in repaired:
+        repaired["cost_usd"] = 0.0
+        reasons.append("Fusion payload omitted cost_usd; OpenRouter usage metadata was used when available.")
+    if "degraded_reasons" not in repaired:
+        repaired["degraded_reasons"] = []
+
+    judge = repaired.get("judge")
+    if isinstance(judge, dict) and "crowded_narrative_flag" not in judge:
+        judge["crowded_narrative_flag"] = None
+
+    verdict = repaired.get("verdict")
+    if isinstance(verdict, dict):
+        verdict.setdefault("ticker", ticker)
+        verdict.setdefault("rating", _rating_from_panel(repaired["panel"]))
+        verdict.setdefault("conviction", _confidence_from_panel(repaired["panel"]))
+        verdict.setdefault("conviction_label", "Degraded fallback from partial Fusion payload")
+        for key in ("scenarios", "catalysts", "risks"):
+            if key not in verdict:
+                verdict[key] = []
+                reasons.append(f"Fusion payload omitted verdict.{key}; rendered it as empty.")
+
+    return repaired, reasons
+
+
+def _repair_panel_item(item: Any, reasons: list[str]) -> dict[str, Any]:
+    if not isinstance(item, dict):
+        reasons.append("Fusion returned a non-object panel entry; replaced it with a degraded placeholder.")
+        return {
+            "model_id": "unknown",
+            "label": "Unknown model",
+            "rating": "Hold",
+            "confidence": 0.0,
+            "thesis": "Fusion returned an incomplete panel entry.",
+            "dissent": False,
+        }
+
+    repaired = dict(item)
+    model_id = str(repaired.get("model_id") or repaired.get("model") or "unknown")
+    repaired["model_id"] = model_id
+    repaired.setdefault("label", _label_from_model_id(model_id))
+    repaired.setdefault("rating", "Hold")
+    repaired.setdefault("confidence", 0.0)
+    repaired.setdefault(
+        "thesis",
+        str(repaired.get("analysis") or repaired.get("content") or "Fusion returned an incomplete panel entry."),
+    )
+    repaired.setdefault("dissent", False)
+    for key in ("confidence", "thesis"):
+        if key not in item:
+            reasons.append(f"Fusion payload omitted panel.{key}; rendered a degraded placeholder.")
+    return repaired
+
+
+def _fallback_verdict(ticker: str, panel: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "ticker": ticker,
+        "rating": _rating_from_panel(panel),
+        "conviction": _confidence_from_panel(panel),
+        "conviction_label": "Degraded fallback from partial Fusion payload",
+        "scenarios": [],
+        "catalysts": [],
+        "risks": ["Fusion omitted structured verdict."],
+    }
+
+
+def _rating_from_panel(panel: list[dict[str, Any]]) -> Rating:
+    counts: dict[str, int] = {}
+    for item in panel:
+        rating = item.get("rating")
+        if rating in {"Buy", "Overweight", "Hold", "Underweight", "Sell"}:
+            counts[str(rating)] = counts.get(str(rating), 0) + 1
+    if not counts:
+        return "Hold"
+    return max(counts.items(), key=lambda pair: pair[1])[0]  # type: ignore[return-value]
+
+
+def _confidence_from_panel(panel: list[dict[str, Any]]) -> float:
+    confidences = [
+        float(item.get("confidence"))
+        for item in panel
+        if isinstance(item.get("confidence"), (int, float))
+    ]
+    if not confidences:
+        return 0.0
+    return round(sum(confidences) / len(confidences), 2)
+
+
 def _openrouter_analysis_models(models: list[str]) -> list[str]:
-    selected = models or [model.model_id for model in OPENROUTER_ANALYSIS_MODELS if model.enabled]
+    selected = models or [model.model_id for model in _openrouter_model_options() if model.enabled]
     analysis_models: list[str] = []
     for model in selected:
         normalized = OPENROUTER_MODEL_ALIASES.get(model, model)
@@ -337,6 +466,29 @@ def _openrouter_analysis_models(models: list[str]) -> list[str]:
         if normalized not in analysis_models:
             analysis_models.append(normalized)
     return analysis_models[:8]
+
+
+def _openrouter_model_options() -> list[ModelOption]:
+    configured = os.getenv("OPENROUTER_ANALYSIS_MODELS", "").strip()
+    if not configured:
+        return DEFAULT_OPENROUTER_ANALYSIS_MODELS
+
+    options: list[ModelOption] = []
+    for model_id in [item.strip() for item in configured.split(",") if item.strip()]:
+        options.append(
+            ModelOption(
+                model_id=model_id,
+                label=_label_from_model_id(model_id),
+                provider=model_id.split("/", 1)[0] if "/" in model_id else "openrouter",
+                enabled=True,
+            )
+        )
+    return options or DEFAULT_OPENROUTER_ANALYSIS_MODELS
+
+
+def _label_from_model_id(model_id: str) -> str:
+    name = model_id.split("/")[-1]
+    return name.replace("-", " ").replace(".", " ").title()
 
 
 def _normalize_council_result(ticker: str, raw_result: Any, models: list[str]) -> CouncilResult:
@@ -485,6 +637,20 @@ def _cost_cap_usd() -> float:
         return 2.0
 
 
+def _stream_timeout_s() -> float:
+    try:
+        return float(os.getenv("COUNCIL_STREAM_TIMEOUT_S", os.getenv("COUNCIL_MODEL_TIMEOUT_S", "60")))
+    except ValueError:
+        return 60.0
+
+
+def _openrouter_max_tokens() -> int:
+    try:
+        return max(512, int(os.getenv("OPENROUTER_MAX_TOKENS", "2400")))
+    except ValueError:
+        return 2400
+
+
 def _portfolio_threshold() -> float:
     try:
         advisor = load_config("advisor")
@@ -545,4 +711,89 @@ Rules:
 - Surface disagreement explicitly; set dissent=true for panel ratings that diverge from the modal rating.
 - Do not present consensus as truth. If the thesis is crowded, populate crowded_narrative_flag.
 - Use only the five allowed rating strings.
+- Always include crowded_narrative_flag; use null when there is no crowded narrative.
 """.strip()
+
+
+def _council_result_json_schema() -> dict[str, Any]:
+    rating_enum = ["Buy", "Overweight", "Hold", "Underweight", "Sell"]
+    panel_verdict = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "model_id": {"type": "string"},
+            "label": {"type": "string"},
+            "rating": {"type": "string", "enum": rating_enum},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "thesis": {"type": "string"},
+            "dissent": {"type": "boolean"},
+        },
+        "required": ["model_id", "label", "rating", "confidence", "thesis", "dissent"],
+    }
+    crowded_flag = {
+        "type": ["object", "null"],
+        "additionalProperties": False,
+        "properties": {
+            "topic": {"type": "string"},
+            "note": {"type": "string"},
+        },
+        "required": ["topic", "note"],
+    }
+    scenario = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "name": {"type": "string", "enum": ["Bull", "Base", "Bear"]},
+            "probability": {"type": "number", "minimum": 0, "maximum": 1},
+            "ret_pct": {"type": "number"},
+        },
+        "required": ["name", "probability", "ret_pct"],
+    }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "panel": {"type": "array", "items": panel_verdict},
+            "judge": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "consensus": {"type": "array", "items": {"type": "string"}},
+                    "contradictions": {"type": "array", "items": {"type": "string"}},
+                    "blind_spots": {"type": "array", "items": {"type": "string"}},
+                    "crowded_narrative_flag": crowded_flag,
+                },
+                "required": [
+                    "consensus",
+                    "contradictions",
+                    "blind_spots",
+                    "crowded_narrative_flag",
+                ],
+            },
+            "verdict": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "ticker": {"type": "string"},
+                    "rating": {"type": "string", "enum": rating_enum},
+                    "conviction": {"type": "number", "minimum": 0, "maximum": 1},
+                    "conviction_label": {"type": "string"},
+                    "scenarios": {"type": "array", "items": scenario},
+                    "catalysts": {"type": "array", "items": {"type": "string"}},
+                    "risks": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": [
+                    "ticker",
+                    "rating",
+                    "conviction",
+                    "conviction_label",
+                    "scenarios",
+                    "catalysts",
+                    "risks",
+                ],
+            },
+            "cost_usd": {"type": "number", "minimum": 0},
+            "degraded_reasons": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["panel", "judge", "verdict", "cost_usd", "degraded_reasons"],
+    }

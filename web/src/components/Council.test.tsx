@@ -9,7 +9,7 @@ const events: CouncilEvent[] = [
     type: "panel_started",
     data: {
       ticker: "NVDA",
-      models: ["anthropic/claude-opus-4.8", "openai/gpt-5.5", "google/gemini-3.1-pro", "x-ai/grok-4.3"]
+      models: ["anthropic/claude-opus-4.8", "openai/gpt-5.5", "google/gemini-3.1-pro-preview", "x-ai/grok-4.3"]
     }
   },
   {
@@ -37,7 +37,7 @@ const events: CouncilEvent[] = [
   {
     type: "panel_model_result",
     data: {
-      model_id: "google/gemini-3.1-pro",
+      model_id: "google/gemini-3.1-pro-preview",
       label: "Gemini 3.1 Pro",
       rating: "Buy",
       confidence: 0.73,
