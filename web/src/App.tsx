@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
+import { Council } from "./components/Council";
+
 type NavItem = {
   label: string;
   active?: boolean;
@@ -137,41 +139,6 @@ function CommandRegion() {
   );
 }
 
-function CouncilEmpty() {
-  return (
-    <section className="glass min-h-[26rem] p-5 md:p-7" aria-labelledby="council-title">
-      <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
-        <div>
-          <p className="data-text text-xs uppercase text-[var(--muted)]">The council</p>
-          <h2 id="council-title" className="font-display text-2xl font-semibold">
-            Prism deliberation
-          </h2>
-        </div>
-        <div className="data-text rounded-full border border-white/10 px-4 py-2 text-xs text-[var(--muted)]">
-          Awaiting SSE
-        </div>
-      </div>
-      <div className="mt-12 grid gap-4 md:grid-cols-[1fr_auto_1fr] md:items-center">
-        <div className="grid gap-3">
-          {["Gemini", "Claude", "Grok"].map((label) => (
-            <div key={label} className="rounded-2xl border border-white/10 bg-white/[.035] p-4">
-              <p className="font-display text-lg">{label}</p>
-              <p className="mt-2 text-sm text-[var(--muted)]">No run yet</p>
-            </div>
-          ))}
-        </div>
-        <PrismMark />
-        <div className="rounded-2xl border border-white/10 bg-white/[.035] p-5">
-          <p className="font-display text-xl">Fusion judge</p>
-          <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
-            No run yet — enter a ticker or idea and run the council.
-          </p>
-        </div>
-      </div>
-    </section>
-  );
-}
-
 function LowerCards() {
   return (
     <div className="grid gap-5 xl:grid-cols-[1.1fr_.9fr]">
@@ -209,7 +176,7 @@ export default function App() {
       <main className="relative z-10 mx-auto flex min-h-screen w-full max-w-[1500px] flex-col gap-5 px-4 py-4 lg:pl-32">
         <CommandRegion />
         <div className="cockpit-grid grid gap-5">
-          <CouncilEmpty />
+          <Council />
           <LowerCards />
         </div>
       </main>
