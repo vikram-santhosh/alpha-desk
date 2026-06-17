@@ -98,6 +98,34 @@ class ModelOption(BaseModel):
     enabled: bool
 
 
+OPENROUTER_ANALYSIS_MODELS = [
+    ModelOption(
+        model_id="anthropic/claude-opus-4.8",
+        label="Claude Opus 4.8",
+        provider="anthropic",
+        enabled=True,
+    ),
+    ModelOption(
+        model_id="google/gemini-3.1-pro",
+        label="Gemini 3.1 Pro",
+        provider="google",
+        enabled=True,
+    ),
+    ModelOption(
+        model_id="x-ai/grok-4.3",
+        label="Grok 4.3",
+        provider="x-ai",
+        enabled=True,
+    ),
+]
+
+OPENROUTER_MODEL_ALIASES = {
+    "claude-opus-4-8": "anthropic/claude-opus-4.8",
+    "gemini-3.1-pro-preview": "google/gemini-3.1-pro",
+    "xai/grok-4.20-reasoning": "x-ai/grok-4.3",
+}
+
+
 app = FastAPI(title="AlphaDesk Cockpit API")
 app.add_middleware(
     CORSMiddleware,
@@ -111,6 +139,9 @@ app.add_middleware(
 @app.get("/api/council/models", response_model=list[ModelOption])
 def get_council_models() -> list[ModelOption]:
     """Return the configured council roster for UI chips."""
+    if os.getenv("OPENROUTER_API_KEY"):
+        return OPENROUTER_ANALYSIS_MODELS
+
     roster = enabled_roster(require_gcp_project=False)
     return [
         ModelOption(
@@ -250,12 +281,13 @@ def _run_openrouter_fusion_sync(ticker: str, models: list[str]) -> CouncilResult
         api_key=os.environ["OPENROUTER_API_KEY"],
     )
     extra_body: dict[str, Any] = {"tool_choice": "required"}
-    if models:
+    analysis_models = _openrouter_analysis_models(models)
+    if analysis_models:
         extra_body["tools"] = [
             {
                 "type": "openrouter:fusion",
                 "parameters": {
-                    "analysis_models": models[:8],
+                    "analysis_models": analysis_models,
                     "model": os.getenv("OPENROUTER_FUSION_JUDGE", "anthropic/claude-opus-4.8"),
                 },
             }
@@ -293,6 +325,18 @@ def _run_openrouter_fusion_sync(ticker: str, models: list[str]) -> CouncilResult
     if cost is not None:
         result = result.model_copy(update={"cost_usd": cost})
     return result
+
+
+def _openrouter_analysis_models(models: list[str]) -> list[str]:
+    selected = models or [model.model_id for model in OPENROUTER_ANALYSIS_MODELS if model.enabled]
+    analysis_models: list[str] = []
+    for model in selected:
+        normalized = OPENROUTER_MODEL_ALIASES.get(model, model)
+        if normalized == os.getenv("OPENROUTER_FUSION_MODEL", "openrouter/fusion"):
+            continue
+        if normalized not in analysis_models:
+            analysis_models.append(normalized)
+    return analysis_models[:8]
 
 
 def _normalize_council_result(ticker: str, raw_result: Any, models: list[str]) -> CouncilResult:

@@ -4,5 +4,6 @@ coverage
 .vite
 *.tsbuildinfo
 *.d.ts
+!src/vite-env.d.ts
 tailwind.config.js
 vite.config.js

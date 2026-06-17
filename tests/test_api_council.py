@@ -162,6 +162,22 @@ def test_portfolio_endpoint_flags_concentration(monkeypatch):
     assert payload["concentration_flag"] is True
 
 
+def test_council_models_return_openrouter_roster_when_fusion_is_configured(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    api_app = importlib.reload(importlib.import_module("src.api.app"))
+    client = TestClient(api_app.app)
+
+    response = client.get("/api/council/models")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [model["model_id"] for model in payload] == [
+        "anthropic/claude-opus-4.8",
+        "google/gemini-3.1-pro",
+        "x-ai/grok-4.3",
+    ]
+
+
 def test_openrouter_fusion_adapter_uses_selected_models(monkeypatch):
     api_app = importlib.reload(importlib.import_module("src.api.app"))
     captured = {}
@@ -199,5 +215,40 @@ def test_openrouter_fusion_adapter_uses_selected_models(monkeypatch):
     assert captured["extra_body"]["tool_choice"] == "required"
     assert captured["extra_body"]["tools"][0]["parameters"]["analysis_models"] == [
         "anthropic/claude-opus-4.8",
+        "x-ai/grok-4.3",
+    ]
+
+
+def test_openrouter_fusion_maps_gcp_model_ids(monkeypatch):
+    api_app = importlib.reload(importlib.import_module("src.api.app"))
+    captured = {}
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content=json.dumps(_sample_result("NVDA")))
+                    )
+                ],
+                usage=SimpleNamespace(cost=0.12),
+            )
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeClient))
+
+    api_app._run_openrouter_fusion_sync(
+        "NVDA",
+        ["claude-opus-4-8", "gemini-3.1-pro-preview", "xai/grok-4.20-reasoning", "openrouter/fusion"],
+    )
+
+    assert captured["extra_body"]["tools"][0]["parameters"]["analysis_models"] == [
+        "anthropic/claude-opus-4.8",
+        "google/gemini-3.1-pro",
         "x-ai/grok-4.3",
     ]
