@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 
-import type { CouncilRunRequest, ModelOption } from "./api/types";
+import type { CouncilRunRequest, ModelOption, PortfolioSnapshot } from "./api/types";
 import { CommandBar } from "./components/CommandBar";
 import { Council } from "./components/Council";
+import { PortfolioPanel } from "./components/Portfolio";
 import { VerdictPanel } from "./components/Verdict";
 
 type NavItem = {
@@ -135,19 +136,11 @@ function MobileTopBar() {
   );
 }
 
-function LowerCards() {
+function LowerCards({ portfolio }: { portfolio?: PortfolioSnapshot }) {
   return (
     <div className="grid gap-5 xl:grid-cols-[1.1fr_.9fr]">
       <VerdictPanel />
-      <section className="glass min-h-56 p-5" aria-labelledby="portfolio-title">
-        <p className="data-text text-xs uppercase text-[var(--muted)]">Portfolio</p>
-        <h2 id="portfolio-title" className="mt-2 font-display text-2xl font-semibold">
-          No portfolio loaded
-        </h2>
-        <p className="mt-4 text-sm leading-6 text-[var(--muted)]">
-          Allocation and concentration checks connect in the portfolio panel.
-        </p>
-      </section>
+      <PortfolioPanel snapshot={portfolio} />
     </div>
   );
 }
@@ -155,6 +148,7 @@ function LowerCards() {
 export default function App() {
   const reducedMotion = usePrefersReducedMotion();
   const [roster, setRoster] = useState(fallbackRoster);
+  const [portfolio, setPortfolio] = useState<PortfolioSnapshot>();
   const [status, setStatus] = useState("No run yet");
 
   useEffect(() => {
@@ -179,6 +173,28 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadPortfolio() {
+      try {
+        const response = await fetch(`${apiBaseUrl}/api/portfolio`);
+        if (!response.ok) return;
+        const snapshot = (await response.json()) as PortfolioSnapshot;
+        if (!cancelled) {
+          setPortfolio(snapshot);
+        }
+      } catch {
+        // Keep the requested empty portfolio state when the local API is offline.
+      }
+    }
+
+    void loadPortfolio();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   function handleRun(request: CouncilRunRequest) {
     setStatus(`Queued ${request.ticker} on ${request.models.length} models`);
   }
@@ -192,7 +208,7 @@ export default function App() {
         <CommandBar roster={roster} status={status} onRun={handleRun} />
         <div className="cockpit-grid grid gap-5">
           <Council />
-          <LowerCards />
+          <LowerCards portfolio={portfolio} />
         </div>
       </main>
     </div>
