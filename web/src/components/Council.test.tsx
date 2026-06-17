@@ -99,4 +99,26 @@ describe("Council signature", () => {
     expect(screen.getByText("Blind spots")).toBeInTheDocument();
     expect(screen.getByText("Consensus rests on a crowded narrative — confidence adjusted down.")).toBeInTheDocument();
   });
+
+  it("shows a degraded completion state when a run ends before panel results arrive", () => {
+    render(
+      <Council
+        events={[
+          { type: "panel_started", data: { ticker: "NVDA", models: ["gemini-3.1-pro-preview"] } },
+          {
+            type: "done",
+            data: {
+              cost_usd: 0,
+              degraded_reasons: ["Council skipped because COUNCIL_COST_CAP_USD is 0."]
+            }
+          }
+        ]}
+      />
+    );
+
+    expect(screen.getByText("Done with limits")).toBeInTheDocument();
+    expect(screen.getByText("Council skipped because COUNCIL_COST_CAP_USD is 0.")).toBeInTheDocument();
+    expect(screen.getByText("No panel results arrived before the run completed.")).toBeInTheDocument();
+    expect(screen.queryByText("Deliberating")).not.toBeInTheDocument();
+  });
 });
