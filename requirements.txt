@@ -1,5 +1,8 @@
 anthropic
 google-genai
+fastapi
+uvicorn
+openai
 pyyaml
 python-dotenv
 requests
