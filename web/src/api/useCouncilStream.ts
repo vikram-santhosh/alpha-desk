@@ -98,15 +98,8 @@ export function useCouncilStream(): CouncilStreamState {
         setStatus("complete");
         closeStream();
       });
-      source.addEventListener("error", (event) => {
-        let message = streamFailureCopy;
-        if ("data" in event && typeof event.data === "string") {
-          try {
-            message = parseEventData<{ message: string }>(event).message || streamFailureCopy;
-          } catch {
-            message = streamFailureCopy;
-          }
-        }
+      source.addEventListener("error", () => {
+        const message = streamFailureCopy;
         setError(message);
         setStatus("error");
         setEvents((current) =>

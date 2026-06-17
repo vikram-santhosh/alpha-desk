@@ -74,6 +74,7 @@ input {
 .focus-ring:focus-visible {
   outline: 2px solid var(--aurora-teal);
   outline-offset: 4px;
+  box-shadow: 0 0 0 6px rgba(45,212,191,.14), 0 0 0 9px rgba(245,194,75,.10);
 }
 
 .thinking-shimmer {

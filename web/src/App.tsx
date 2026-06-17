@@ -110,8 +110,11 @@ function NavRail() {
                 : "nav-soon text-[var(--muted)] hover:text-[var(--text)]"
             }`}
             aria-current={item.active ? "page" : undefined}
+            aria-disabled={item.active ? undefined : true}
             title={item.active ? item.label : `${item.label} soon`}
-            disabled={!item.active}
+            onClick={(event) => {
+              if (!item.active) event.preventDefault();
+            }}
           >
             {item.label}
           </button>
@@ -214,7 +217,10 @@ export default function App() {
       <AuroraLayer reducedMotion={reducedMotion} />
       <NavRail />
       <MobileTopBar />
-      <main className="relative z-10 mx-auto flex min-h-screen w-full max-w-[1500px] flex-col gap-5 px-4 py-4 lg:pl-32">
+      <main
+        className="relative z-10 mx-auto flex min-h-screen w-full max-w-[1500px] flex-col gap-5 px-4 py-4 lg:pl-32"
+        aria-label="AlphaDesk research cockpit"
+      >
         <CommandBar roster={roster} status={runStatus(councilStream)} onRun={councilStream.runCouncil} />
         {councilStream.error ? (
           <div
