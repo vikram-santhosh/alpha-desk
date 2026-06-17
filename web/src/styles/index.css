@@ -76,6 +76,30 @@ input {
   outline-offset: 4px;
 }
 
+.thinking-shimmer {
+  position: relative;
+  overflow: hidden;
+}
+
+.thinking-shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.18), transparent);
+  transform: translateX(-100%);
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+.spectral-ray,
+.recombined-ray {
+  transition: opacity .5s ease, transform .7s ease;
+}
+
+.prism-resolved .ray-a { transform: translateY(22px); opacity: .38; }
+.prism-resolved .ray-b { opacity: .25; }
+.prism-resolved .ray-c { transform: translateY(-22px); opacity: .38; }
+.prism-resolved .recombined-ray { animation: draw-beam .9s ease-out both; }
+
 @keyframes drift-a {
   from { transform: translate3d(-5%, -3%, 0) scale(1); }
   to { transform: translate3d(7%, 8%, 0) scale(1.08); }
@@ -94,6 +118,15 @@ input {
 @keyframes drift-d {
   from { transform: translate3d(3%, -8%, 0) scale(.96); }
   to { transform: translate3d(-7%, 5%, 0) scale(1.08); }
+}
+
+@keyframes shimmer {
+  to { transform: translateX(100%); }
+}
+
+@keyframes draw-beam {
+  from { stroke-dasharray: 1 90; stroke-dashoffset: 60; }
+  to { stroke-dasharray: 90 0; stroke-dashoffset: 0; }
 }
 
 @media (max-width: 900px) {
