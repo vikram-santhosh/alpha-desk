@@ -70,10 +70,15 @@ export interface CouncilRunRequest {
   models: string[];
 }
 
+export interface DoneEvent {
+  cost_usd: number;
+  degraded_reasons: string[];
+}
+
 export type CouncilEvent =
   | { type: "panel_started"; data: { ticker: string; models: string[] } }
   | { type: "panel_model_result"; data: PanelVerdict }
   | { type: "judge_result"; data: JudgeAnalysis }
   | { type: "verdict"; data: Verdict }
-  | { type: "done"; data: { cost_usd: number; degraded_reasons: string[] } }
+  | { type: "done"; data: DoneEvent }
   | { type: "error"; data: { message: string } };

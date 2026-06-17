@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 
-import type { CouncilRunRequest, ModelOption, PortfolioSnapshot } from "./api/types";
+import type { ModelOption, PortfolioSnapshot, Verdict } from "./api/types";
+import { fetchCouncilModels, fetchPortfolioSnapshot } from "./api/client";
+import { useCouncilStream } from "./api/useCouncilStream";
 import { CommandBar } from "./components/CommandBar";
 import { Council } from "./components/Council";
 import { PortfolioPanel } from "./components/Portfolio";
@@ -23,8 +25,6 @@ const fallbackRoster: ModelOption[] = [
   { model_id: "google/gemini-3.1-pro", label: "Gemini 3.1 Pro", provider: "Google", enabled: true },
   { model_id: "x-ai/grok-4.3", label: "Grok 4.3", provider: "xAI", enabled: true }
 ];
-
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 
 function usePrefersReducedMotion() {
   const [reduced, setReduced] = useState(() =>
@@ -136,29 +136,45 @@ function MobileTopBar() {
   );
 }
 
-function LowerCards({ portfolio }: { portfolio?: PortfolioSnapshot }) {
+function LowerCards({
+  portfolio,
+  verdict
+}: {
+  portfolio?: PortfolioSnapshot;
+  verdict?: Verdict;
+}) {
   return (
     <div className="grid gap-5 xl:grid-cols-[1.1fr_.9fr]">
-      <VerdictPanel />
+      <VerdictPanel verdict={verdict} />
       <PortfolioPanel snapshot={portfolio} />
     </div>
   );
+}
+
+function runStatus({
+  status,
+  activeRun,
+  done,
+  error
+}: Pick<ReturnType<typeof useCouncilStream>, "status" | "activeRun" | "done" | "error">) {
+  if (status === "loading" && activeRun) return `Running ${activeRun.ticker}`;
+  if (status === "complete") return done ? `Council complete · $${done.cost_usd.toFixed(2)}` : "Council complete";
+  if (status === "error") return error ?? "Fusion call failed";
+  return "No run yet";
 }
 
 export default function App() {
   const reducedMotion = usePrefersReducedMotion();
   const [roster, setRoster] = useState(fallbackRoster);
   const [portfolio, setPortfolio] = useState<PortfolioSnapshot>();
-  const [status, setStatus] = useState("No run yet");
+  const councilStream = useCouncilStream();
 
   useEffect(() => {
     let cancelled = false;
 
     async function loadRoster() {
       try {
-        const response = await fetch(`${apiBaseUrl}/api/council/models`);
-        if (!response.ok) return;
-        const models = (await response.json()) as ModelOption[];
+        const models = await fetchCouncilModels();
         if (!cancelled && models.length > 0) {
           setRoster(models);
         }
@@ -178,9 +194,7 @@ export default function App() {
 
     async function loadPortfolio() {
       try {
-        const response = await fetch(`${apiBaseUrl}/api/portfolio`);
-        if (!response.ok) return;
-        const snapshot = (await response.json()) as PortfolioSnapshot;
+        const snapshot = await fetchPortfolioSnapshot();
         if (!cancelled) {
           setPortfolio(snapshot);
         }
@@ -195,20 +209,31 @@ export default function App() {
     };
   }, []);
 
-  function handleRun(request: CouncilRunRequest) {
-    setStatus(`Queued ${request.ticker} on ${request.models.length} models`);
-  }
-
   return (
     <div className="relative min-h-screen overflow-hidden bg-[var(--void)] text-[var(--text)]">
       <AuroraLayer reducedMotion={reducedMotion} />
       <NavRail />
       <MobileTopBar />
       <main className="relative z-10 mx-auto flex min-h-screen w-full max-w-[1500px] flex-col gap-5 px-4 py-4 lg:pl-32">
-        <CommandBar roster={roster} status={status} onRun={handleRun} />
+        <CommandBar roster={roster} status={runStatus(councilStream)} onRun={councilStream.runCouncil} />
+        {councilStream.error ? (
+          <div
+            className="glass flex flex-col gap-3 border-[var(--rate-sell)]/35 p-4 sm:flex-row sm:items-center sm:justify-between"
+            role="alert"
+          >
+            <span className="text-sm text-[var(--text)]">{councilStream.error}</span>
+            <button
+              type="button"
+              className="focus-ring rounded-2xl border border-[var(--aurora-teal)]/40 px-4 py-2 text-sm font-semibold text-[var(--aurora-teal)]"
+              onClick={councilStream.retry}
+            >
+              Retry
+            </button>
+          </div>
+        ) : null}
         <div className="cockpit-grid grid gap-5">
-          <Council />
-          <LowerCards portfolio={portfolio} />
+          <Council events={councilStream.events} />
+          <LowerCards portfolio={portfolio} verdict={councilStream.verdict} />
         </div>
       </main>
     </div>
