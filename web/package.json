@@ -1,0 +1,29 @@
+{
+  "name": "alphadesk-cockpit",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc -b && vite build",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^5.1.2",
+    "vite": "^7.3.0",
+    "typescript": "^5.9.3",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "tailwindcss": "^3.4.18",
+    "postcss": "^8.5.6",
+    "autoprefixer": "^10.4.23"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.0",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "jsdom": "^28.0.0",
+    "vitest": "^4.0.16"
+  }
+}
