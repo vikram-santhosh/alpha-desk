@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { CouncilRunRequest, ModelOption } from "./api/types";
 import { CommandBar } from "./components/CommandBar";
 import { Council } from "./components/Council";
+import { VerdictPanel } from "./components/Verdict";
 
 type NavItem = {
   label: string;
@@ -137,16 +138,7 @@ function MobileTopBar() {
 function LowerCards() {
   return (
     <div className="grid gap-5 xl:grid-cols-[1.1fr_.9fr]">
-      <section className="glass min-h-56 p-5" aria-labelledby="verdict-title">
-        <p className="data-text text-xs uppercase text-[var(--muted)]">Verdict</p>
-        <h2 id="verdict-title" className="mt-2 font-display text-2xl font-semibold">
-          Awaiting synthesis
-        </h2>
-        <p className="mt-4 max-w-xl text-sm leading-6 text-[var(--muted)]">
-          The final rating, conviction gauge, scenarios, catalysts, and risks will crystallize here after
-          the judge resolves the panel.
-        </p>
-      </section>
+      <VerdictPanel />
       <section className="glass min-h-56 p-5" aria-labelledby="portfolio-title">
         <p className="data-text text-xs uppercase text-[var(--muted)]">Portfolio</p>
         <h2 id="portfolio-title" className="mt-2 font-display text-2xl font-semibold">
