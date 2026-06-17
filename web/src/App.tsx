@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
+import type { CouncilRunRequest, ModelOption } from "./api/types";
+import { CommandBar } from "./components/CommandBar";
 import { Council } from "./components/Council";
 
 type NavItem = {
@@ -13,6 +15,14 @@ const navItems: NavItem[] = [
   { label: "Portfolio" },
   { label: "Journal" }
 ];
+
+const fallbackRoster: ModelOption[] = [
+  { model_id: "anthropic/claude-opus-4.8", label: "Claude Opus 4.8", provider: "Anthropic", enabled: true },
+  { model_id: "google/gemini-3.1-pro", label: "Gemini 3.1 Pro", provider: "Google", enabled: true },
+  { model_id: "x-ai/grok-4.3", label: "Grok 4.3", provider: "xAI", enabled: true }
+];
+
+const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 
 function usePrefersReducedMotion() {
   const [reduced, setReduced] = useState(() =>
@@ -124,21 +134,6 @@ function MobileTopBar() {
   );
 }
 
-function CommandRegion() {
-  return (
-    <section className="glass flex flex-col gap-5 p-5 md:flex-row md:items-center md:justify-between">
-      <div>
-        <p className="data-text text-xs uppercase text-[var(--muted)]">Research cockpit</p>
-        <h1 className="font-display text-3xl font-bold tracking-normal md:text-4xl">AlphaDesk</h1>
-      </div>
-      <div className="flex min-w-0 flex-col gap-2 text-left md:text-right">
-        <p className="data-text text-sm text-[var(--text)]">No run yet</p>
-        <p className="text-sm text-[var(--muted)]">Enter a ticker or idea and run the council.</p>
-      </div>
-    </section>
-  );
-}
-
 function LowerCards() {
   return (
     <div className="grid gap-5 xl:grid-cols-[1.1fr_.9fr]">
@@ -167,6 +162,34 @@ function LowerCards() {
 
 export default function App() {
   const reducedMotion = usePrefersReducedMotion();
+  const [roster, setRoster] = useState(fallbackRoster);
+  const [status, setStatus] = useState("No run yet");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadRoster() {
+      try {
+        const response = await fetch(`${apiBaseUrl}/api/council/models`);
+        if (!response.ok) return;
+        const models = (await response.json()) as ModelOption[];
+        if (!cancelled && models.length > 0) {
+          setRoster(models);
+        }
+      } catch {
+        // Local UI still works with the OpenRouter-compatible fallback roster.
+      }
+    }
+
+    void loadRoster();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  function handleRun(request: CouncilRunRequest) {
+    setStatus(`Queued ${request.ticker} on ${request.models.length} models`);
+  }
 
   return (
     <div className="relative min-h-screen overflow-hidden bg-[var(--void)] text-[var(--text)]">
@@ -174,7 +197,7 @@ export default function App() {
       <NavRail />
       <MobileTopBar />
       <main className="relative z-10 mx-auto flex min-h-screen w-full max-w-[1500px] flex-col gap-5 px-4 py-4 lg:pl-32">
-        <CommandRegion />
+        <CommandBar roster={roster} status={status} onRun={handleRun} />
         <div className="cockpit-grid grid gap-5">
           <Council />
           <LowerCards />

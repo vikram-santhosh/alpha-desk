@@ -58,6 +58,18 @@ export interface PortfolioSnapshot {
   concentration_flag: boolean;
 }
 
+export interface ModelOption {
+  model_id: string;
+  label: string;
+  provider: string;
+  enabled: boolean;
+}
+
+export interface CouncilRunRequest {
+  ticker: string;
+  models: string[];
+}
+
 export type CouncilEvent =
   | { type: "panel_started"; data: { ticker: string; models: string[] } }
   | { type: "panel_model_result"; data: PanelVerdict }
