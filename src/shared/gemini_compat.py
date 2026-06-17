@@ -88,6 +88,7 @@ class _Usage:
 class _Message:
     content: list[_ContentBlock]
     usage: _Usage
+    model: str
 
 
 # ── Exception hierarchy ──────────────────────────────────────────────────────
@@ -190,6 +191,7 @@ class _Messages:
                 input_tokens=response.usage.input_tokens,
                 output_tokens=response.usage.output_tokens,
             ),
+            model=getattr(response, "model", resolved_model),
         )
 
     # ── Gemini backend ──────────────────────────────────────────────────────
@@ -239,6 +241,7 @@ class _Messages:
         return _Message(
             content=[_ContentBlock(type="text", text=text)],
             usage=_Usage(input_tokens=input_tokens, output_tokens=output_tokens),
+            model=resolved_model,
         )
 
 

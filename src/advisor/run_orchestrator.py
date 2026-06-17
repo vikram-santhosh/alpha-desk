@@ -28,7 +28,7 @@ def _call_model(prompt: str, *, model: str, max_tokens: int) -> dict[str, Any]:
         max_tokens=max_tokens,
         messages=[{"role": "user", "content": prompt}],
     )
-    return {"text": response.content[0].text.strip(), "usage": response.usage, "model": model}
+    return {"text": response.content[0].text.strip(), "usage": response.usage, "model": response.model}
 
 
 class RunOrchestrator:

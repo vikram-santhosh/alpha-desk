@@ -443,7 +443,7 @@ Respond with ONLY valid JSON, no markdown code blocks."""
         )
 
         usage = response.usage
-        record_usage(_AGENT_NAME, usage.input_tokens, usage.output_tokens, model=_MODEL)
+        record_usage(_AGENT_NAME, usage.input_tokens, usage.output_tokens, model=response.model)
 
         if not response.content:
             log.warning("Empty Opus response for %s", ticker)

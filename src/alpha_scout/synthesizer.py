@@ -160,7 +160,7 @@ Respond ONLY with valid JSON in this exact format:
         )
 
         usage = response.usage
-        record_usage(AGENT_NAME, usage.input_tokens, usage.output_tokens, model=MODEL)
+        record_usage(AGENT_NAME, usage.input_tokens, usage.output_tokens, model=response.model)
 
         raw_text = response.content[0].text
         log.info(

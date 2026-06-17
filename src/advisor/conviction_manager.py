@@ -730,7 +730,7 @@ RULES:
             log.warning("Empty Opus response for %s", ticker)
             return _build_thesis_fallback(ticker, candidate, descriptions)
         usage = response.usage
-        record_usage(_THESIS_AGENT, usage.input_tokens, usage.output_tokens, model=_MODEL)
+        record_usage(_THESIS_AGENT, usage.input_tokens, usage.output_tokens, model=response.model)
         thesis = response.content[0].text.strip()
         log.info("Opus thesis for %s (%d in, %d out)", ticker, usage.input_tokens, usage.output_tokens)
         return thesis

@@ -24,7 +24,7 @@ def _call_model(prompt: str) -> dict[str, Any]:
         max_tokens=2800,
         messages=[{"role": "user", "content": prompt}],
     )
-    return {"text": response.content[0].text.strip(), "usage": response.usage, "model": MODEL}
+    return {"text": response.content[0].text.strip(), "usage": response.usage, "model": response.model}
 
 
 class CausalReasoner:
