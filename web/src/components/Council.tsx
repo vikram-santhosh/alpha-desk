@@ -47,6 +47,15 @@ function uniqueModels(state: CouncilState) {
   return Array.from(modelSet);
 }
 
+function councilModeLabel(mode?: string) {
+  if (mode === "openrouter_mock") return "OpenRouter mock";
+  if (mode === "openrouter_live") return "OpenRouter live";
+  if (mode === "gcp_council") return "GCP council";
+  if (mode === "skipped") return "Skipped";
+  if (mode === "timeout") return "Timed out";
+  return mode && mode !== "unknown" ? mode : "Mode unknown";
+}
+
 export function Council({ events = [] }: { events?: CouncilEvent[] }) {
   const state = reduceEvents(events);
   const models = uniqueModels(state);
@@ -73,7 +82,7 @@ export function Council({ events = [] }: { events?: CouncilEvent[] }) {
           </h2>
         </div>
         <div className="data-text rounded-full border border-white/10 px-4 py-2 text-xs text-[var(--muted)]">
-          {badge}
+          {badge} · {councilModeLabel(state.done?.council_mode)}
         </div>
       </div>
 

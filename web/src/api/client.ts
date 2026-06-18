@@ -1,4 +1,4 @@
-import type { CouncilRunRequest, ModelOption, PortfolioSnapshot } from "./types";
+import type { CouncilRunRequest, IdeaScoutResult, ModelOption, PortfolioSnapshot } from "./types";
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 
@@ -20,6 +20,11 @@ export function fetchCouncilModels() {
 
 export function fetchPortfolioSnapshot() {
   return getJson<PortfolioSnapshot>("/api/portfolio");
+}
+
+export function fetchTodayIdeas(limit = 12, mode: "top_buys" | "new_discoveries" = "top_buys") {
+  const params = new URLSearchParams({ limit: String(limit), mode });
+  return getJson<IdeaScoutResult>(`/api/ideas/today?${params.toString()}`);
 }
 
 export function councilStreamUrl(request: CouncilRunRequest) {

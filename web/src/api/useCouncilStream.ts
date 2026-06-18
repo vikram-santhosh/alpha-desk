@@ -23,7 +23,7 @@ export type CouncilStreamState = {
   retry: () => void;
 };
 
-const streamFailureCopy = "Fusion call failed. Showing the last completed run — retry?";
+const streamFailureCopy = "Council call failed. Showing the last completed run — retry?";
 
 function parseEventData<T>(event: Event): T {
   const data = "data" in event && typeof event.data === "string" ? event.data : "{}";

@@ -43,6 +43,7 @@ export interface CouncilResult {
   verdict: Verdict;
   cost_usd: number;
   degraded_reasons: string[];
+  execution_mode: string;
 }
 
 export interface Position {
@@ -65,6 +66,51 @@ export interface ModelOption {
   enabled: boolean;
 }
 
+export interface TopIdea {
+  rank: number;
+  ticker: string;
+  company: string;
+  theme: string;
+  score: number;
+  horizon: string;
+  thesis: string;
+  catalysts: string[];
+  risks: string[];
+  source: string;
+}
+
+export type DataSourceStatus = "validated" | "configured" | "unavailable";
+
+export interface DataSourceCheck {
+  source: string;
+  status: DataSourceStatus;
+  detail: string;
+  checked_at: string;
+}
+
+export interface IdeaScoutAudit {
+  mode: string;
+  source_counts: Record<string, number>;
+  raw_candidates: number;
+  unique_candidates: number;
+  capped_candidates: number;
+  existing_universe_count: number;
+  excluded_existing: Array<Record<string, unknown>>;
+  tracked_ticker_checks: Record<string, Record<string, unknown>>;
+}
+
+export interface IdeaScoutResult {
+  as_of: string;
+  universe: string;
+  scout_mode: string;
+  ideas: TopIdea[];
+  data_source_checks: DataSourceCheck[];
+  audit: IdeaScoutAudit;
+  cost_usd: number;
+  degraded_reasons: string[];
+  disclaimer: string;
+}
+
 export interface CouncilRunRequest {
   ticker: string;
   models: string[];
@@ -73,6 +119,7 @@ export interface CouncilRunRequest {
 export interface DoneEvent {
   cost_usd: number;
   degraded_reasons: string[];
+  council_mode: string;
 }
 
 export type CouncilEvent =

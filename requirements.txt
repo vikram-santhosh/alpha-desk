@@ -8,6 +8,7 @@ python-dotenv
 requests
 yfinance
 pandas
+lxml
 ta
 schedule
 fredapi
