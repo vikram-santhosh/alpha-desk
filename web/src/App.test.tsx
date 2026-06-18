@@ -1,4 +1,5 @@
 import { cleanup, render, screen } from "@testing-library/react";
+import { axe } from "jest-axe";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
@@ -44,5 +45,23 @@ describe("AlphaDesk cockpit shell", () => {
       .getAllByTestId("aurora-blob")
       .filter((blob) => blob.getAttribute("data-drift") === "true");
     expect(drifting).toHaveLength(0);
+  });
+
+  it("keeps inert nav items keyboard reachable with aria-disabled", () => {
+    mockReducedMotion(false);
+
+    render(<App />);
+
+    const briefs = screen.getByRole("button", { name: "Briefs" });
+    expect(briefs).toHaveAttribute("aria-disabled", "true");
+    expect(briefs).not.toBeDisabled();
+  });
+
+  it("has no axe accessibility violations in the empty cockpit", async () => {
+    mockReducedMotion(true);
+
+    const { container } = render(<App />);
+
+    expect(await axe(container)).toHaveNoViolations();
   });
 });

@@ -1,4 +1,4 @@
-import type { CouncilEvent, JudgeAnalysis, PanelVerdict, Verdict } from "../api/types";
+import type { CouncilEvent, DoneEvent, JudgeAnalysis, PanelVerdict, Verdict } from "../api/types";
 import { JudgePanel } from "./JudgePanel";
 import { PanelCard } from "./PanelCard";
 import { Prism } from "./Prism";
@@ -9,6 +9,7 @@ type CouncilState = {
   panel: PanelVerdict[];
   judge?: JudgeAnalysis;
   verdict?: Verdict;
+  done?: DoneEvent;
   error?: string;
 };
 
@@ -31,6 +32,9 @@ function reduceEvents(events: CouncilEvent[]): CouncilState {
       if (event.type === "error") {
         return { ...state, error: event.data.message };
       }
+      if (event.type === "done") {
+        return { ...state, done: event.data };
+      }
       return state;
     },
     { models: [], panel: [] }
@@ -43,11 +47,30 @@ function uniqueModels(state: CouncilState) {
   return Array.from(modelSet);
 }
 
+function councilModeLabel(mode?: string) {
+  if (mode === "openrouter_mock") return "OpenRouter mock";
+  if (mode === "openrouter_live") return "OpenRouter live";
+  if (mode === "gcp_council") return "GCP council";
+  if (mode === "skipped") return "Skipped";
+  if (mode === "timeout") return "Timed out";
+  return mode && mode !== "unknown" ? mode : "Mode unknown";
+}
+
 export function Council({ events = [] }: { events?: CouncilEvent[] }) {
   const state = reduceEvents(events);
   const models = uniqueModels(state);
   const hasRun = events.length > 0;
   const panelByModel = new Map(state.panel.map((item) => [item.model_id, item]));
+  const isDegraded = Boolean(state.done?.degraded_reasons.length);
+  const badge = state.verdict
+    ? `${state.verdict.ticker} resolved`
+    : isDegraded
+      ? "Done with limits"
+      : state.done
+        ? "Complete"
+        : hasRun
+          ? "Deliberating"
+          : "Awaiting SSE";
 
   return (
     <section className="glass min-h-[28rem] p-5 md:p-7" aria-labelledby="council-title">
@@ -59,7 +82,7 @@ export function Council({ events = [] }: { events?: CouncilEvent[] }) {
           </h2>
         </div>
         <div className="data-text rounded-full border border-white/10 px-4 py-2 text-xs text-[var(--muted)]">
-          {state.verdict ? `${state.verdict.ticker} resolved` : hasRun ? "Deliberating" : "Awaiting SSE"}
+          {badge} · {councilModeLabel(state.done?.council_mode)}
         </div>
       </div>
 
@@ -69,9 +92,19 @@ export function Council({ events = [] }: { events?: CouncilEvent[] }) {
         </div>
       ) : null}
 
+      {isDegraded ? (
+        <div className="mt-5 rounded-2xl border border-[var(--rate-underweight)]/40 bg-[var(--rate-underweight)]/10 p-4 text-sm leading-6">
+          {state.done?.degraded_reasons.join(" ")}
+        </div>
+      ) : null}
+
       {!hasRun ? (
         <div className="mt-12 rounded-2xl border border-white/10 bg-white/[.03] p-6 text-sm leading-6 text-[var(--muted)]">
           No run yet — enter a ticker or idea and run the council.
+        </div>
+      ) : isDegraded && state.panel.length === 0 ? (
+        <div className="mt-8 rounded-2xl border border-white/10 bg-white/[.03] p-6 text-sm leading-6 text-[var(--muted)]">
+          No panel results arrived before the run completed.
         </div>
       ) : (
         <div className="mt-8 grid gap-5 xl:grid-cols-[minmax(0,1.05fr)_minmax(14rem,.35fr)_minmax(0,.9fr)] xl:items-start">

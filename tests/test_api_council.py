@@ -113,7 +113,7 @@ def test_council_stream_emits_events_in_order(monkeypatch):
         "done",
     ]
     assert events[0][1] == {"ticker": "AMZN", "models": ["claude", "grok"]}
-    assert events[-1][1] == {"cost_usd": 0.42, "degraded_reasons": []}
+    assert events[-1][1] == {"cost_usd": 0.42, "degraded_reasons": [], "council_mode": "unknown"}
 
 
 def test_council_stream_surfaces_cost_cap_without_silent_failure(monkeypatch):
@@ -132,6 +132,27 @@ def test_council_stream_surfaces_cost_cap_without_silent_failure(monkeypatch):
     events = _parse_sse(response.text)
     assert [name for name, _ in events] == ["panel_started", "done"]
     assert "COUNCIL_COST_CAP_USD is 0" in events[-1][1]["degraded_reasons"][0]
+    assert events[-1][1]["council_mode"] == "skipped"
+
+
+def test_council_stream_times_out_without_silent_failure(monkeypatch):
+    api_app = importlib.reload(importlib.import_module("src.api.app"))
+    monkeypatch.setenv("COUNCIL_STREAM_TIMEOUT_S", "0.01")
+
+    async def slow_run_council(ticker, models):
+        await api_app.asyncio.sleep(1)
+        return _sample_result(ticker)
+
+    monkeypatch.setattr(api_app, "_run_council", slow_run_council)
+    client = TestClient(api_app.app)
+
+    response = client.get("/api/council/stream?ticker=NVDA&models=claude")
+
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+    assert [name for name, _ in events] == ["panel_started", "done"]
+    assert events[-1][1]["degraded_reasons"] == ["Council timed out before completion."]
+    assert events[-1][1]["council_mode"] == "timeout"
 
 
 def test_portfolio_endpoint_flags_concentration(monkeypatch):
@@ -162,6 +183,226 @@ def test_portfolio_endpoint_flags_concentration(monkeypatch):
     assert payload["concentration_flag"] is True
 
 
+def test_today_ideas_endpoint_returns_mock_research_candidates(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_MOCK", "1")
+    monkeypatch.setenv("ALPHA_SCOUT_MOCK", "1")
+    api_app = importlib.reload(importlib.import_module("src.api.app"))
+    client = TestClient(api_app.app)
+
+    response = client.get("/api/ideas/today?limit=10")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["universe"] == "US-listed liquid equities and ADRs"
+    assert payload["scout_mode"] == "mock"
+    assert len(payload["ideas"]) == 10
+    assert payload["ideas"][0]["rank"] == 1
+    assert payload["ideas"][0]["ticker"] == "NVDA"
+    assert payload["ideas"][0]["score"] > payload["ideas"][-1]["score"]
+    checks = {item["source"]: item for item in payload["data_source_checks"]}
+    assert checks["OpenRouter scout"]["status"] == "configured"
+    assert checks["YFinance screeners"]["status"] in {"configured", "unavailable"}
+    assert checks["Reddit moonshot"]["status"] in {"configured", "unavailable"}
+    assert checks["Kalshi prediction markets"]["status"] in {"configured", "unavailable"}
+    assert checks["Council roster"]["status"] == "validated"
+    assert "Research candidates only" in payload["disclaimer"]
+    assert payload["cost_usd"] == 0.0
+
+
+def test_today_ideas_endpoint_runs_alpha_scout_pipeline(monkeypatch):
+    api_app = importlib.reload(importlib.import_module("src.api.app"))
+
+    async def fake_alpha_scout_pipeline(mode="top_buys"):
+        return {
+            "formatted": "<b>Alpha Scout</b>",
+            "signals": [{"id": 1, "ticker": "SHOP"}],
+            "stats": {
+                "mode": mode,
+                "candidates_sourced": 25,
+                "candidates_screened": 20,
+                "portfolio_recs": 1,
+                "watchlist_recs": 1,
+                "signals_published": 2,
+                "total_time_s": 4.2,
+                "candidate_audit": {
+                    "mode": mode,
+                    "source_counts": {"existing universe": 3, "sector peers": 12},
+                    "raw_candidates": 25,
+                    "unique_candidates": 20,
+                    "capped_candidates": 20,
+                    "existing_universe_count": 3,
+                    "excluded_existing": [],
+                },
+                "tracked_ticker_checks": {
+                    "AMZN": {"included": True, "source": "existing_portfolio", "mode": mode},
+                    "META": {"included": True, "source": "existing_watchlist", "mode": mode},
+                    "AVGO": {"included": True, "source": "existing_watchlist", "mode": mode},
+                },
+            },
+            "recommendations": {
+                "portfolio_recs": [
+                    {
+                        "ticker": "SHOP",
+                        "category": "portfolio",
+                        "conviction": "high",
+                        "thesis": "Commerce software demand is reaccelerating.",
+                        "scores": {"composite": 82.0, "fundamental": 78, "technical": 72},
+                        "fundamentals_summary": {"sector": "Technology"},
+                        "source": "alpha_scout/yfinance",
+                    }
+                ],
+                "watchlist_recs": [
+                    {
+                        "ticker": "CELH",
+                        "category": "watchlist",
+                        "conviction": "medium",
+                        "thesis": "Distribution resets need confirmation.",
+                        "scores": {"composite": 64.0},
+                        "fundamentals_summary": {"sector": "Consumer Defensive"},
+                    }
+                ],
+            },
+        }
+
+    monkeypatch.setattr(api_app, "_run_alpha_scout_pipeline", fake_alpha_scout_pipeline)
+    client = TestClient(api_app.app)
+
+    response = client.get("/api/ideas/today?limit=10")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["universe"] == "Alpha Scout top-buy pipeline"
+    assert payload["scout_mode"] == "top_buys"
+    assert payload["audit"]["tracked_ticker_checks"]["META"]["included"] is True
+    assert [idea["ticker"] for idea in payload["ideas"]] == ["SHOP", "CELH"]
+    assert payload["ideas"][0]["score"] == 0.82
+    assert payload["ideas"][0]["theme"] == "Portfolio · Technology"
+    checks = {item["source"]: item for item in payload["data_source_checks"]}
+    assert checks["Alpha Scout pipeline"]["status"] == "validated"
+    assert "25 sourced" in checks["Alpha Scout pipeline"]["detail"]
+
+
+def test_today_ideas_top_buy_coverage_keeps_high_scoring_tracked_names(monkeypatch):
+    api_app = importlib.reload(importlib.import_module("src.api.app"))
+
+    def scored(ticker, composite, source):
+        return {
+            "ticker": ticker,
+            "category": "watchlist",
+            "conviction": "medium",
+            "thesis": f"{ticker} scored {composite}.",
+            "source": source,
+            "scores": {"composite": composite},
+            "fundamentals_summary": {"sector": "Technology"},
+        }
+
+    async def fake_alpha_scout_pipeline(mode="top_buys"):
+        return {
+            "formatted": "<b>Alpha Scout</b>",
+            "signals": [],
+            "stats": {
+                "mode": mode,
+                "candidates_sourced": 20,
+                "candidates_screened": 20,
+                "portfolio_recs": 5,
+                "watchlist_recs": 7,
+                "signals_published": 0,
+                "candidate_audit": {
+                    "mode": mode,
+                    "source_counts": {"existing universe": 4, "agent bus": 12},
+                    "raw_candidates": 20,
+                    "unique_candidates": 20,
+                    "capped_candidates": 20,
+                    "existing_universe_count": 4,
+                    "excluded_existing": [],
+                },
+                "tracked_ticker_checks": {
+                    "AMZN": {"included": True, "source": "existing_portfolio", "mode": mode},
+                    "META": {"included": True, "source": "existing_watchlist", "mode": mode},
+                    "AVGO": {"included": True, "source": "existing_watchlist", "mode": mode},
+                },
+            },
+            "recommendations": {
+                "portfolio_recs": [scored(f"NOISY{i}", 80 - i, "agent_bus/portfolio_analyst") for i in range(5)],
+                "watchlist_recs": [scored(f"CHAT{i}", 75 - i, "agent_bus/portfolio_analyst") for i in range(7)],
+            },
+            "scored_candidates": [
+                scored("AMZN", 63, "existing_portfolio"),
+                scored("META", 62, "existing_watchlist"),
+                scored("AVGO", 64, "existing_watchlist"),
+                scored("NVDA", 65, "existing_watchlist"),
+            ],
+        }
+
+    monkeypatch.setattr(api_app, "_run_alpha_scout_pipeline", fake_alpha_scout_pipeline)
+    client = TestClient(api_app.app)
+
+    response = client.get("/api/ideas/today?limit=12&mode=top_buys")
+
+    assert response.status_code == 200
+    tickers = [idea["ticker"] for idea in response.json()["ideas"]]
+    assert "AMZN" in tickers
+    assert "META" in tickers
+    assert "AVGO" in tickers
+
+
+def test_openrouter_mock_council_is_reported_as_deterministic(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_MOCK", "1")
+    api_app = importlib.reload(importlib.import_module("src.api.app"))
+    client = TestClient(api_app.app)
+
+    response = client.post(
+        "/api/council/run",
+        json={"ticker": "meta", "models": ["google/gemini-3.5-flash"]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["execution_mode"] == "openrouter_mock"
+    assert "deterministic test data" in payload["degraded_reasons"][0]
+
+
+def test_today_ideas_repair_normalizes_partial_openrouter_payload(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    api_app = importlib.reload(importlib.import_module("src.api.app"))
+
+    payload = {
+        "ideas": [
+            {
+                "rank": 99,
+                "ticker": " msft ",
+                "company": "Microsoft",
+                "theme": "AI platform",
+                "score": "HIGH",
+                "thesis": "Azure AI demand supports durable compounding.",
+            },
+            "bad idea",
+        ],
+        "data_source_checks": [
+            {
+                "source": "Fixture",
+                "status": "validated",
+                "detail": "Fixture source check.",
+                "checked_at": "2026-06-17",
+            }
+        ],
+    }
+
+    result, reasons = api_app._repair_idea_scout_payload(payload, 10)
+
+    assert result.ideas[0].rank == 12
+    assert result.ideas[0].ticker == "MSFT"
+    assert result.ideas[0].score == 0.82
+    assert result.ideas[0].horizon == "6-18 months"
+    assert result.ideas[0].catalysts == ["Next company update"]
+    assert result.ideas[0].risks == ["Valuation or macro risk"]
+    assert result.data_source_checks[0].source == "Fixture"
+    assert result.data_source_checks[0].status == "validated"
+    assert reasons == ["Idea scout returned a non-object idea; skipped it."]
+
+
 def test_council_models_return_openrouter_roster_when_fusion_is_configured(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     api_app = importlib.reload(importlib.import_module("src.api.app"))
@@ -172,10 +413,101 @@ def test_council_models_return_openrouter_roster_when_fusion_is_configured(monke
     assert response.status_code == 200
     payload = response.json()
     assert [model["model_id"] for model in payload] == [
-        "anthropic/claude-opus-4.8",
-        "google/gemini-3.1-pro",
-        "x-ai/grok-4.3",
+        "google/gemini-3.5-flash",
+        "moonshotai/kimi-k2.6",
+        "deepseek/deepseek-v4-pro",
+        "z-ai/glm-5.2",
     ]
+
+
+def test_council_models_allow_openrouter_roster_override(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv(
+        "OPENROUTER_ANALYSIS_MODELS",
+        "anthropic/claude-opus-4.8-fast,google/gemini-3.1-flash-lite,x-ai/grok-4.20",
+    )
+    api_app = importlib.reload(importlib.import_module("src.api.app"))
+    client = TestClient(api_app.app)
+
+    response = client.get("/api/council/models")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [model["model_id"] for model in payload] == [
+        "anthropic/claude-opus-4.8-fast",
+        "google/gemini-3.1-flash-lite",
+        "x-ai/grok-4.20",
+    ]
+    assert payload[0]["label"] == "Claude Opus 4 8 Fast"
+
+
+def test_openrouter_direct_council_calls_selected_models(monkeypatch):
+    api_app = importlib.reload(importlib.import_module("src.api.app"))
+    captured_models = []
+
+    def fake_completion(request_body, request_headers, timeout_s):
+        captured_models.append(request_body["model"])
+        result = {
+            "model_id": request_body["model"],
+            "label": request_body["model"],
+            "rating": "Overweight" if "gemini" in request_body["model"] else "Hold",
+            "confidence": 0.7 if "gemini" in request_body["model"] else 0.55,
+            "thesis": f"{request_body['model']} sees balanced upside with valuation risk.",
+            "dissent": False,
+        }
+        return {
+            "choices": [{"message": {"content": json.dumps(result)}}],
+            "usage": {"cost": 0.01},
+        }
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(api_app, "_openrouter_completion_raw", fake_completion)
+
+    result = api_app.asyncio.run(
+        api_app._run_openrouter_council(
+            "NVDA",
+            ["google/gemini-3.5-flash", "moonshotai/kimi-k2.6"],
+        )
+    )
+
+    assert captured_models == ["google/gemini-3.5-flash", "moonshotai/kimi-k2.6"]
+    assert result.cost_usd == 0.02
+    assert result.verdict.ticker == "NVDA"
+    assert result.verdict.rating == "Overweight"
+    assert result.panel[1].dissent is True
+
+
+def test_openrouter_mock_council_finishes_without_network(monkeypatch):
+    api_app = importlib.reload(importlib.import_module("src.api.app"))
+
+    def fail_if_network_called(request_body, request_headers, timeout_s):
+        raise AssertionError("mock OpenRouter council should not call the network")
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_MOCK", "1")
+    monkeypatch.setattr(api_app, "_openrouter_completion_raw", fail_if_network_called)
+
+    result = api_app.asyncio.run(
+        api_app._run_openrouter_council(
+            "NVDA",
+            [
+                "google/gemini-3.5-flash",
+                "moonshotai/kimi-k2.6",
+                "deepseek/deepseek-v4-pro",
+                "z-ai/glm-5.2",
+            ],
+        )
+    )
+
+    assert result.verdict.ticker == "NVDA"
+    assert result.cost_usd == 0.0
+    assert [item.model_id for item in result.panel] == [
+        "google/gemini-3.5-flash",
+        "moonshotai/kimi-k2.6",
+        "deepseek/deepseek-v4-pro",
+        "z-ai/glm-5.2",
+    ]
+    assert any(item.dissent for item in result.panel)
 
 
 def test_openrouter_fusion_adapter_uses_selected_models(monkeypatch):
@@ -212,11 +544,52 @@ def test_openrouter_fusion_adapter_uses_selected_models(monkeypatch):
     assert result.verdict.ticker == "RKLB"
     assert result.cost_usd == 0.31
     assert captured["model"] == "openrouter/fusion"
+    assert captured["response_format"]["type"] == "json_schema"
+    assert captured["response_format"]["json_schema"]["strict"] is True
+    assert captured["max_tokens"] == 2400
     assert captured["extra_body"]["tool_choice"] == "required"
+    assert captured["extra_body"]["plugins"] == [{"id": "response-healing"}]
     assert captured["extra_body"]["tools"][0]["parameters"]["analysis_models"] == [
         "anthropic/claude-opus-4.8",
         "x-ai/grok-4.3",
     ]
+
+
+def test_openrouter_fusion_reads_tool_call_arguments_when_content_is_empty(monkeypatch):
+    api_app = importlib.reload(importlib.import_module("src.api.app"))
+    captured = {}
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content="",
+                            tool_calls=[
+                                SimpleNamespace(
+                                    function=SimpleNamespace(arguments=json.dumps(_sample_result("TSLA")))
+                                )
+                            ],
+                        )
+                    )
+                ],
+                usage=SimpleNamespace(cost=0.29),
+            )
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeClient))
+
+    result = api_app._run_openrouter_fusion_sync("TSLA", ["anthropic/claude-opus-4.8"])
+
+    assert result.verdict.ticker == "TSLA"
+    assert result.cost_usd == 0.29
+    assert captured["model"] == "openrouter/fusion"
 
 
 def test_openrouter_fusion_maps_gcp_model_ids(monkeypatch):
@@ -249,6 +622,202 @@ def test_openrouter_fusion_maps_gcp_model_ids(monkeypatch):
 
     assert captured["extra_body"]["tools"][0]["parameters"]["analysis_models"] == [
         "anthropic/claude-opus-4.8",
-        "google/gemini-3.1-pro",
+        "google/gemini-3.1-pro-preview",
         "x-ai/grok-4.3",
     ]
+
+
+def test_openrouter_fusion_repairs_partial_payload(monkeypatch):
+    api_app = importlib.reload(importlib.import_module("src.api.app"))
+    partial = _sample_result("NVDA")
+    partial.pop("cost_usd")
+    partial["verdict"].pop("catalysts")
+    partial["verdict"].pop("risks")
+
+    captured = {}
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(partial)))],
+                usage=SimpleNamespace(cost=0.18),
+            )
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeClient))
+
+    result = api_app._run_openrouter_fusion_sync("NVDA", ["x-ai/grok-4.3"])
+
+    assert result.cost_usd == 0.18
+    assert result.verdict.catalysts == []
+    assert result.verdict.risks == []
+    assert any("omitted verdict.catalysts" in reason for reason in result.degraded_reasons)
+
+
+def test_openrouter_fusion_repairs_panel_only_payload(monkeypatch):
+    api_app = importlib.reload(importlib.import_module("src.api.app"))
+    partial = {
+        "panel": [
+            {
+                "model_id": "x-ai/grok-4.20",
+                "label": "Grok",
+                "rating": "Overweight",
+                "dissent": False,
+            }
+        ]
+    }
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(partial)))],
+                usage=SimpleNamespace(cost=0.09),
+            )
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeClient))
+
+    result = api_app._run_openrouter_fusion_sync("NVDA", ["x-ai/grok-4.20"])
+
+    assert result.panel[0].confidence == 0.0
+    assert result.panel[0].thesis == "Fusion returned an incomplete panel entry."
+    assert result.verdict.ticker == "NVDA"
+    assert result.verdict.rating == "Overweight"
+    assert result.judge.blind_spots == ["Fusion omitted structured judge analysis."]
+    assert any("structured verdict" in reason for reason in result.degraded_reasons)
+
+
+def test_openrouter_fusion_uses_raw_http_fallback_when_sdk_fails(monkeypatch):
+    api_app = importlib.reload(importlib.import_module("src.api.app"))
+
+    class FailingCompletions:
+        def create(self, **kwargs):
+            raise RuntimeError("sdk parse failed")
+
+    class FailingClient:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=FailingCompletions())
+
+    raw_payload = {
+        "choices": [
+            {
+                "message": {
+                    "content": json.dumps(_sample_result("AMD")),
+                }
+            }
+        ],
+        "usage": {"cost": 0.22},
+    }
+    body = json.dumps(raw_payload).encode("utf-8")
+
+    class FakeHeaders:
+        def get_content_charset(self):
+            return "utf-8"
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return body
+
+        headers = FakeHeaders()
+
+    def fake_urlopen(request, timeout):
+        return FakeResponse()
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FailingClient))
+    monkeypatch.setattr(api_app.urllib.request, "urlopen", fake_urlopen)
+
+    result = api_app._run_openrouter_fusion_sync("AMD", ["x-ai/grok-4.3"])
+
+    assert result.verdict.ticker == "AMD"
+    assert result.cost_usd == 0.22
+    assert result.panel[0].rating == "Buy"
+
+
+def test_openrouter_fusion_maps_investment_council_envelope(monkeypatch):
+    api_app = importlib.reload(importlib.import_module("src.api.app"))
+    envelope = {
+        "portfolio_id": "ALPHADESK-TACTICAL-EQ",
+        "ticker": "NVDA",
+        "issuer_name": "NVIDIA Corporation",
+        "analysis_date": "2025-05-20",
+        "market_context": {"current_price_usd": 135.5},
+        "investment_council": {
+            "consensus_rating": "OVERWEIGHT",
+            "consensus_conviction_score": 0.74,
+            "consensus_price_target": 167.5,
+            "time_horizon": "12 Months",
+            "implied_return_pct": 23.6,
+            "seats": [
+                {
+                    "role": "Secular Growth Bull",
+                    "stance": "BUY",
+                    "price_target_12m": 210,
+                    "conviction_score": 0.9,
+                    "thesis_summary": "Blackwell demand and system-level integration keep growth strong.",
+                    "core_arguments": [
+                        "Unprecedented demand backlog for GB200 NVL72 architectures.",
+                        "High attach rates for proprietary networking."
+                    ],
+                },
+                {
+                    "role": "Value & Quantitative Strategist",
+                    "stance": "BUY",
+                    "price_target_12m": 165,
+                    "conviction_score": 0.75,
+                    "thesis_summary": "ROIC and PEG justify the premium.",
+                    "core_arguments": ["Forward P/E remains reasonable given growth."]
+                },
+                {
+                    "role": "Risk Manager",
+                    "stance": "HOLD",
+                    "price_target_12m": 145,
+                    "conviction_score": 0.62,
+                    "thesis_summary": "Concentration and custom silicon risks merit caution.",
+                    "core_arguments": ["Customer concentration is high."]
+                }
+            ],
+        }
+    }
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(envelope)))],
+                usage=SimpleNamespace(cost=0.91),
+            )
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeClient))
+
+    result = api_app._run_openrouter_fusion_sync(
+        "NVDA",
+        ["anthropic/claude-opus-4.8-fast", "google/gemini-3.1-flash-lite", "x-ai/grok-4.20"],
+    )
+
+    assert result.verdict.rating == "Overweight"
+    assert result.verdict.conviction == 0.74
+    assert result.verdict.scenarios[1].ret_pct == 23.6
+    assert result.panel[0].model_id == "anthropic/claude-opus-4.8-fast"
+    assert result.panel[0].label == "Secular Growth Bull"
+    assert result.panel[2].dissent is True
+    assert result.judge.crowded_narrative_flag is not None

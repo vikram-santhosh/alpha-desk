@@ -15,8 +15,11 @@ function InsightList({ title, items }: { title: string; items: string[] }) {
     <section>
       <h3 className="data-text text-xs uppercase text-[var(--muted)]">{title}</h3>
       <ul className="mt-3 space-y-2">
-        {items.map((item) => (
-          <li key={item} className="rounded-xl border border-white/10 bg-white/[.03] px-3 py-2 text-sm leading-6">
+        {items.map((item, index) => (
+          <li
+            key={`${title}-${index}-${item}`}
+            className="rounded-xl border border-white/10 bg-white/[.03] px-3 py-2 text-sm leading-6"
+          >
             {item}
           </li>
         ))}

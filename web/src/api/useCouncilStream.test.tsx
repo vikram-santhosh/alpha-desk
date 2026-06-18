@@ -85,7 +85,7 @@ describe("useCouncilStream", () => {
         blind_spots: []
       });
       source.emit("verdict", verdict);
-      source.emit("done", { cost_usd: 0.42, degraded_reasons: [] });
+      source.emit("done", { cost_usd: 0.42, degraded_reasons: [], council_mode: "openrouter_live" });
     });
 
     expect(result.current.status).toBe("complete");
@@ -104,7 +104,7 @@ describe("useCouncilStream", () => {
       const firstSource = FakeEventSource.instances[0];
       firstSource.emit("panel_started", { ticker: "NVDA", models: ["anthropic/claude-opus-4.8"] });
       firstSource.emit("verdict", verdict);
-      firstSource.emit("done", { cost_usd: 0.42, degraded_reasons: [] });
+      firstSource.emit("done", { cost_usd: 0.42, degraded_reasons: [], council_mode: "openrouter_live" });
     });
 
     act(() => {
@@ -113,11 +113,11 @@ describe("useCouncilStream", () => {
     act(() => {
       const secondSource = FakeEventSource.instances[1];
       secondSource.emit("panel_started", { ticker: "AMZN", models: ["x-ai/grok-4.3"] });
-      secondSource.emit("error", { message: "Fusion call failed. Showing the last completed run — retry?" });
+      secondSource.emit("error", { message: "Council call failed. Showing the last completed run — retry?" });
     });
 
     expect(result.current.status).toBe("error");
-    expect(result.current.error).toBe("Fusion call failed. Showing the last completed run — retry?");
+    expect(result.current.error).toBe("Council call failed. Showing the last completed run — retry?");
     expect(result.current.verdict?.ticker).toBe("NVDA");
 
     act(() => {

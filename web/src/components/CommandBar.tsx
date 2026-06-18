@@ -6,13 +6,15 @@ type CommandBarProps = {
   roster: ModelOption[];
   status: string;
   onRun: (request: CouncilRunRequest) => void;
+  onScout?: () => void;
+  scoutStatus?: "idle" | "loading" | "complete" | "error";
 };
 
 function normalizeTicker(value: string) {
   return value.trim().toUpperCase();
 }
 
-export function CommandBar({ roster, status, onRun }: CommandBarProps) {
+export function CommandBar({ roster, status, onRun, onScout, scoutStatus = "idle" }: CommandBarProps) {
   const [ticker, setTicker] = useState("");
   const [enabledById, setEnabledById] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(roster.map((model) => [model.model_id, model.enabled]))
@@ -69,6 +71,16 @@ export function CommandBar({ roster, status, onRun }: CommandBarProps) {
             >
               Run council
             </button>
+            {onScout ? (
+              <button
+                type="button"
+                className="focus-ring min-h-12 rounded-2xl border border-[var(--aurora-teal)]/45 bg-[var(--aurora-teal)]/10 px-5 font-display text-sm font-semibold text-[var(--text)] disabled:cursor-wait disabled:border-white/10 disabled:bg-white/[.035] disabled:text-[var(--muted)]"
+                onClick={onScout}
+                disabled={scoutStatus === "loading"}
+              >
+                {scoutStatus === "loading" ? "Scouting..." : "Find today's top ideas"}
+              </button>
+            ) : null}
           </div>
         </div>
       </div>

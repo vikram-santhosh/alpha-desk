@@ -23,7 +23,7 @@ export type CouncilStreamState = {
   retry: () => void;
 };
 
-const streamFailureCopy = "Fusion call failed. Showing the last completed run — retry?";
+const streamFailureCopy = "Council call failed. Showing the last completed run — retry?";
 
 function parseEventData<T>(event: Event): T {
   const data = "data" in event && typeof event.data === "string" ? event.data : "{}";
@@ -98,15 +98,8 @@ export function useCouncilStream(): CouncilStreamState {
         setStatus("complete");
         closeStream();
       });
-      source.addEventListener("error", (event) => {
-        let message = streamFailureCopy;
-        if ("data" in event && typeof event.data === "string") {
-          try {
-            message = parseEventData<{ message: string }>(event).message || streamFailureCopy;
-          } catch {
-            message = streamFailureCopy;
-          }
-        }
+      source.addEventListener("error", () => {
+        const message = streamFailureCopy;
         setError(message);
         setStatus("error");
         setEvents((current) =>

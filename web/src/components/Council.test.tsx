@@ -9,14 +9,14 @@ const events: CouncilEvent[] = [
     type: "panel_started",
     data: {
       ticker: "NVDA",
-      models: ["anthropic/claude-opus-4.8", "openai/gpt-5.5", "google/gemini-3.1-pro", "x-ai/grok-4.3"]
+      models: ["google/gemini-3.5-flash", "moonshotai/kimi-k2.6", "deepseek/deepseek-v4-pro", "z-ai/glm-5.2"]
     }
   },
   {
     type: "panel_model_result",
     data: {
-      model_id: "anthropic/claude-opus-4.8",
-      label: "Claude Opus 4.8",
+      model_id: "google/gemini-3.5-flash",
+      label: "Gemini 3.5 Flash",
       rating: "Buy",
       confidence: 0.84,
       thesis: "Demand durability supports upside.",
@@ -26,8 +26,8 @@ const events: CouncilEvent[] = [
   {
     type: "panel_model_result",
     data: {
-      model_id: "openai/gpt-5.5",
-      label: "GPT-5.5",
+      model_id: "moonshotai/kimi-k2.6",
+      label: "Kimi K2.6",
       rating: "Buy",
       confidence: 0.78,
       thesis: "Margins can keep compounding.",
@@ -37,8 +37,8 @@ const events: CouncilEvent[] = [
   {
     type: "panel_model_result",
     data: {
-      model_id: "google/gemini-3.1-pro",
-      label: "Gemini 3.1 Pro",
+      model_id: "deepseek/deepseek-v4-pro",
+      label: "DeepSeek V4 Pro",
       rating: "Buy",
       confidence: 0.73,
       thesis: "The AI capex cycle still has breadth.",
@@ -48,8 +48,8 @@ const events: CouncilEvent[] = [
   {
     type: "panel_model_result",
     data: {
-      model_id: "x-ai/grok-4.3",
-      label: "Grok 4.3",
+      model_id: "z-ai/glm-5.2",
+      label: "GLM 5.2",
       rating: "Hold",
       confidence: 0.62,
       thesis: "Valuation already discounts a lot of perfection.",
@@ -98,5 +98,29 @@ describe("Council signature", () => {
     expect(screen.getByText("Contradictions")).toBeInTheDocument();
     expect(screen.getByText("Blind spots")).toBeInTheDocument();
     expect(screen.getByText("Consensus rests on a crowded narrative — confidence adjusted down.")).toBeInTheDocument();
+  });
+
+  it("shows a degraded completion state when a run ends before panel results arrive", () => {
+    render(
+      <Council
+        events={[
+          { type: "panel_started", data: { ticker: "NVDA", models: ["gemini-3.1-pro-preview"] } },
+          {
+            type: "done",
+            data: {
+              cost_usd: 0,
+              degraded_reasons: ["Council skipped because COUNCIL_COST_CAP_USD is 0."],
+              council_mode: "skipped"
+            }
+          }
+        ]}
+      />
+    );
+
+    expect(screen.getByText(/Done with limits/)).toBeInTheDocument();
+    expect(screen.getByText(/Skipped/)).toBeInTheDocument();
+    expect(screen.getByText("Council skipped because COUNCIL_COST_CAP_USD is 0.")).toBeInTheDocument();
+    expect(screen.getByText("No panel results arrived before the run completed.")).toBeInTheDocument();
+    expect(screen.queryByText("Deliberating")).not.toBeInTheDocument();
   });
 });

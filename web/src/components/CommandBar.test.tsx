@@ -5,8 +5,8 @@ import type { ModelOption } from "../api/types";
 import { CommandBar } from "./CommandBar";
 
 const roster: ModelOption[] = [
-  { model_id: "anthropic/claude-opus-4.8", label: "Claude Opus 4.8", provider: "Anthropic", enabled: true },
-  { model_id: "google/gemini-3.1-pro", label: "Gemini 3.1 Pro", provider: "Google", enabled: true }
+  { model_id: "google/gemini-3.5-flash", label: "Gemini 3.5 Flash", provider: "Google", enabled: true },
+  { model_id: "moonshotai/kimi-k2.6", label: "Kimi K2.6", provider: "Moonshot AI", enabled: true }
 ];
 
 describe("CommandBar", () => {
@@ -20,7 +20,7 @@ describe("CommandBar", () => {
 
     expect(onRun).toHaveBeenCalledWith({
       ticker: "NVDA",
-      models: ["anthropic/claude-opus-4.8", "google/gemini-3.1-pro"]
+      models: ["google/gemini-3.5-flash", "moonshotai/kimi-k2.6"]
     });
   });
 
@@ -28,13 +28,13 @@ describe("CommandBar", () => {
     const onRun = vi.fn();
     render(<CommandBar roster={roster} status="No run yet" onRun={onRun} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /Gemini 3.1 Pro/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Kimi K2.6/ }));
     fireEvent.change(screen.getByLabelText("Ticker or idea"), { target: { value: "AMZN" } });
     fireEvent.click(screen.getByRole("button", { name: "Run council" }));
 
     expect(onRun).toHaveBeenCalledWith({
       ticker: "AMZN",
-      models: ["anthropic/claude-opus-4.8"]
+      models: ["google/gemini-3.5-flash"]
     });
   });
 
@@ -43,8 +43,28 @@ describe("CommandBar", () => {
     render(<CommandBar roster={[roster[0]]} status="No run yet" onRun={onRun} />);
 
     fireEvent.change(screen.getByLabelText("Ticker or idea"), { target: { value: "MSFT" } });
-    fireEvent.click(screen.getByRole("button", { name: /Claude Opus 4.8/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Gemini 3.5 Flash/ }));
 
     expect(screen.getByRole("button", { name: "Run council" })).toBeDisabled();
+  });
+
+  it("dispatches the idea scout button and disables it while loading", () => {
+    const onScout = vi.fn();
+    const { rerender } = render(
+      <CommandBar
+        roster={roster}
+        status="No run yet"
+        onRun={vi.fn()}
+        onScout={onScout}
+        scoutStatus="loading"
+      />
+    );
+
+    expect(screen.getByRole("button", { name: "Scouting..." })).toBeDisabled();
+
+    rerender(<CommandBar roster={roster} status="No run yet" onRun={vi.fn()} onScout={onScout} />);
+    fireEvent.click(screen.getByRole("button", { name: "Find today's top ideas" }));
+
+    expect(onScout).toHaveBeenCalledTimes(1);
   });
 });

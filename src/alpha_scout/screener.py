@@ -1,12 +1,15 @@
 """Multi-dimensional screening engine for Alpha Scout.
 
-Scores candidates across four dimensions:
+Scores candidates across seven dimensions:
 - Technical (0-100): RSI, MACD, golden/death cross, Bollinger Bands, volume
 - Fundamental (0-100): P/E, revenue growth, margins, 52-week proximity, market cap
 - Sentiment (0-100): Reddit and news sentiment from agent bus signals
 - Diversification (0-100): Sector weight relative to current portfolio
+- Novelty (0-100): Source freshness and whether the name is already tracked
+- Catalyst proximity (0-100): Earnings/catalyst timing and event-bearing source data
+- Evidence quality (0-100): Breadth and specificity of source evidence
 
-Produces a weighted composite score used to rank candidates for Gemini synthesis.
+Produces a normalized weighted composite score used to rank candidates for synthesis.
 """
 from __future__ import annotations
 
@@ -27,7 +30,7 @@ def score_technical(analysis: dict[str, Any]) -> int:
         Below lower Bollinger Band: +15 | Unusual volume (>2x): +15
         Price above SMA-200: +10
     """
-    if analysis.get("error"):
+    if not analysis or analysis.get("error"):
         return 50  # neutral baseline for missing data
 
     score = 0
@@ -94,30 +97,38 @@ def score_fundamental(fundamentals: dict[str, Any]) -> int:
     if not fundamentals:
         return 50  # neutral baseline
 
-    score = 0
+    score = 40
 
     # P/E ratio
     pe = fundamentals.get("pe_trailing")
     if pe is not None:
         if 10 <= pe <= 30:
-            score += 20
+            score += 15
         elif 0 < pe < 10:
             score += 10
+        elif pe <= 50:
+            score += 5
         elif pe > 50:
-            score -= 10
+            score -= 5
 
     # Revenue growth
     rev_growth = fundamentals.get("revenue_growth")
     if rev_growth is not None:
         if rev_growth > 0:
-            score += 20
+            score += 15
             if rev_growth > 0.20:
                 score += 10
+            elif rev_growth > 0.10:
+                score += 5
+        elif rev_growth < -0.05:
+            score -= 10
 
     # Margins
     net_margin = fundamentals.get("net_margin")
     if net_margin is not None and net_margin > 0:
-        score += 15
+        score += 10
+        if net_margin > 0.20:
+            score += 5
 
     gross_margin = fundamentals.get("gross_margin")
     if gross_margin is not None and gross_margin > 0.40:
@@ -231,6 +242,71 @@ def score_diversification(
         return 20
 
 
+def score_novelty(candidate: dict[str, Any]) -> int:
+    """Score how fresh a candidate is while avoiding a hard penalty for known winners."""
+    source = str(candidate.get("source", "")).lower()
+    signal_type = str(candidate.get("signal_type", "")).lower()
+    if source.startswith("existing_portfolio"):
+        return 45
+    if source.startswith("existing_watchlist"):
+        return 55
+    if any(token in source for token in ("filing", "13f", "thematic", "reddit", "agent_bus")):
+        return 80
+    if signal_type in {"unusual_mentions", "sentiment_reversal", "multi_sub_convergence"}:
+        return 85
+    return 65
+
+
+def score_catalyst_proximity(candidate: dict[str, Any], fundamentals: dict[str, Any]) -> int:
+    """Score whether a candidate has near-term events worth reviewing."""
+    signal_data = candidate.get("signal_data", {})
+    source = str(candidate.get("source", "")).lower()
+    score = 50
+    if fundamentals.get("next_earnings_date"):
+        score += 20
+    if any(key in signal_data for key in ("catalyst", "event", "filing_date", "earnings_date")):
+        score += 20
+    if any(token in source for token in ("filing", "13f", "news", "reddit", "thematic")):
+        score += 10
+    return max(0, min(100, score))
+
+
+def score_evidence_quality(candidate: dict[str, Any], fundamentals: dict[str, Any], technicals: dict[str, Any]) -> int:
+    """Score source/data breadth so thin candidates do not look as strong as validated names."""
+    score = 35
+    if fundamentals:
+        score += 25
+    if technicals and not technicals.get("error"):
+        score += 15
+    if candidate.get("signal_data"):
+        score += 15
+    if "/" in str(candidate.get("source", "")) or candidate.get("signal_type"):
+        score += 10
+    return max(0, min(100, score))
+
+
+def normalize_weights(weights: dict[str, float]) -> dict[str, float]:
+    """Return non-negative weights normalized to 1.0 for supported score dimensions."""
+    supported = {
+        "technical": 0.30,
+        "fundamental": 0.30,
+        "sentiment": 0.15,
+        "diversification": 0.10,
+        "novelty": 0.05,
+        "catalyst_proximity": 0.05,
+        "evidence_quality": 0.05,
+    }
+    raw = {
+        key: max(0.0, float(weights.get(key, default) or 0.0))
+        for key, default in supported.items()
+    }
+    total = sum(raw.values())
+    if total <= 0:
+        raw = dict(supported)
+        total = sum(raw.values())
+    return {key: value / total for key, value in raw.items()}
+
+
 def _compute_portfolio_sector_weights(
     fundamentals: dict[str, dict[str, Any]],
     portfolio_tickers: list[str],
@@ -268,15 +344,14 @@ def screen_candidates(
         fundamentals: Dict of ticker -> fundamental data for candidates.
         portfolio_tickers: Current portfolio ticker list.
         portfolio_fundamentals: Fundamentals for portfolio tickers (for sector weights).
-        weights: Dimension weights dict (technical, fundamental, sentiment, diversification).
+        weights: Dimension weights dict. Supported keys are technical,
+            fundamental, sentiment, diversification, novelty,
+            catalyst_proximity, and evidence_quality.
 
     Returns:
         List of candidate dicts enriched with scores, sorted by composite descending.
     """
-    w_tech = weights.get("technical", 0.30)
-    w_fund = weights.get("fundamental", 0.30)
-    w_sent = weights.get("sentiment", 0.20)
-    w_div = weights.get("diversification", 0.20)
+    normalized_weights = normalize_weights(weights)
 
     # Compute portfolio sector weights for diversification scoring
     sector_weights = _compute_portfolio_sector_weights(portfolio_fundamentals, portfolio_tickers)
@@ -301,21 +376,30 @@ def screen_candidates(
         candidate_sector = fund_data.get("sector")
         div_score = score_diversification(candidate_sector, sector_weights)
 
-        # Weighted composite
-        composite = (
-            w_tech * tech_score
-            + w_fund * fund_score
-            + w_sent * sent_score
-            + w_div * div_score
+        novelty_score = score_novelty(candidate)
+        catalyst_score = score_catalyst_proximity(candidate, fund_data)
+        evidence_score = score_evidence_quality(candidate, fund_data, tech_data)
+
+        dimension_scores = {
+            "technical": tech_score,
+            "fundamental": fund_score,
+            "sentiment": sent_score,
+            "diversification": div_score,
+            "novelty": novelty_score,
+            "catalyst_proximity": catalyst_score,
+            "evidence_quality": evidence_score,
+        }
+
+        composite = sum(
+            normalized_weights[name] * score
+            for name, score in dimension_scores.items()
         )
 
         scored.append({
             **candidate,
             "scores": {
-                "technical": tech_score,
-                "fundamental": fund_score,
-                "sentiment": sent_score,
-                "diversification": div_score,
+                **dimension_scores,
+                "weights": normalized_weights,
                 "composite": round(composite, 1),
             },
             "fundamentals_summary": {

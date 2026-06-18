@@ -241,7 +241,7 @@ def _fallback_recommendations(
     portfolio_recs = []
     watchlist_recs = []
 
-    for candidate in scored_candidates:
+    for index, candidate in enumerate(scored_candidates):
         composite = candidate.get("scores", {}).get("composite", 0)
         ticker = candidate["ticker"]
 
@@ -251,9 +251,11 @@ def _fallback_recommendations(
             "thesis": f"Composite score {composite:.1f}. Source: {candidate.get('source', 'unknown')}.",
             "scores": candidate.get("scores", {}),
             "fundamentals_summary": candidate.get("fundamentals_summary", {}),
+            "source": candidate.get("source", "unknown"),
         }
 
-        if composite >= 60 and len(portfolio_recs) < max_portfolio:
+        top_ranked = index < max_portfolio and composite >= 45
+        if (composite >= 60 or top_ranked) and len(portfolio_recs) < max_portfolio:
             rec["category"] = "portfolio"
             portfolio_recs.append(rec)
         elif len(watchlist_recs) < max_watchlist:

@@ -23,7 +23,7 @@ log = get_logger(__name__)
 SOURCE_AGENT = "alpha_scout"
 
 
-async def run() -> dict[str, Any]:
+async def run(mode: str = "top_buys") -> dict[str, Any]:
     """Orchestrate the full Alpha Scout discovery pipeline.
 
     Steps:
@@ -43,7 +43,9 @@ async def run() -> dict[str, Any]:
             recommendations: dict — portfolio_recs + watchlist_recs.
     """
     pipeline_start = time.time()
-    log.info("Alpha Scout pipeline starting")
+    scout_mode = "new_discoveries" if mode == "new_discoveries" else "top_buys"
+    include_existing = scout_mode == "top_buys"
+    log.info("Alpha Scout pipeline starting in %s mode", scout_mode)
 
     # ── Step 1: Load config + existing tickers ────────────────────────
     try:
@@ -69,7 +71,7 @@ async def run() -> dict[str, Any]:
         return {
             "formatted": "<b>Alpha Scout</b>\n\nError: could not load portfolio configuration.",
             "signals": [],
-            "stats": {"error": "config_load_failed"},
+            "stats": {"error": "config_load_failed", "mode": scout_mode},
             "recommendations": {"portfolio_recs": [], "watchlist_recs": []},
         }
 
@@ -81,8 +83,15 @@ async def run() -> dict[str, Any]:
 
     # ── Step 2: Source candidates ──────────────────────────────────────
     step_start = time.time()
+    candidate_audit: dict[str, Any] = {}
     try:
-        candidates = source_all_candidates(existing_tickers, holdings, config)
+        candidates = source_all_candidates(
+            existing_tickers,
+            holdings,
+            config,
+            include_existing=include_existing,
+            audit=candidate_audit,
+        )
     except Exception:
         log.exception("Failed to source candidates")
         candidates = []
@@ -92,12 +101,22 @@ async def run() -> dict[str, Any]:
         return {
             "formatted": "<b>Alpha Scout</b>\n\n<i>No new candidates found this cycle.</i>",
             "signals": [],
-            "stats": {"candidates_sourced": 0, "total_time_s": round(time.time() - pipeline_start, 1)},
+            "stats": {
+                "mode": scout_mode,
+                "candidates_sourced": 0,
+                "total_time_s": round(time.time() - pipeline_start, 1),
+                "candidate_audit": candidate_audit,
+            },
             "recommendations": {"portfolio_recs": [], "watchlist_recs": []},
         }
 
     # ── Step 3: Fetch market data for candidates ──────────────────────
     candidate_tickers = [c["ticker"] for c in candidates]
+    candidate_lookup = {
+        str(c.get("ticker", "")).upper(): c
+        for c in candidates
+        if c.get("ticker")
+    }
 
     from src.portfolio_analyst.price_fetcher import (
         fetch_all_historical,
@@ -226,12 +245,22 @@ async def run() -> dict[str, Any]:
     # ── Step 7: Format Telegram output ─────────────────────────────────
     total_time = time.time() - pipeline_start
     stats = {
+        "mode": scout_mode,
         "candidates_sourced": len(candidates),
         "candidates_screened": len(scored),
         "portfolio_recs": len(portfolio_recs),
         "watchlist_recs": len(watchlist_recs),
         "signals_published": len(published_signals),
         "total_time_s": round(total_time, 1),
+        "candidate_audit": candidate_audit,
+        "tracked_ticker_checks": {
+            ticker.upper(): {
+                "included": ticker.upper() in candidate_lookup,
+                "source": candidate_lookup.get(ticker.upper(), {}).get("source"),
+                "mode": scout_mode,
+            }
+            for ticker in existing_tickers
+        },
     }
 
     try:
@@ -250,4 +279,5 @@ async def run() -> dict[str, Any]:
             "portfolio_recs": portfolio_recs,
             "watchlist_recs": watchlist_recs,
         },
+        "scored_candidates": scored,
     }

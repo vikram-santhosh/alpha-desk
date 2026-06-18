@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 
-import type { ModelOption, PortfolioSnapshot, Verdict } from "./api/types";
-import { fetchCouncilModels, fetchPortfolioSnapshot } from "./api/client";
+import type { IdeaScoutResult, ModelOption, PortfolioSnapshot, TopIdea, Verdict } from "./api/types";
+import { fetchCouncilModels, fetchPortfolioSnapshot, fetchTodayIdeas } from "./api/client";
 import { useCouncilStream } from "./api/useCouncilStream";
 import { CommandBar } from "./components/CommandBar";
 import { Council } from "./components/Council";
+import { IdeaScout } from "./components/IdeaScout";
 import { PortfolioPanel } from "./components/Portfolio";
 import { VerdictPanel } from "./components/Verdict";
 
@@ -21,9 +22,10 @@ const navItems: NavItem[] = [
 ];
 
 const fallbackRoster: ModelOption[] = [
-  { model_id: "anthropic/claude-opus-4.8", label: "Claude Opus 4.8", provider: "Anthropic", enabled: true },
-  { model_id: "google/gemini-3.1-pro", label: "Gemini 3.1 Pro", provider: "Google", enabled: true },
-  { model_id: "x-ai/grok-4.3", label: "Grok 4.3", provider: "xAI", enabled: true }
+  { model_id: "google/gemini-3.5-flash", label: "Gemini 3.5 Flash", provider: "Google", enabled: true },
+  { model_id: "moonshotai/kimi-k2.6", label: "Kimi K2.6", provider: "Moonshot AI", enabled: true },
+  { model_id: "deepseek/deepseek-v4-pro", label: "DeepSeek V4 Pro", provider: "DeepSeek", enabled: true },
+  { model_id: "z-ai/glm-5.2", label: "GLM 5.2", provider: "Z.ai", enabled: true }
 ];
 
 function usePrefersReducedMotion() {
@@ -110,8 +112,11 @@ function NavRail() {
                 : "nav-soon text-[var(--muted)] hover:text-[var(--text)]"
             }`}
             aria-current={item.active ? "page" : undefined}
+            aria-disabled={item.active ? undefined : true}
             title={item.active ? item.label : `${item.label} soon`}
-            disabled={!item.active}
+            onClick={(event) => {
+              if (!item.active) event.preventDefault();
+            }}
           >
             {item.label}
           </button>
@@ -159,7 +164,7 @@ function runStatus({
 }: Pick<ReturnType<typeof useCouncilStream>, "status" | "activeRun" | "done" | "error">) {
   if (status === "loading" && activeRun) return `Running ${activeRun.ticker}`;
   if (status === "complete") return done ? `Council complete · $${done.cost_usd.toFixed(2)}` : "Council complete";
-  if (status === "error") return error ?? "Fusion call failed";
+  if (status === "error") return error ?? "Council call failed";
   return "No run yet";
 }
 
@@ -167,6 +172,9 @@ export default function App() {
   const reducedMotion = usePrefersReducedMotion();
   const [roster, setRoster] = useState(fallbackRoster);
   const [portfolio, setPortfolio] = useState<PortfolioSnapshot>();
+  const [ideaScout, setIdeaScout] = useState<IdeaScoutResult>();
+  const [ideaScoutStatus, setIdeaScoutStatus] = useState<"idle" | "loading" | "complete" | "error">("idle");
+  const [ideaScoutError, setIdeaScoutError] = useState<string>();
   const councilStream = useCouncilStream();
 
   useEffect(() => {
@@ -209,13 +217,40 @@ export default function App() {
     };
   }, []);
 
+  async function scoutIdeas() {
+    setIdeaScoutStatus("loading");
+    setIdeaScoutError(undefined);
+    try {
+      const result = await fetchTodayIdeas(12);
+      setIdeaScout(result);
+      setIdeaScoutStatus("complete");
+    } catch (error) {
+      setIdeaScoutStatus("error");
+      setIdeaScoutError(error instanceof Error ? error.message : "Idea scout failed.");
+    }
+  }
+
+  function runIdea(idea: TopIdea) {
+    const models = roster.filter((model) => model.enabled).map((model) => model.model_id);
+    councilStream.runCouncil({ ticker: idea.ticker, models });
+  }
+
   return (
     <div className="relative min-h-screen overflow-hidden bg-[var(--void)] text-[var(--text)]">
       <AuroraLayer reducedMotion={reducedMotion} />
       <NavRail />
       <MobileTopBar />
-      <main className="relative z-10 mx-auto flex min-h-screen w-full max-w-[1500px] flex-col gap-5 px-4 py-4 lg:pl-32">
-        <CommandBar roster={roster} status={runStatus(councilStream)} onRun={councilStream.runCouncil} />
+      <main
+        className="relative z-10 mx-auto flex min-h-screen w-full max-w-[1500px] flex-col gap-5 px-4 py-4 lg:pl-32"
+        aria-label="AlphaDesk research cockpit"
+      >
+        <CommandBar
+          roster={roster}
+          status={runStatus(councilStream)}
+          onRun={councilStream.runCouncil}
+          onScout={scoutIdeas}
+          scoutStatus={ideaScoutStatus}
+        />
         {councilStream.error ? (
           <div
             className="glass flex flex-col gap-3 border-[var(--rate-sell)]/35 p-4 sm:flex-row sm:items-center sm:justify-between"
@@ -231,6 +266,12 @@ export default function App() {
             </button>
           </div>
         ) : null}
+        <IdeaScout
+          result={ideaScout}
+          status={ideaScoutStatus}
+          error={ideaScoutError}
+          onRunIdea={runIdea}
+        />
         <div className="cockpit-grid grid gap-5">
           <Council events={councilStream.events} />
           <LowerCards portfolio={portfolio} verdict={councilStream.verdict} />
