@@ -7,6 +7,9 @@ export interface PanelVerdict {
   confidence: number;
   thesis: string;
   dissent: boolean;
+  accepted_claims?: string[];
+  rejected_claims?: string[];
+  challenges?: string[];
 }
 
 export interface CrowdedFlag {
@@ -38,6 +41,8 @@ export interface Verdict {
 }
 
 export interface CouncilResult {
+  run_id?: number;
+  saved_at?: string;
   panel: PanelVerdict[];
   judge: JudgeAnalysis;
   verdict: Verdict;
@@ -64,6 +69,38 @@ export interface ModelOption {
   label: string;
   provider: string;
   enabled: boolean;
+}
+
+export type MacroThemeStatus = "risk_on" | "neutral" | "risk_off";
+export type MacroTrend = "up" | "down" | "flat";
+
+export interface MacroRegime {
+  call: string;
+  score: number;
+  confidence: number;
+  rationale: string;
+  agent: string;
+  scannedAt: string;
+  source: "backend" | "mock";
+  sourceDetail?: string;
+  degradedReasons: string[];
+}
+
+export interface MacroTheme {
+  id: string;
+  title: string;
+  status: MacroThemeStatus;
+  confidence: number;
+  trend: MacroTrend;
+  bullets: string[];
+  agent: string;
+  scannedAt: string;
+}
+
+export interface MacroDashboard {
+  regime: MacroRegime;
+  themes: MacroTheme[];
+  degraded_reasons: string[];
 }
 
 export interface TopIdea {
@@ -100,6 +137,8 @@ export interface IdeaScoutAudit {
 }
 
 export interface IdeaScoutResult {
+  run_id?: number;
+  saved_at?: string;
   as_of: string;
   universe: string;
   scout_mode: string;
@@ -120,6 +159,8 @@ export interface DoneEvent {
   cost_usd: number;
   degraded_reasons: string[];
   council_mode: string;
+  run_id?: number;
+  saved_at?: string;
 }
 
 export type CouncilEvent =

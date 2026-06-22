@@ -1,4 +1,11 @@
-import type { CouncilRunRequest, IdeaScoutResult, ModelOption, PortfolioSnapshot } from "./types";
+import type {
+  CouncilResult,
+  CouncilRunRequest,
+  IdeaScoutResult,
+  MacroDashboard,
+  ModelOption,
+  PortfolioSnapshot,
+} from "./types";
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 
@@ -18,8 +25,26 @@ export function fetchCouncilModels() {
   return getJson<ModelOption[]>("/api/council/models");
 }
 
+export async function fetchLatestCouncilRun(ticker?: string): Promise<CouncilResult | null> {
+  const params = new URLSearchParams();
+  if (ticker) params.set("ticker", ticker);
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  const response = await fetch(apiUrl(`/api/council/runs/latest${suffix}`));
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error(`Request failed: ${response.status}`);
+  }
+  return (await response.json()) as CouncilResult;
+}
+
 export function fetchPortfolioSnapshot() {
   return getJson<PortfolioSnapshot>("/api/portfolio");
+}
+
+export function fetchMacroDashboard() {
+  return getJson<MacroDashboard>("/api/macro");
 }
 
 export function fetchTodayIdeas(limit = 12, mode: "top_buys" | "new_discoveries" = "top_buys") {

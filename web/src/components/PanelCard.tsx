@@ -16,6 +16,22 @@ function modelLabelFromId(modelId: string) {
     .replace(/\b\w/g, (letter) => letter.toUpperCase()) ?? modelId;
 }
 
+function ClaimList({ title, items }: { title: string; items?: string[] }) {
+  if (!items?.length) return null;
+  return (
+    <div>
+      <p className="data-text text-[0.62rem] text-[var(--muted)]">{title}</p>
+      <ul className="mt-1 space-y-1">
+        {items.slice(0, 3).map((item) => (
+          <li key={item} className="rounded-lg border border-white/10 bg-white/[.035] px-2.5 py-1.5 text-xs leading-5 text-[var(--text)]/80">
+            {item}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export function PanelCard({ modelId, verdict }: { modelId: string; verdict?: PanelVerdict }) {
   const displayLabel = verdict?.label ?? modelLabelFromId(modelId);
   const resolved = Boolean(verdict);
@@ -61,6 +77,11 @@ export function PanelCard({ modelId, verdict }: { modelId: string; verdict?: Pan
             />
           </div>
           <p className="mt-4 text-sm leading-6 text-[var(--text)]/90">{verdict.thesis}</p>
+          <div className="mt-4 grid gap-3">
+            <ClaimList title="Accepts" items={verdict.accepted_claims} />
+            <ClaimList title="Rejects" items={verdict.rejected_claims} />
+            <ClaimList title="Challenges" items={verdict.challenges} />
+          </div>
         </div>
       ) : (
         <div className="mt-5 space-y-3" aria-label={`${displayLabel} thinking`}>

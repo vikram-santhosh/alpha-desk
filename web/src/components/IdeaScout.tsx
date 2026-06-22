@@ -19,6 +19,12 @@ function modeLabel(mode?: string) {
   return "Unknown";
 }
 
+function titleForMode(mode?: string) {
+  if (mode === "new_discoveries") return "Alpha Scout discoveries";
+  if (mode === "top_buys") return "Alpha Scout top buys";
+  return "Alpha Scout ideas";
+}
+
 function trackedChecks(result: IdeaScoutResult) {
   return Object.entries(result.audit?.tracked_ticker_checks ?? {}).slice(0, 18);
 }
@@ -42,9 +48,9 @@ export function IdeaScout({ result, status, error, onRunIdea }: IdeaScoutProps) 
     <section className="glass p-5" aria-labelledby="idea-scout-title">
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
-          <p className="data-text text-xs uppercase text-[var(--muted)]">Idea scout</p>
+          <p className="data-text text-xs uppercase text-[var(--muted)]">Alpha Scout pipeline</p>
           <h2 id="idea-scout-title" className="mt-1 font-display text-2xl font-semibold">
-            Today's top ideas
+            {titleForMode(result?.scout_mode)}
           </h2>
         </div>
         <div className="data-text text-xs text-[var(--muted)]">

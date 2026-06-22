@@ -21,10 +21,11 @@ class _FakeResponse:
 
 
 def test_gemini_alias_costs_are_recorded_with_resolved_model(monkeypatch, tmp_path):
-    captured: dict[str, str] = {}
+    captured: dict[str, object] = {}
 
     def generate_content(*, model, contents, config):
         captured["model"] = model
+        captured["config"] = config
         return _FakeResponse()
 
     class FakeClient:
@@ -54,9 +55,13 @@ def test_gemini_alias_costs_are_recorded_with_resolved_model(monkeypatch, tmp_pa
         model="claude-opus-4-6",
         max_tokens=128,
         messages=[{"role": "user", "content": "hello"}],
+        response_mime_type="application/json",
+        temperature=0.2,
     )
 
     assert captured["model"] == "gemini-2.5-pro"
+    assert getattr(captured["config"], "response_mime_type") == "application/json"
+    assert getattr(captured["config"], "temperature") == 0.2
     assert response.model == "gemini-2.5-pro"
 
     cost = cost_tracker.record_usage(

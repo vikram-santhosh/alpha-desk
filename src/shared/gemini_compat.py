@@ -137,9 +137,9 @@ class _Messages:
         **kwargs,
     ) -> _Message:
         if self._backend == "anthropic":
-            return self._create_anthropic(model, max_tokens, messages, system)
+            return self._create_anthropic(model, max_tokens, messages, system, kwargs)
         elif self._backend == "gemini":
-            return self._create_gemini(model, max_tokens, messages, system)
+            return self._create_gemini(model, max_tokens, messages, system, kwargs)
         else:
             raise APIError(
                 "No API key found. Set ANTHROPIC_API_KEY or GEMINI_API_KEY / GOOGLE_API_KEY."
@@ -148,7 +148,12 @@ class _Messages:
     # ── Anthropic backend ───────────────────────────────────────────────────
 
     def _create_anthropic(
-        self, model: str, max_tokens: int, messages: list[dict], system: str | None
+        self,
+        model: str,
+        max_tokens: int,
+        messages: list[dict],
+        system: str | None,
+        options: dict[str, Any] | None = None,
     ) -> _Message:
         import anthropic as _anthropic
 
@@ -163,6 +168,10 @@ class _Messages:
         }
         if system:
             create_kwargs["system"] = system
+        options = options or {}
+        for key in ("temperature", "top_p", "stop_sequences"):
+            if key in options:
+                create_kwargs[key] = options[key]
 
         try:
             response = client.messages.create(**create_kwargs)
@@ -197,7 +206,12 @@ class _Messages:
     # ── Gemini backend ──────────────────────────────────────────────────────
 
     def _create_gemini(
-        self, model: str, max_tokens: int, messages: list[dict], system: str | None
+        self,
+        model: str,
+        max_tokens: int,
+        messages: list[dict],
+        system: str | None,
+        options: dict[str, Any] | None = None,
     ) -> _Message:
         from google import genai
         from google.genai import types
@@ -214,9 +228,15 @@ class _Messages:
             text = msg["content"] if isinstance(msg["content"], str) else str(msg["content"])
             contents.append(types.Content(role=role, parts=[types.Part(text=text)]))
 
-        config = types.GenerateContentConfig(
-            max_output_tokens=max_tokens,
-        )
+        options = options or {}
+        config_kwargs: dict[str, Any] = {"max_output_tokens": max_tokens}
+        for key in ("temperature", "top_p", "top_k"):
+            if key in options:
+                config_kwargs[key] = options[key]
+        response_mime_type = options.get("response_mime_type")
+        if response_mime_type:
+            config_kwargs["response_mime_type"] = response_mime_type
+        config = types.GenerateContentConfig(**config_kwargs)
         if system:
             config.system_instruction = system
 

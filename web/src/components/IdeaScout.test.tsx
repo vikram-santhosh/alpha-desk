@@ -84,7 +84,7 @@ describe("IdeaScout", () => {
     const onRunIdea = vi.fn();
     render(<IdeaScout result={result} status="complete" onRunIdea={onRunIdea} />);
 
-    expect(screen.getByRole("heading", { name: "Today's top ideas" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Alpha Scout top buys" })).toBeInTheDocument();
     expect(screen.getAllByTestId("idea-card")).toHaveLength(2);
     expect(screen.getAllByTestId("source-check")).toHaveLength(3);
     expect(screen.getByText("NVDA")).toBeInTheDocument();

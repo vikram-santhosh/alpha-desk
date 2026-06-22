@@ -6,7 +6,7 @@ import { CommandBar } from "./CommandBar";
 
 const roster: ModelOption[] = [
   { model_id: "google/gemini-3.5-flash", label: "Gemini 3.5 Flash", provider: "Google", enabled: true },
-  { model_id: "moonshotai/kimi-k2.6", label: "Kimi K2.6", provider: "Moonshot AI", enabled: true }
+  { model_id: "moonshotai/kimi-k2.7-code", label: "Kimi K2.7 Code", provider: "Moonshot AI", enabled: true }
 ];
 
 describe("CommandBar", () => {
@@ -20,7 +20,7 @@ describe("CommandBar", () => {
 
     expect(onRun).toHaveBeenCalledWith({
       ticker: "NVDA",
-      models: ["google/gemini-3.5-flash", "moonshotai/kimi-k2.6"]
+      models: ["google/gemini-3.5-flash", "moonshotai/kimi-k2.7-code"]
     });
   });
 
@@ -28,7 +28,7 @@ describe("CommandBar", () => {
     const onRun = vi.fn();
     render(<CommandBar roster={roster} status="No run yet" onRun={onRun} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /Kimi K2.6/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Kimi K2.7 Code/ }));
     fireEvent.change(screen.getByLabelText("Ticker or idea"), { target: { value: "AMZN" } });
     fireEvent.click(screen.getByRole("button", { name: "Run council" }));
 
@@ -63,7 +63,7 @@ describe("CommandBar", () => {
     expect(screen.getByRole("button", { name: "Scouting..." })).toBeDisabled();
 
     rerender(<CommandBar roster={roster} status="No run yet" onRun={vi.fn()} onScout={onScout} />);
-    fireEvent.click(screen.getByRole("button", { name: "Find today's top ideas" }));
+    fireEvent.click(screen.getByRole("button", { name: "Run Alpha Scout discovery" }));
 
     expect(onScout).toHaveBeenCalledTimes(1);
   });

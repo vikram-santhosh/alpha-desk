@@ -26,12 +26,14 @@ afterEach(() => {
 });
 
 describe("AlphaDesk cockpit shell", () => {
-  it("mounts the empty research cockpit shell", () => {
+  it("mounts the backend feature cockpit shell", () => {
     mockReducedMotion(false);
 
     render(<App />);
 
-    expect(screen.getByRole("heading", { name: "AlphaDesk" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Explore the AlphaDesk engines directly." })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Explore live AlphaDesk systems" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Run a ticker debate" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Prism deliberation" })).toBeInTheDocument();
     expect(screen.getByText("No run yet — enter a ticker or idea and run the council.")).toBeInTheDocument();
   });
@@ -47,14 +49,15 @@ describe("AlphaDesk cockpit shell", () => {
     expect(drifting).toHaveLength(0);
   });
 
-  it("keeps inert nav items keyboard reachable with aria-disabled", () => {
+  it("renders backend feature navigation links", () => {
     mockReducedMotion(false);
 
     render(<App />);
 
-    const briefs = screen.getByRole("button", { name: "Briefs" });
-    expect(briefs).toHaveAttribute("aria-disabled", "true");
-    expect(briefs).not.toBeDisabled();
+    expect(screen.getByRole("link", { name: "Features" })).toHaveAttribute("href", "#features");
+    expect(screen.getByRole("link", { name: "Council" })).toHaveAttribute("href", "#council");
+    expect(screen.getByRole("link", { name: "Scout" })).toHaveAttribute("href", "#scout");
+    expect(screen.getByRole("link", { name: "Context" })).toHaveAttribute("href", "#context");
   });
 
   it("has no axe accessibility violations in the empty cockpit", async () => {

@@ -5,6 +5,7 @@ existing macro theses against new data and news signals.
 """
 
 import os
+import math
 from datetime import date, datetime
 
 from src.utils.logger import get_logger
@@ -78,9 +79,12 @@ def _fetch_yfinance_data() -> dict:
             hist = ticker.history(period="5d")
             if hist is not None and not hist.empty:
                 latest_close = float(hist["Close"].iloc[-1])
+                if not math.isfinite(latest_close):
+                    log.warning("Skipping yfinance ticker %s because latest close is not finite", ticker_symbol)
+                    continue
                 prev_close = float(hist["Close"].iloc[-2]) if len(hist) >= 2 else None
                 change_pct = None
-                if prev_close and prev_close > 0:
+                if prev_close and math.isfinite(prev_close) and prev_close > 0:
                     change_pct = round((latest_close - prev_close) / prev_close * 100, 2)
                 results[label] = {
                     "value": round(latest_close, 2),

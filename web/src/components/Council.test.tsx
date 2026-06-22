@@ -9,7 +9,7 @@ const events: CouncilEvent[] = [
     type: "panel_started",
     data: {
       ticker: "NVDA",
-      models: ["google/gemini-3.5-flash", "moonshotai/kimi-k2.6", "deepseek/deepseek-v4-pro", "z-ai/glm-5.2"]
+      models: ["google/gemini-3.5-flash", "moonshotai/kimi-k2.7-code", "deepseek/deepseek-v4-pro", "z-ai/glm-5.2"]
     }
   },
   {
@@ -26,8 +26,8 @@ const events: CouncilEvent[] = [
   {
     type: "panel_model_result",
     data: {
-      model_id: "moonshotai/kimi-k2.6",
-      label: "Kimi K2.6",
+      model_id: "moonshotai/kimi-k2.7-code",
+      label: "Kimi K2.7 Code",
       rating: "Buy",
       confidence: 0.78,
       thesis: "Margins can keep compounding.",

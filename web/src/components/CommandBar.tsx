@@ -44,8 +44,8 @@ export function CommandBar({ roster, status, onRun, onScout, scoutStatus = "idle
     <section className="glass flex flex-col gap-5 p-5" aria-label="Council command bar">
       <div className="flex flex-col gap-5 xl:flex-row xl:items-center xl:justify-between">
         <div>
-          <p className="data-text text-xs uppercase text-[var(--muted)]">Research cockpit</p>
-          <h1 className="font-display text-3xl font-bold tracking-normal md:text-4xl">AlphaDesk</h1>
+          <p className="data-text text-xs uppercase text-[var(--muted)]">Model council</p>
+          <h2 className="font-display text-3xl font-bold tracking-normal md:text-4xl">Run a ticker debate</h2>
         </div>
 
         <div className="flex w-full flex-col gap-3 xl:max-w-2xl">
@@ -77,8 +77,8 @@ export function CommandBar({ roster, status, onRun, onScout, scoutStatus = "idle
                 className="focus-ring min-h-12 rounded-2xl border border-[var(--aurora-teal)]/45 bg-[var(--aurora-teal)]/10 px-5 font-display text-sm font-semibold text-[var(--text)] disabled:cursor-wait disabled:border-white/10 disabled:bg-white/[.035] disabled:text-[var(--muted)]"
                 onClick={onScout}
                 disabled={scoutStatus === "loading"}
-              >
-                {scoutStatus === "loading" ? "Scouting..." : "Find today's top ideas"}
+            >
+                {scoutStatus === "loading" ? "Scouting..." : "Run Alpha Scout discovery"}
               </button>
             ) : null}
           </div>

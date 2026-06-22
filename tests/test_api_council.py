@@ -3,9 +3,17 @@ from __future__ import annotations
 import importlib
 import json
 import sys
+from collections import Counter
+from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
+
+
+@pytest.fixture(autouse=True)
+def isolate_api_data_dir(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("ALPHADESK_DATA_DIR", str(tmp_path))
 
 
 def _sample_result(ticker: str = "NVDA") -> dict:
@@ -113,7 +121,54 @@ def test_council_stream_emits_events_in_order(monkeypatch):
         "done",
     ]
     assert events[0][1] == {"ticker": "AMZN", "models": ["claude", "grok"]}
-    assert events[-1][1] == {"cost_usd": 0.42, "degraded_reasons": [], "council_mode": "unknown"}
+    assert events[-1][1]["cost_usd"] == 0.42
+    assert events[-1][1]["degraded_reasons"] == []
+    assert events[-1][1]["council_mode"] == "unknown"
+    assert isinstance(events[-1][1]["run_id"], int)
+    assert events[-1][1]["saved_at"]
+
+
+def test_council_run_persists_latest_run_to_sqlite(monkeypatch, tmp_path: Path):
+    api_app = importlib.reload(importlib.import_module("src.api.app"))
+    monkeypatch.setattr(api_app.run_store, "DB_PATH", tmp_path / "cockpit_runs.db")
+
+    async def fake_deliberate(prompt, max_tokens):
+        return _sample_result("AMD")
+
+    monkeypatch.setattr(api_app.council, "deliberate", fake_deliberate)
+    client = TestClient(api_app.app)
+
+    run_response = client.post(
+        "/api/council/run",
+        json={"ticker": "amd", "models": ["claude", "grok"]},
+    )
+
+    assert run_response.status_code == 200
+    run_payload = run_response.json()
+    assert run_payload["run_id"] == 1
+    assert run_payload["saved_at"]
+
+    latest_response = client.get("/api/council/runs/latest?ticker=AMD")
+    assert latest_response.status_code == 200
+    latest_payload = latest_response.json()
+    assert latest_payload["run_id"] == run_payload["run_id"]
+    assert latest_payload["verdict"]["ticker"] == "AMD"
+    assert latest_payload["panel"][0]["thesis"] == "AI infrastructure demand remains durable."
+
+    summary_response = client.get("/api/council/runs?limit=5")
+    assert summary_response.status_code == 200
+    summaries = summary_response.json()
+    assert summaries == [
+        {
+            "run_id": 1,
+            "saved_at": run_payload["saved_at"],
+            "ticker": "AMD",
+            "models": ["claude", "grok"],
+            "panel_count": 2,
+            "cost_usd": 0.42,
+            "execution_mode": "unknown",
+        }
+    ]
 
 
 def test_council_stream_surfaces_cost_cap_without_silent_failure(monkeypatch):
@@ -183,6 +238,49 @@ def test_portfolio_endpoint_flags_concentration(monkeypatch):
     assert payload["concentration_flag"] is True
 
 
+def test_macro_endpoint_returns_backend_dashboard(monkeypatch):
+    api_app = importlib.reload(importlib.import_module("src.api.app"))
+
+    monkeypatch.setattr(
+        api_app,
+        "_fetch_live_macro_data",
+        lambda: {
+            "vix": {"value": 17.5, "change_pct": -2.0, "date": "2026-06-18"},
+            "sp500": {"value": 6100.0, "change_pct": 0.8, "date": "2026-06-18"},
+            "treasury_10y": {"value": 4.1, "date": "2026-06-18"},
+            "yield_curve_spread_calculated": 0.2,
+            "fetched_at": "2026-06-18T12:00:00",
+            "date": "2026-06-18",
+        },
+    )
+    monkeypatch.setattr(
+        api_app,
+        "_macro_theses_from_memory_or_config",
+        lambda degraded: [
+            {
+                "title": "AI Infrastructure Build-Out",
+                "description": "GPU, networking, power, and foundry demand accelerating.",
+                "status": "intact",
+                "affected_tickers": ["NVDA", "VRT"],
+                "evidence_log": [],
+            }
+        ],
+    )
+    client = TestClient(api_app.app)
+
+    response = client.get("/api/macro")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["regime"]["source"] == "backend"
+    assert payload["regime"]["agent"] == "Backend Macro Scanner"
+    assert payload["regime"]["scannedAt"] == "2026-06-18T12:00:00"
+    assert payload["regime"]["score"] > 50
+    assert payload["themes"][0]["title"] == "AI Infrastructure Build-Out"
+    assert payload["themes"][0]["status"] == "risk_on"
+    assert "NVDA" in payload["themes"][0]["bullets"][1]
+
+
 def test_today_ideas_endpoint_returns_mock_research_candidates(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     monkeypatch.setenv("OPENROUTER_MOCK", "1")
@@ -208,6 +306,42 @@ def test_today_ideas_endpoint_returns_mock_research_candidates(monkeypatch):
     assert checks["Council roster"]["status"] == "validated"
     assert "Research candidates only" in payload["disclaimer"]
     assert payload["cost_usd"] == 0.0
+
+
+def test_today_ideas_persists_latest_run_to_sqlite(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_MOCK", "1")
+    monkeypatch.setenv("ALPHA_SCOUT_MOCK", "1")
+    api_app = importlib.reload(importlib.import_module("src.api.app"))
+    monkeypatch.setattr(api_app.run_store, "DB_PATH", tmp_path / "cockpit_runs.db")
+    client = TestClient(api_app.app)
+
+    run_response = client.get("/api/ideas/today?limit=10&mode=top_buys")
+
+    assert run_response.status_code == 200
+    run_payload = run_response.json()
+    assert run_payload["run_id"] == 1
+    assert run_payload["saved_at"]
+
+    latest_response = client.get("/api/ideas/runs/latest?mode=top_buys")
+    assert latest_response.status_code == 200
+    latest_payload = latest_response.json()
+    assert latest_payload["run_id"] == run_payload["run_id"]
+    assert latest_payload["ideas"][0]["ticker"] == "NVDA"
+
+    summary_response = client.get("/api/ideas/runs?limit=5")
+    assert summary_response.status_code == 200
+    summaries = summary_response.json()
+    assert summaries == [
+        {
+            "run_id": 1,
+            "saved_at": run_payload["saved_at"],
+            "scout_mode": "top_buys",
+            "as_of": run_payload["as_of"],
+            "idea_count": 10,
+            "cost_usd": 0.0,
+        }
+    ]
 
 
 def test_today_ideas_endpoint_runs_alpha_scout_pipeline(monkeypatch):
@@ -413,10 +547,10 @@ def test_council_models_return_openrouter_roster_when_fusion_is_configured(monke
     assert response.status_code == 200
     payload = response.json()
     assert [model["model_id"] for model in payload] == [
-        "google/gemini-3.5-flash",
-        "moonshotai/kimi-k2.6",
-        "deepseek/deepseek-v4-pro",
         "z-ai/glm-5.2",
+        "moonshotai/kimi-k2.7-code",
+        "deepseek/deepseek-v4-pro",
+        "google/gemini-3.5-flash",
     ]
 
 
@@ -434,11 +568,10 @@ def test_council_models_allow_openrouter_roster_override(monkeypatch):
     assert response.status_code == 200
     payload = response.json()
     assert [model["model_id"] for model in payload] == [
-        "anthropic/claude-opus-4.8-fast",
         "google/gemini-3.1-flash-lite",
         "x-ai/grok-4.20",
     ]
-    assert payload[0]["label"] == "Claude Opus 4 8 Fast"
+    assert payload[0]["label"] == "Gemini 3 1 Flash Lite"
 
 
 def test_openrouter_direct_council_calls_selected_models(monkeypatch):
@@ -466,15 +599,66 @@ def test_openrouter_direct_council_calls_selected_models(monkeypatch):
     result = api_app.asyncio.run(
         api_app._run_openrouter_council(
             "NVDA",
-            ["google/gemini-3.5-flash", "moonshotai/kimi-k2.6"],
+            ["google/gemini-3.5-flash", "moonshotai/kimi-k2.7-code"],
         )
     )
 
-    assert captured_models == ["google/gemini-3.5-flash", "moonshotai/kimi-k2.6"]
-    assert result.cost_usd == 0.02
+    assert Counter(captured_models) == Counter(
+        {
+            "google/gemini-3.5-flash": 2,
+            "moonshotai/kimi-k2.7-code": 2,
+        }
+    )
+    assert result.cost_usd == 0.04
     assert result.verdict.ticker == "NVDA"
     assert result.verdict.rating == "Overweight"
     assert result.panel[1].dissent is True
+
+
+def test_degraded_cross_exam_does_not_overwrite_initial_panel(monkeypatch):
+    api_app = importlib.reload(importlib.import_module("src.api.app"))
+    initial = api_app.PanelVerdict(
+        model_id="moonshotai/kimi-k2.7-code",
+        label="Kimi K2.7 Code",
+        rating="Overweight",
+        confidence=0.78,
+        thesis="Kimi returned a valid first-pass thesis.",
+        dissent=False,
+        accepted_claims=["AI demand remains durable."],
+        rejected_claims=["Valuation is not cheap."],
+        challenges=["Quantify capex digestion risk."],
+    )
+    degraded = api_app.PanelVerdict(
+        model_id="moonshotai/kimi-k2.7-code",
+        label="Kimi K2.7 Code",
+        rating="Hold",
+        confidence=0.35,
+        thesis="moonshotai/kimi-k2.7-code returned an empty response.",
+        dissent=False,
+        accepted_claims=[],
+        rejected_claims=["Empty model response cannot validate other seats' claims."],
+        challenges=["Retry this model or inspect provider availability before relying on it."],
+    )
+
+    merged = api_app._merge_cross_exam_verdict(initial, degraded)
+
+    assert merged == initial
+    assert "Empty model response" not in " ".join(merged.rejected_claims)
+    assert "Retry this model" not in " ".join(merged.challenges)
+
+
+def test_truncated_panel_json_is_not_rendered_as_thesis():
+    api_app = importlib.reload(importlib.import_module("src.api.app"))
+
+    parsed = api_app._plain_panel_from_text(
+        "NVDA",
+        "google/gemini-3.5-flash",
+        '{"model_id":"google/gemini-3.5-flash","label":"NVIDIA Corporation (NVDA',
+    )
+
+    assert not parsed["thesis"].startswith("{")
+    assert "incomplete structured output" in parsed["thesis"]
+    assert parsed["challenges"] == []
 
 
 def test_openrouter_mock_council_finishes_without_network(monkeypatch):
@@ -492,7 +676,7 @@ def test_openrouter_mock_council_finishes_without_network(monkeypatch):
             "NVDA",
             [
                 "google/gemini-3.5-flash",
-                "moonshotai/kimi-k2.6",
+                "moonshotai/kimi-k2.7-code",
                 "deepseek/deepseek-v4-pro",
                 "z-ai/glm-5.2",
             ],
@@ -503,7 +687,7 @@ def test_openrouter_mock_council_finishes_without_network(monkeypatch):
     assert result.cost_usd == 0.0
     assert [item.model_id for item in result.panel] == [
         "google/gemini-3.5-flash",
-        "moonshotai/kimi-k2.6",
+        "moonshotai/kimi-k2.7-code",
         "deepseek/deepseek-v4-pro",
         "z-ai/glm-5.2",
     ]
@@ -550,7 +734,6 @@ def test_openrouter_fusion_adapter_uses_selected_models(monkeypatch):
     assert captured["extra_body"]["tool_choice"] == "required"
     assert captured["extra_body"]["plugins"] == [{"id": "response-healing"}]
     assert captured["extra_body"]["tools"][0]["parameters"]["analysis_models"] == [
-        "anthropic/claude-opus-4.8",
         "x-ai/grok-4.3",
     ]
 
@@ -621,7 +804,6 @@ def test_openrouter_fusion_maps_gcp_model_ids(monkeypatch):
     )
 
     assert captured["extra_body"]["tools"][0]["parameters"]["analysis_models"] == [
-        "anthropic/claude-opus-4.8",
         "google/gemini-3.1-pro-preview",
         "x-ai/grok-4.3",
     ]
@@ -817,7 +999,7 @@ def test_openrouter_fusion_maps_investment_council_envelope(monkeypatch):
     assert result.verdict.rating == "Overweight"
     assert result.verdict.conviction == 0.74
     assert result.verdict.scenarios[1].ret_pct == 23.6
-    assert result.panel[0].model_id == "anthropic/claude-opus-4.8-fast"
+    assert result.panel[0].model_id == "google/gemini-3.1-flash-lite"
     assert result.panel[0].label == "Secular Growth Bull"
     assert result.panel[2].dissent is True
     assert result.judge.crowded_narrative_flag is not None
