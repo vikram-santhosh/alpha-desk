@@ -1,10 +1,14 @@
 anthropic
 google-genai
+fastapi
+uvicorn
+openai
 pyyaml
 python-dotenv
 requests
 yfinance
 pandas
+lxml
 ta
 schedule
 fredapi

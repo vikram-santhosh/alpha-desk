@@ -687,7 +687,7 @@ MEDIUM SIGNIFICANCE:
         messages=[{"role": "user", "content": prompt}],
     )
     usage = response.usage
-    record_usage("delta_engine", usage.input_tokens, usage.output_tokens, model="claude-haiku-4-5")
+    record_usage("delta_engine", usage.input_tokens, usage.output_tokens, model=response.model)
     return response.content[0].text.strip()
 
 

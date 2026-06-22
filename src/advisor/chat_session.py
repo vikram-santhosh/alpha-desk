@@ -270,7 +270,7 @@ User question: {question}"""
                 AGENT_NAME,
                 usage.input_tokens,
                 usage.output_tokens,
-                model=MODEL,
+                model=response.model,
             )
 
             answer = response.content[0].text.strip()

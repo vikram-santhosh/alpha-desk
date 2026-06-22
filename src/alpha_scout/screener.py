@@ -1,12 +1,15 @@
 """Multi-dimensional screening engine for Alpha Scout.
 
-Scores candidates across four dimensions:
+Scores candidates across seven dimensions:
 - Technical (0-100): RSI, MACD, golden/death cross, Bollinger Bands, volume
 - Fundamental (0-100): P/E, revenue growth, margins, 52-week proximity, market cap
 - Sentiment (0-100): Reddit and news sentiment from agent bus signals
 - Diversification (0-100): Sector weight relative to current portfolio
+- Novelty (0-100): Source freshness and whether the name is already tracked
+- Catalyst proximity (0-100): Earnings/catalyst timing and event-bearing source data
+- Evidence quality (0-100): Breadth and specificity of source evidence
 
-Produces a weighted composite score used to rank candidates for Gemini synthesis.
+Produces a normalized weighted composite score used to rank candidates for synthesis.
 """
 from __future__ import annotations
 
@@ -17,7 +20,11 @@ from src.utils.logger import get_logger
 log = get_logger(__name__)
 
 
-def score_technical(analysis: dict[str, Any]) -> int:
+def _is_top_buy_mode(mode: str | None) -> bool:
+    return str(mode or "").strip().lower() == "top_buys"
+
+
+def score_technical(analysis: dict[str, Any], mode: str = "new_discoveries") -> int:
     """Score a candidate on technical indicators (0-100).
 
     Rubric:
@@ -27,7 +34,10 @@ def score_technical(analysis: dict[str, Any]) -> int:
         Below lower Bollinger Band: +15 | Unusual volume (>2x): +15
         Price above SMA-200: +10
     """
-    if analysis.get("error"):
+    if _is_top_buy_mode(mode):
+        return score_top_buy_technical(analysis)
+
+    if not analysis or analysis.get("error"):
         return 50  # neutral baseline for missing data
 
     score = 0
@@ -81,6 +91,68 @@ def score_technical(analysis: dict[str, Any]) -> int:
     return max(0, min(100, score))
 
 
+def score_top_buy_technical(analysis: dict[str, Any]) -> int:
+    """Score technicals for top-buy mode.
+
+    Top-buy mode is looking for durable compounders and current buyability,
+    not only oversold/reversal setups. A normal uptrend should not score as
+    badly as "no signal" just because there was no fresh crossover this week.
+    """
+    if not analysis or analysis.get("error"):
+        return 50
+
+    score = 50
+
+    rsi_data = analysis.get("rsi", {})
+    rsi = rsi_data.get("rsi")
+    if rsi is not None:
+        if 35 <= rsi <= 65:
+            score += 8
+        elif 30 <= rsi < 35:
+            score += 5
+        elif 65 < rsi <= 75:
+            score += 2
+        elif rsi < 25:
+            score -= 4
+        elif rsi > 80:
+            score -= 8
+
+    macd_data = analysis.get("macd", {})
+    if macd_data.get("bullish_crossover"):
+        score += 12
+    if macd_data.get("bearish_crossover"):
+        score -= 10
+
+    ma_data = analysis.get("moving_averages", {})
+    if ma_data.get("golden_cross"):
+        score += 14
+    if ma_data.get("death_cross"):
+        score -= 20
+
+    sma_20 = ma_data.get("sma_20")
+    sma_50 = ma_data.get("sma_50")
+    sma_200 = ma_data.get("sma_200")
+    if sma_20 is not None and sma_200 is not None:
+        if sma_20 > sma_200:
+            score += 14
+        else:
+            score -= 8
+    if sma_20 is not None and sma_50 is not None and sma_20 > sma_50:
+        score += 5
+
+    bb_data = analysis.get("bollinger_bands", {})
+    if bb_data.get("below_lower"):
+        score += 5
+    if bb_data.get("above_upper"):
+        score -= 3
+
+    vol_data = analysis.get("volume", {})
+    if vol_data.get("unusual_volume"):
+        score += 5
+
+    return max(0, min(100, score))
+
+
 def score_fundamental(fundamentals: dict[str, Any]) -> int:
     """Score a candidate on fundamental metrics (0-100).
 
@@ -94,30 +166,38 @@ def score_fundamental(fundamentals: dict[str, Any]) -> int:
     if not fundamentals:
         return 50  # neutral baseline
 
-    score = 0
+    score = 40
 
     # P/E ratio
     pe = fundamentals.get("pe_trailing")
     if pe is not None:
         if 10 <= pe <= 30:
-            score += 20
+            score += 15
         elif 0 < pe < 10:
             score += 10
+        elif pe <= 50:
+            score += 5
         elif pe > 50:
-            score -= 10
+            score -= 5
 
     # Revenue growth
     rev_growth = fundamentals.get("revenue_growth")
     if rev_growth is not None:
         if rev_growth > 0:
-            score += 20
+            score += 15
             if rev_growth > 0.20:
                 score += 10
+            elif rev_growth > 0.10:
+                score += 5
+        elif rev_growth < -0.05:
+            score -= 10
 
     # Margins
     net_margin = fundamentals.get("net_margin")
     if net_margin is not None and net_margin > 0:
-        score += 15
+        score += 10
+        if net_margin > 0.20:
+            score += 5
 
     gross_margin = fundamentals.get("gross_margin")
     if gross_margin is not None and gross_margin > 0.40:
@@ -231,6 +311,93 @@ def score_diversification(
         return 20
 
 
+def score_novelty(candidate: dict[str, Any], mode: str = "new_discoveries") -> int:
+    """Score how fresh a candidate is while avoiding a hard penalty for known winners."""
+    source = str(candidate.get("source", "")).lower()
+    signal_type = str(candidate.get("signal_type", "")).lower()
+    if _is_top_buy_mode(mode):
+        if source.startswith("existing_portfolio"):
+            return 88
+        if source.startswith("existing_watchlist"):
+            return 82
+    if source.startswith("existing_portfolio"):
+        return 45
+    if source.startswith("existing_watchlist"):
+        return 55
+    if any(token in source for token in ("filing", "13f", "thematic", "reddit", "agent_bus")):
+        return 80
+    if signal_type in {"unusual_mentions", "sentiment_reversal", "multi_sub_convergence"}:
+        return 85
+    return 65
+
+
+def score_catalyst_proximity(candidate: dict[str, Any], fundamentals: dict[str, Any]) -> int:
+    """Score whether a candidate has near-term events worth reviewing."""
+    signal_data = candidate.get("signal_data", {})
+    source = str(candidate.get("source", "")).lower()
+    score = 50
+    if fundamentals.get("next_earnings_date"):
+        score += 20
+    if any(key in signal_data for key in ("catalyst", "event", "filing_date", "earnings_date")):
+        score += 20
+    if any(token in source for token in ("filing", "13f", "news", "reddit", "thematic")):
+        score += 10
+    return max(0, min(100, score))
+
+
+def score_evidence_quality(candidate: dict[str, Any], fundamentals: dict[str, Any], technicals: dict[str, Any]) -> int:
+    """Score source/data breadth so thin candidates do not look as strong as validated names."""
+    score = 35
+    if fundamentals:
+        score += 25
+    if technicals and not technicals.get("error"):
+        score += 15
+    if candidate.get("signal_data"):
+        score += 15
+    if "/" in str(candidate.get("source", "")) or candidate.get("signal_type"):
+        score += 10
+    return max(0, min(100, score))
+
+
+def normalize_weights(weights: dict[str, float], mode: str = "new_discoveries") -> dict[str, float]:
+    """Return non-negative weights normalized to 1.0 for supported score dimensions."""
+    discovery_defaults = {
+        "technical": 0.30,
+        "fundamental": 0.30,
+        "sentiment": 0.15,
+        "diversification": 0.10,
+        "novelty": 0.05,
+        "catalyst_proximity": 0.05,
+        "evidence_quality": 0.05,
+    }
+    top_buy_defaults = {
+        "technical": 0.14,
+        "fundamental": 0.36,
+        "sentiment": 0.06,
+        "diversification": 0.04,
+        "novelty": 0.03,
+        "catalyst_proximity": 0.13,
+        "evidence_quality": 0.24,
+    }
+    if _is_top_buy_mode(mode):
+        nested = weights.get("top_buys") if isinstance(weights.get("top_buys"), dict) else None
+        source_weights: dict[str, Any] = nested or top_buy_defaults
+        supported = top_buy_defaults
+    else:
+        nested = weights.get("new_discoveries") if isinstance(weights.get("new_discoveries"), dict) else None
+        source_weights = nested or weights
+        supported = discovery_defaults
+    raw = {
+        key: max(0.0, float(source_weights.get(key, default) or 0.0))
+        for key, default in supported.items()
+    }
+    total = sum(raw.values())
+    if total <= 0:
+        raw = dict(supported)
+        total = sum(raw.values())
+    return {key: value / total for key, value in raw.items()}
+
+
 def _compute_portfolio_sector_weights(
     fundamentals: dict[str, dict[str, Any]],
     portfolio_tickers: list[str],
@@ -252,6 +419,67 @@ def _compute_portfolio_sector_weights(
     return {sector: (count / total * 100) for sector, count in sector_counts.items()}
 
 
+def _is_existing_candidate(candidate: dict[str, Any]) -> bool:
+    return str(candidate.get("source", "")).lower().startswith("existing_")
+
+
+def _top_buy_quality_floor(
+    candidate: dict[str, Any],
+    fundamentals: dict[str, Any],
+    dimension_scores: dict[str, int],
+) -> float | None:
+    """Return a minimum top-buy score for high-quality tracked names.
+
+    This keeps the top-buy run from treating known holdings/watchlist winners
+    like stale discoveries. It is generic: a tracked company must already show
+    strong fundamentals and data quality before the floor applies.
+    """
+    if not _is_existing_candidate(candidate):
+        return None
+    if dimension_scores["fundamental"] < 85 or dimension_scores["evidence_quality"] < 75:
+        return None
+
+    floor = 72.0
+    revenue_growth = fundamentals.get("revenue_growth")
+    if isinstance(revenue_growth, (int, float)):
+        if revenue_growth > 0.20:
+            floor += 5.0
+        elif revenue_growth > 0.10:
+            floor += 3.0
+        elif revenue_growth > 0:
+            floor += 1.5
+
+    net_margin = fundamentals.get("net_margin")
+    if isinstance(net_margin, (int, float)):
+        if net_margin > 0.25:
+            floor += 4.0
+        elif net_margin > 0.15:
+            floor += 2.0
+
+    gross_margin = fundamentals.get("gross_margin")
+    if isinstance(gross_margin, (int, float)) and gross_margin > 0.55:
+        floor += 2.0
+
+    market_cap = fundamentals.get("market_cap")
+    if isinstance(market_cap, (int, float)):
+        if market_cap > 500_000_000_000:
+            floor += 3.0
+        elif market_cap > 100_000_000_000:
+            floor += 1.5
+
+    pct_from_high = fundamentals.get("pct_from_52w_high")
+    if isinstance(pct_from_high, (int, float)):
+        if -35 <= pct_from_high <= -8:
+            floor += 2.0
+        elif pct_from_high < -45:
+            floor -= 2.0
+
+    if dimension_scores["technical"] < 25:
+        floor -= 3.0
+
+    return max(0.0, min(88.0, floor))
+
+
 def screen_candidates(
     candidates: list[dict[str, Any]],
     technicals: dict[str, dict[str, Any]],
@@ -259,6 +487,7 @@ def screen_candidates(
     portfolio_tickers: list[str],
     portfolio_fundamentals: dict[str, dict[str, Any]],
     weights: dict[str, float],
+    mode: str = "new_discoveries",
 ) -> list[dict[str, Any]]:
     """Screen all candidates and compute composite scores.
 
@@ -268,15 +497,15 @@ def screen_candidates(
         fundamentals: Dict of ticker -> fundamental data for candidates.
         portfolio_tickers: Current portfolio ticker list.
         portfolio_fundamentals: Fundamentals for portfolio tickers (for sector weights).
-        weights: Dimension weights dict (technical, fundamental, sentiment, diversification).
+        weights: Dimension weights dict. Supported keys are technical,
+            fundamental, sentiment, diversification, novelty,
+            catalyst_proximity, and evidence_quality.
 
     Returns:
         List of candidate dicts enriched with scores, sorted by composite descending.
     """
-    w_tech = weights.get("technical", 0.30)
-    w_fund = weights.get("fundamental", 0.30)
-    w_sent = weights.get("sentiment", 0.20)
-    w_div = weights.get("diversification", 0.20)
+    scout_mode = "top_buys" if _is_top_buy_mode(mode) else "new_discoveries"
+    normalized_weights = normalize_weights(weights, mode=scout_mode)
 
     # Compute portfolio sector weights for diversification scoring
     sector_weights = _compute_portfolio_sector_weights(portfolio_fundamentals, portfolio_tickers)
@@ -288,7 +517,7 @@ def screen_candidates(
 
         # Technical score
         tech_data = technicals.get(ticker, {})
-        tech_score = score_technical(tech_data)
+        tech_score = score_technical(tech_data, mode=scout_mode)
 
         # Fundamental score
         fund_data = fundamentals.get(ticker, {})
@@ -300,23 +529,42 @@ def screen_candidates(
         # Diversification score
         candidate_sector = fund_data.get("sector")
         div_score = score_diversification(candidate_sector, sector_weights)
+        if scout_mode == "top_buys" and _is_existing_candidate(candidate):
+            div_score = max(div_score, 68)
 
-        # Weighted composite
-        composite = (
-            w_tech * tech_score
-            + w_fund * fund_score
-            + w_sent * sent_score
-            + w_div * div_score
+        novelty_score = score_novelty(candidate, mode=scout_mode)
+        catalyst_score = score_catalyst_proximity(candidate, fund_data)
+        evidence_score = score_evidence_quality(candidate, fund_data, tech_data)
+
+        dimension_scores = {
+            "technical": tech_score,
+            "fundamental": fund_score,
+            "sentiment": sent_score,
+            "diversification": div_score,
+            "novelty": novelty_score,
+            "catalyst_proximity": catalyst_score,
+            "evidence_quality": evidence_score,
+        }
+
+        composite = sum(
+            normalized_weights[name] * score
+            for name, score in dimension_scores.items()
         )
+        quality_floor = (
+            _top_buy_quality_floor(candidate, fund_data, dimension_scores)
+            if scout_mode == "top_buys"
+            else None
+        )
+        if quality_floor is not None:
+            composite = max(composite, quality_floor)
 
         scored.append({
             **candidate,
             "scores": {
-                "technical": tech_score,
-                "fundamental": fund_score,
-                "sentiment": sent_score,
-                "diversification": div_score,
+                **dimension_scores,
+                "weights": normalized_weights,
                 "composite": round(composite, 1),
+                "top_buy_quality_floor": round(quality_floor, 1) if quality_floor is not None else None,
             },
             "fundamentals_summary": {
                 "pe_trailing": fund_data.get("pe_trailing"),

@@ -344,7 +344,7 @@ class MultiStepDeepResearcher:
             max_tokens=1800,
             messages=[{"role": "user", "content": prompt}],
         )
-        return {"text": response.content[0].text.strip(), "usage": response.usage, "model": analysis_model}
+        return {"text": response.content[0].text.strip(), "usage": response.usage, "model": response.model}
 
     async def _fill_gaps(
         self,
@@ -411,7 +411,7 @@ class MultiStepDeepResearcher:
             max_tokens=1200 if tier == "full" else 500,
             messages=[{"role": "user", "content": prompt}],
         )
-        return {"raw_text": response.content[0].text.strip(), "usage": response.usage, "model": PRO_MODEL}
+        return {"raw_text": response.content[0].text.strip(), "usage": response.usage, "model": response.model}
 
     def _select_articles(self, ticker: str, data_context: dict[str, Any]) -> list[dict[str, Any]]:
         matches = []

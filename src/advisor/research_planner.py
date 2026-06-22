@@ -204,12 +204,12 @@ class ResearchPlanner:
                 return {
                     "text": raw_text,
                     "usage": response.usage,
-                    "model": FLASH_MODEL,
+                    "model": response.model,
                     "data": refined_plan,
                 }
 
             log.warning("LLM returned unparseable output, falling back to rule-based plan")
-            return {"text": raw_text, "usage": response.usage, "model": FLASH_MODEL, "data": rule_plan}
+            return {"text": raw_text, "usage": response.usage, "model": response.model, "data": rule_plan}
 
         except Exception:
             log.exception("LLM planner call failed, falling back to rule-based plan")

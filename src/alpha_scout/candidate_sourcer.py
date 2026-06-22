@@ -10,9 +10,11 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
+from io import StringIO
 from typing import Any
 
 import pandas as pd
+import requests
 
 from src.shared.agent_bus import consume
 from src.shared.security import sanitize_ticker
@@ -119,10 +121,13 @@ def _source_from_sp500() -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
 
     try:
-        tables = pd.read_html(
+        response = requests.get(
             "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
-            match="Symbol",
+            headers={"User-Agent": "AlphaDesk/1.0 (+https://localhost)"},
+            timeout=15,
         )
+        response.raise_for_status()
+        tables = pd.read_html(StringIO(response.text), match="Symbol")
         if tables:
             df = tables[0]
             # The symbol column may be named "Symbol" or "Ticker symbol"
@@ -159,13 +164,16 @@ def _source_from_yfinance_screeners(screener_names: list[str]) -> list[dict[str,
     candidates: list[dict[str, Any]] = []
 
     try:
-        from yfinance import Screener
+        import yfinance as yf
 
         for name in screener_names:
             try:
-                sc = Screener()
-                sc.set_default(name)
-                response = sc.response
+                if hasattr(yf, "Screener"):
+                    sc = yf.Screener()
+                    sc.set_default(name)
+                    response = sc.response
+                else:
+                    response = yf.screen(name, count=25)
 
                 quotes = response.get("quotes", [])
                 for quote in quotes:
@@ -191,17 +199,44 @@ def _source_from_yfinance_screeners(screener_names: list[str]) -> list[dict[str,
     return candidates
 
 
+def _source_from_existing_universe(
+    existing_tickers: list[str],
+    holdings: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Seed top-buy runs with holdings and watchlist names."""
+    holding_tickers = {str(h.get("ticker", "")).upper().strip() for h in holdings}
+    candidates: list[dict[str, Any]] = []
+    for ticker in existing_tickers:
+        ticker_upper = str(ticker).upper().strip()
+        if not ticker_upper:
+            continue
+        cohort = "portfolio" if ticker_upper in holding_tickers else "watchlist"
+        candidates.append({
+            "ticker": ticker_upper,
+            "source": f"existing_{cohort}",
+            "signal_type": cohort,
+            "signal_data": {"cohort": cohort},
+        })
+    return candidates
+
+
 def source_all_candidates(
     existing_tickers: list[str],
     holdings: list[dict[str, Any]],
     config: dict[str, Any],
+    *,
+    include_existing: bool = False,
+    audit: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Source candidates from all enabled channels, deduplicate, and cap.
 
     Args:
-        existing_tickers: Tickers already in portfolio/watchlist to exclude.
+        existing_tickers: Tickers already in portfolio/watchlist.
         holdings: Portfolio holdings list.
         config: Scout config dict (from scout.yaml).
+        include_existing: When true, seed and keep portfolio/watchlist tickers.
+            When false, preserve the discovery-only behavior and exclude them.
+        audit: Optional dict populated with source counts and exclusion reasons.
 
     Returns:
         List of candidate dicts (ticker, source, signal_type, signal_data),
@@ -213,6 +248,20 @@ def source_all_candidates(
 
     all_candidates: list[dict[str, Any]] = []
     source_jobs: list[tuple[str, Any, str]] = []
+    exclude_for_discovery = set(existing_tickers) if not include_existing else set()
+
+    if audit is not None:
+        audit["mode"] = "top_buys" if include_existing else "new_discoveries"
+        audit["source_counts"] = {}
+        audit["excluded_existing"] = []
+        audit["duplicates"] = []
+        audit["invalid_candidates"] = 0
+
+    if include_existing:
+        existing_candidates = _source_from_existing_universe(existing_tickers, holdings)
+        all_candidates.extend(existing_candidates)
+        if audit is not None:
+            audit["source_counts"]["existing universe"] = len(existing_candidates)
 
     # Agent bus signals
     if sources_config.get("agent_bus", True):
@@ -222,7 +271,7 @@ def source_all_candidates(
     if sources_config.get("reddit_moonshot", True):
         try:
             from src.alpha_scout.reddit_moonshot_sourcer import source_moonshot_candidates
-            moonshot_exclude = set(existing_tickers) | {h["ticker"] for h in holdings}
+            moonshot_exclude = exclude_for_discovery | {h["ticker"] for h in holdings if not include_existing}
             source_jobs.append((
                 "reddit moonshot",
                 partial(
@@ -239,7 +288,7 @@ def source_all_candidates(
     if sources_config.get("supply_chain", True):
         try:
             from src.alpha_scout.supply_chain_sourcer import source_from_supply_chain
-            existing_set_for_chain = {t.upper() for t in existing_tickers}
+            existing_set_for_chain = {t.upper() for t in exclude_for_discovery}
             source_jobs.append((
                 "supply chain",
                 partial(source_from_supply_chain, holdings, existing_set_for_chain),
@@ -255,7 +304,7 @@ def source_all_candidates(
             # Themes may be passed in config by the advisor pipeline
             themes = config.get("_themes", [])
             if themes:
-                existing_set_for_themes = {t.upper() for t in existing_tickers}
+                existing_set_for_themes = {t.upper() for t in exclude_for_discovery}
                 source_jobs.append((
                     "thematic scanner",
                     partial(themes_to_candidates, themes, existing_set_for_themes),
@@ -295,7 +344,7 @@ def source_all_candidates(
     if sources_config.get("filing_scanner", True):
         try:
             from src.alpha_scout.filing_scanner import scan_new_positions
-            filing_exclude = set(existing_tickers) | {h["ticker"] for h in holdings}
+            filing_exclude = exclude_for_discovery | {h["ticker"] for h in holdings if not include_existing}
             source_jobs.append((
                 "filing scanner",
                 partial(scan_new_positions, config, exclude_tickers=filing_exclude),
@@ -325,8 +374,12 @@ def source_all_candidates(
                     sourced = future.result()
                     if sourced:
                         all_candidates.extend(sourced)
+                    if audit is not None:
+                        audit["source_counts"][name] = len(sourced or [])
                 except Exception:
                     log.exception(error_message)
+                    if audit is not None:
+                        audit.setdefault("source_errors", []).append({"source": name, "error": error_message})
                 else:
                     log.info(
                         "Candidate source complete: %s (%d candidates)",
@@ -343,10 +396,22 @@ def source_all_candidates(
         try:
             ticker = sanitize_ticker(candidate["ticker"])
         except Exception:
+            if audit is not None:
+                audit["invalid_candidates"] = int(audit.get("invalid_candidates", 0)) + 1
             continue
 
         ticker_upper = ticker.upper()
-        if ticker_upper in seen or ticker_upper in existing_set:
+        if ticker_upper in seen:
+            if audit is not None:
+                audit["duplicates"].append(ticker_upper)
+            continue
+        if not include_existing and ticker_upper in existing_set:
+            if audit is not None:
+                audit["excluded_existing"].append({
+                    "ticker": ticker_upper,
+                    "source": candidate.get("source", "unknown"),
+                    "reason": "already in portfolio/watchlist",
+                })
             continue
 
         seen.add(ticker_upper)
@@ -363,4 +428,10 @@ def source_all_candidates(
         len(existing_set),
         len(capped),
     )
+    if audit is not None:
+        audit["raw_candidates"] = len(all_candidates)
+        audit["unique_candidates"] = len(unique_candidates)
+        audit["capped_candidates"] = len(capped)
+        audit["existing_universe_count"] = len(existing_set)
+        audit["include_existing"] = include_existing
     return capped

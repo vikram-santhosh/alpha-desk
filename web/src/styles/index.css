@@ -1,0 +1,137 @@
+@import "./tokens.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-height: 100%;
+  background: var(--void);
+  color: var(--text);
+  font-family: var(--font-body);
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  background:
+    radial-gradient(circle at 18% 16%, rgba(79, 124, 255, .28), transparent 36rem),
+    radial-gradient(circle at 82% 8%, rgba(45, 212, 191, .18), transparent 32rem),
+    linear-gradient(140deg, var(--abyss), var(--void) 48%, #11172A);
+}
+
+button,
+input {
+  font: inherit;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.aurora-blob {
+  position: absolute;
+  width: min(42vw, 34rem);
+  aspect-ratio: 1;
+  border-radius: 999px;
+  filter: blur(70px);
+  opacity: .42;
+  pointer-events: none;
+  transform: translate3d(0,0,0);
+}
+
+.drift-a { animation: drift-a 22s ease-in-out infinite alternate; }
+.drift-b { animation: drift-b 28s ease-in-out infinite alternate; }
+.drift-c { animation: drift-c 25s ease-in-out infinite alternate; }
+.drift-d { animation: drift-d 31s ease-in-out infinite alternate; }
+
+.grain {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: .15;
+  mix-blend-mode: soft-light;
+  background-image:
+    linear-gradient(0deg, rgba(255,255,255,.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px);
+  background-size: 3px 3px;
+  mask-image: linear-gradient(to bottom, rgba(0,0,0,.9), rgba(0,0,0,.45));
+}
+
+.data-text {
+  font-family: var(--font-mono);
+  letter-spacing: 0;
+}
+
+.nav-soon {
+  cursor: not-allowed;
+}
+
+.focus-ring:focus-visible {
+  outline: 2px solid var(--aurora-teal);
+  outline-offset: 4px;
+  box-shadow: 0 0 0 6px rgba(45,212,191,.14), 0 0 0 9px rgba(245,194,75,.10);
+}
+
+.thinking-shimmer {
+  position: relative;
+  overflow: hidden;
+}
+
+.thinking-shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.18), transparent);
+  transform: translateX(-100%);
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+.spectral-ray,
+.recombined-ray {
+  transition: opacity .5s ease, transform .7s ease;
+}
+
+.prism-resolved .ray-a { transform: translateY(22px); opacity: .38; }
+.prism-resolved .ray-b { opacity: .25; }
+.prism-resolved .ray-c { transform: translateY(-22px); opacity: .38; }
+.prism-resolved .recombined-ray { animation: draw-beam .9s ease-out both; }
+
+@keyframes drift-a {
+  from { transform: translate3d(-5%, -3%, 0) scale(1); }
+  to { transform: translate3d(7%, 8%, 0) scale(1.08); }
+}
+
+@keyframes drift-b {
+  from { transform: translate3d(5%, 1%, 0) scale(.95); }
+  to { transform: translate3d(-8%, 6%, 0) scale(1.12); }
+}
+
+@keyframes drift-c {
+  from { transform: translate3d(-2%, 7%, 0) scale(1.05); }
+  to { transform: translate3d(8%, -4%, 0) scale(.98); }
+}
+
+@keyframes drift-d {
+  from { transform: translate3d(3%, -8%, 0) scale(.96); }
+  to { transform: translate3d(-7%, 5%, 0) scale(1.08); }
+}
+
+@keyframes shimmer {
+  to { transform: translateX(100%); }
+}
+
+@keyframes draw-beam {
+  from { stroke-dasharray: 1 90; stroke-dashoffset: 60; }
+  to { stroke-dasharray: 90 0; stroke-dashoffset: 0; }
+}
+
+@media (max-width: 900px) {
+  .cockpit-grid {
+    grid-template-columns: 1fr;
+  }
+}

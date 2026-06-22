@@ -32,7 +32,7 @@ def _call_model(prompt: str, *, model: str, max_tokens: int) -> dict[str, Any]:
     return {
         "text": response.content[0].text.strip(),
         "usage": response.usage,
-        "model": model,
+        "model": response.model,
     }
 
 
