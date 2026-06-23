@@ -882,3 +882,37 @@ This file is append-only. Add a new session entry at the top of the session log 
 - `/tmp/alphadesk-api-test-venv/bin/python -m ruff check src/api src/alpha_scout/main.py src/alpha_scout/screener.py src/alpha_scout/synthesizer.py src/advisor/macro_analyst.py src/shared/gemini_compat.py tests/test_alpha_scout_core.py tests/test_api_council.py tests/test_cost_attribution.py` -> passed.
 - `cd web && npm test -- --run && npm run build` -> passed.
 - A broader ruff check over all `src/alpha_scout` surfaced two pre-existing unused imports in untouched files (`reddit_moonshot_sourcer.py`, `thematic_scanner.py`); these were not modified for the merge.
+## Session 2026-06-22 18:20 PDT - Codex
+
+### Goal
+- Complete the attached recommendation-quality task brief as seven independently shippable commits on `codex/recommendation-quality-fixes`.
+
+### Commits
+- `07a6079 fix(config): reconcile holdings and upsert macro seeds`
+- `0a429dc feat(deep-research): add web-search grounding`
+- `c4523ee feat(macro): use prediction markets for rate regime`
+- `2e67d0c feat(conviction): implement weighted evidence scoring`
+- `255fff1 feat(strategy): add role-dependent investment gates`
+- `d7ccfaa feat(strategy): add recommendation position sizing`
+- `bae2d10 feat(committee): gate model council in morning brief`
+
+### Result
+- Portfolio holdings now reconcile `portfolio.yaml` positions with `advisor.yaml` thesis metadata, warning on drift.
+- Macro seed text upserts descriptions/affected tickers without resetting learned status/evidence.
+- Deep research can gather web-search observations with citations and degrades cleanly when unavailable.
+- Macro thesis evaluation now consumes prediction markets and deterministically weakens stale rate-easing assumptions when cut odds are low.
+- Conviction ranking uses weighted evidence dimensions separate from Alpha Scout screening weights.
+- Investment gates are role-dependent, with ballast/defensive total-return handling and moonshot exemption.
+- Strategy output now includes sizing, cash sleeve, entry strategy, portfolio impact, concentration flags, and trim suggestions.
+- Morning full runs can optionally call the model council when `COUNCIL_ENABLED=true`, with cost-cap/run-budget fallbacks; disabled default leaves the editor path unchanged.
+
+### Verification
+- `/tmp/alphadesk-api-test-venv/bin/python -m pytest tests/test_council_brief_integration.py -q` -> 3 passed.
+- `/tmp/alphadesk-api-test-venv/bin/python -m pytest tests/test_council_brief_integration.py tests/test_position_sizer.py tests/test_gate_roles.py tests/test_conviction_fix.py tests/test_macro_regime.py tests/test_macro_dedup.py tests/test_deep_research_websearch.py tests/test_config_reconciliation.py -q` -> 27 passed.
+- `/tmp/alphadesk-api-test-venv/bin/python -m pytest tests/test_api_council.py tests/test_council_brief_integration.py -q` -> 29 passed, 1 third-party Starlette/httpx deprecation warning.
+- `/tmp/alphadesk-api-test-venv/bin/python -m ruff check src/advisor/analyst_committee.py src/advisor/main.py tests/test_council_brief_integration.py` -> passed.
+- `git ls-files 'tests/*.py' | tr '\n' ' ' | xargs /tmp/alphadesk-api-test-venv/bin/python -m pytest -q` -> 360 passed, 1 skipped, 1 third-party Starlette/httpx deprecation warning.
+
+### Caveats
+- Raw `/tmp/alphadesk-api-test-venv/bin/python -m pytest -q` collected unrelated untracked duplicate `* 2.py` test files and failed in `tests/test_cost_attribution 2.py` because that duplicate still expects the older `gemini-2.5-pro` alias. The tracked suite is green.
+- `/tmp/alphadesk-api-test-venv/bin/python tests/simulate_week.py` failed before reaching the current committee path because the stale simulator patches `src.advisor.analyst_committee.check_budget`, which is not an exported attribute. The generated preview artifact from this failed validation attempt was restored.
