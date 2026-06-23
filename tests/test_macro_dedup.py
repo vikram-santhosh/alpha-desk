@@ -18,9 +18,6 @@ for mod_name in [
     if mod_name not in sys.modules:
         sys.modules[mod_name] = MagicMock()
 
-import pytest
-
-
 def test_match_news_to_thesis_no_macro_broad():
     """Broad macro articles should NOT be matched to all theses."""
     from src.advisor.macro_analyst import _match_news_to_thesis
@@ -56,7 +53,6 @@ def test_match_news_to_thesis_no_macro_broad():
         ["AMZN", "GOOG", "META", "NFLX"],
         news_signals
     )
-    fed_headlines = [m["headline"] for m in fed_matches]
 
     # Test thesis 3: Digital Payments
     payments_matches = _match_news_to_thesis(
@@ -115,9 +111,9 @@ def test_match_news_to_thesis_no_macro_broad():
     assert len(fed_matches) <= 5, f"Fed has {len(fed_matches)} matches, max is 5"
     assert len(payments_matches) <= 5, f"Payments has {len(payments_matches)} matches, max is 5"
 
-    print(f"\n✅ No duplication detected!")
-    print(f"✅ No macro_broad matches found")
-    print(f"✅ Headlines are properly thesis-specific")
+    print("\n✅ No duplication detected!")
+    print("✅ No macro_broad matches found")
+    print("✅ Headlines are properly thesis-specific")
 
 
 def test_no_shared_headlines_across_unrelated_theses():
@@ -148,6 +144,45 @@ def test_no_shared_headlines_across_unrelated_theses():
 
     assert len(shared) == 0, f"Unrelated theses share headlines: {shared}"
     print("  ✅ No cross-thesis headline sharing!")
+
+
+def test_seed_macro_theses_upserts_seed_text_without_resetting_learned_state(
+    monkeypatch,
+    tmp_path,
+):
+    """Config edits should update seed text without erasing learned status/evidence."""
+    from src.advisor import memory
+
+    monkeypatch.setattr(memory, "DB_PATH", tmp_path / "advisor_memory.db")
+
+    memory.seed_macro_theses([
+        {
+            "title": "Fed Policy Direction",
+            "description": "Old directional easing assumption",
+            "affected_tickers": ["AMZN"],
+        }
+    ])
+    memory.update_macro_thesis(
+        "Fed Policy Direction",
+        "weakening",
+        "Prediction market cut odds fell below threshold.",
+    )
+    before = memory.get_all_macro_theses()[0]
+
+    memory.seed_macro_theses([
+        {
+            "title": "Fed Policy Direction",
+            "description": "Neutral testable Fed policy question",
+            "affected_tickers": ["MSFT", "GOOG"],
+        }
+    ])
+
+    after = memory.get_all_macro_theses()[0]
+    assert after["description"] == "Neutral testable Fed policy question"
+    assert after["affected_tickers"] == ["MSFT", "GOOG"]
+    assert after["status"] == "weakening"
+    assert after["last_updated"] == before["last_updated"]
+    assert after["evidence_log"] == before["evidence_log"]
 
 
 if __name__ == "__main__":

@@ -61,6 +61,97 @@ def load_advisor_config() -> dict[str, Any]:
     return load_config("advisor")
 
 
+def _normalize_ticker(ticker: Any) -> str:
+    """Normalize ticker values for config reconciliation."""
+    return str(ticker or "").strip().upper()
+
+
+def _holdings_by_ticker(holdings: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Map holding rows by normalized ticker, dropping malformed rows."""
+    mapped: dict[str, dict[str, Any]] = {}
+    for holding in holdings:
+        ticker = _normalize_ticker(holding.get("ticker"))
+        if not ticker:
+            log.warning("Ignoring holding without ticker in config: %s", holding)
+            continue
+        mapped[ticker] = dict(holding, ticker=ticker)
+    return mapped
+
+
+def reconcile_holdings(
+    portfolio_config: dict[str, Any],
+    advisor_config: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Return actual holdings enriched with advisor ticker metadata.
+
+    ``portfolio.yaml`` owns position facts such as ticker, shares, and cost basis.
+    ``advisor.yaml`` may still carry thesis/category metadata for those tickers.
+    Tickers present in only one config are logged so config drift is visible.
+    """
+    portfolio_holdings = portfolio_config.get("holdings") or []
+    advisor_holdings = advisor_config.get("holdings") or []
+    portfolio_by_ticker = _holdings_by_ticker(portfolio_holdings)
+    advisor_by_ticker = _holdings_by_ticker(advisor_holdings)
+
+    portfolio_tickers = set(portfolio_by_ticker)
+    advisor_tickers = set(advisor_by_ticker)
+    missing_metadata = sorted(portfolio_tickers - advisor_tickers)
+    stale_metadata = sorted(advisor_tickers - portfolio_tickers)
+
+    if missing_metadata:
+        log.warning(
+            "Portfolio holdings missing advisor metadata: %s",
+            ", ".join(missing_metadata),
+        )
+    if stale_metadata:
+        log.warning(
+            "Advisor holdings metadata not present in portfolio.yaml and will not be treated as held: %s",
+            ", ".join(stale_metadata),
+        )
+
+    unified: list[dict[str, Any]] = []
+    for raw_holding in portfolio_holdings:
+        ticker = _normalize_ticker(raw_holding.get("ticker"))
+        if not ticker:
+            continue
+        position = dict(raw_holding, ticker=ticker)
+        metadata = advisor_by_ticker.get(ticker, {})
+
+        # Advisor metadata enriches the actual position but never creates one.
+        for key, value in metadata.items():
+            if key not in {"ticker", "shares", "cost_basis", "entry_price", "portfolio_pct"}:
+                position.setdefault(key, value)
+        position.setdefault("category", "core")
+        position.setdefault("thesis", "")
+
+        if "entry_price" not in position and position.get("cost_basis") is not None:
+            position["entry_price"] = position["cost_basis"]
+
+        unified.append(position)
+
+    return unified
+
+
+def load_unified_holdings(
+    *,
+    advisor_config: dict[str, Any] | None = None,
+    portfolio_config: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Load actual portfolio holdings with advisor metadata attached."""
+    if advisor_config is None:
+        advisor_config = load_advisor_config()
+    if portfolio_config is None:
+        portfolio_config = load_portfolio()
+    return reconcile_holdings(portfolio_config, advisor_config)
+
+
+def load_advisor_config_with_portfolio() -> dict[str, Any]:
+    """Load advisor config with holdings reconciled from portfolio.yaml."""
+    config = load_advisor_config()
+    config["holdings"] = load_unified_holdings(advisor_config=config)
+    return config
+
+
 def get_all_tickers() -> list[str]:
     """Get combined list of tickers from portfolio and watchlist."""
     portfolio = load_portfolio()

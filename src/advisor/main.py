@@ -16,7 +16,11 @@ from src.shared import gemini_compat as anthropic
 
 from src.advisor.run_profile import RunProfile
 from src.shared.agent_bus import consume, get_latest_signal_id
-from src.shared.config_loader import load_config
+from src.shared.config_loader import (
+    load_config,
+    load_unified_holdings,
+    reconcile_holdings,
+)
 from src.shared.cost_tracker import (
     check_budget,
     get_daily_cost,
@@ -32,15 +36,14 @@ MODEL = "claude-opus-4-6"
 
 
 def _load_advisor_config() -> dict[str, Any]:
-    """Load advisor config, with defaults for missing keys.
-
-    If private/portfolio.yaml exists, merges holdings (and any other keys)
-    from there — keeping private data out of the committed config.
-    """
+    """Load advisor config with current holdings reconciled from portfolio config."""
     try:
-        config = load_config("advisor")
+        advisor_metadata_config = load_config("advisor")
+        config = dict(advisor_metadata_config)
+        config["holdings"] = load_unified_holdings(advisor_config=advisor_metadata_config)
     except Exception:
         log.exception("Failed to load advisor config — using minimal defaults")
+        advisor_metadata_config = {}
         config = {"holdings": [], "macro_theses": [], "superinvestors": [],
                   "strategy": {}, "prediction_markets": {}, "screening": {},
                   "output": {}, "conviction_weights": {}}
@@ -53,8 +56,14 @@ def _load_advisor_config() -> dict[str, Any]:
             with open(private_path) as f:
                 private = yaml.safe_load(f) or {}
             if "holdings" in private:
-                config["holdings"] = private["holdings"]
-                log.info("Loaded %d holdings from private/portfolio.yaml", len(private["holdings"]))
+                config["holdings"] = reconcile_holdings(
+                    {"holdings": private["holdings"]},
+                    advisor_metadata_config,
+                )
+                log.info(
+                    "Loaded %d private portfolio holdings with advisor metadata",
+                    len(private["holdings"]),
+                )
             # Merge any other private overrides
             for key in ("macro_theses", "superinvestors"):
                 if key in private:
@@ -167,7 +176,7 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
         log.info("Skipping step %s (not in run_steps for %s)", "load_memory", run_profile.run_type)
         memory = {"holdings": [], "macro_theses": [], "conviction_list": [], "moonshot_list": []}
     else:
-        # Seed holdings and macro theses from config (only inserts new ones)
+        # Seed holdings and refresh editable macro thesis seed text from config.
         seed_holdings(config.get("holdings", []))
         seed_macro_theses(config.get("macro_theses", []))
 
@@ -557,12 +566,11 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
         updated_theses = memory["macro_theses"]
 
     # ── Step 5: Monitor holdings ───────────────────────────────────────
-    from src.advisor.holdings_monitor import monitor_holdings, build_holdings_narrative
+    from src.advisor.holdings_monitor import monitor_holdings
 
     if "holdings_monitor" not in run_profile.run_steps:
         log.info("Skipping step %s (not in run_steps for %s)", "holdings_monitor", run_profile.run_type)
         holdings_reports = []
-        holdings_narrative = ""
     else:
         log.info("Step 5: Monitoring holdings")
         try:
@@ -576,8 +584,6 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
         except Exception:
             log.exception("Failed to monitor holdings")
             holdings_reports = []
-
-        holdings_narrative = build_holdings_narrative(holdings_reports)
 
     # ── Step 5b: Delta Engine — snapshot + compute changes ─────────────
     from src.advisor.delta_engine import (
@@ -956,7 +962,6 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
             t = h.get("ticker", "")
             if not t:
                 continue
-            chg = h.get("change_pct") or 0
             thesis = h.get("thesis", "")
             thesis_status = h.get("thesis_status", "intact")
             # Determine predicted direction from strategy actions
