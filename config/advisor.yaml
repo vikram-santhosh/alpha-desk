@@ -99,6 +99,7 @@ strategy:
     ballast: {min_cagr_pct: 10, min_mos_pct: 10, use_total_return: true}
     defensive: {min_cagr_pct: 10, min_mos_pct: 10, use_total_return: true}
     moonshot: {exempt: true}
+  theme_concentration_threshold_pct: 50
 
 # Earnings intelligence
 earnings:

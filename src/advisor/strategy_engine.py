@@ -345,6 +345,35 @@ def generate_strategy(
                     })
                     existing_flag_keys.add(flag_key)
 
+    # --- Position sizing and concentration trims ---
+    sizing_result = {"allocations": [], "concentration_flags": [], "trim_suggestions": []}
+    try:
+        from src.advisor.position_sizer import size_recommendations
+
+        moonshot_list = memory.get_moonshot_list(active_only=True)
+        sizing_result = size_recommendations(
+            conviction_list=conviction_list,
+            moonshot_list=moonshot_list,
+            holdings=holdings_reports,
+            valuation_data=valuation_data,
+            config=config,
+        )
+        for trim in sizing_result.get("trim_suggestions", []):
+            ticker = trim.get("ticker", "")
+            if not ticker:
+                continue
+            if any(a.get("ticker") == ticker and a.get("action") == "trim" for a in actions):
+                continue
+            actions.append({
+                "ticker": ticker,
+                "action": "trim",
+                "reason": trim.get("reason", "Concentration trim suggested."),
+                "urgency": "medium",
+                "sizing": {"recommended_weight_pct": -trim.get("trim_pct", 0)},
+            })
+    except Exception:
+        log.exception("Position sizing failed — continuing without sizing output")
+
     # --- Thesis exposure analysis ---
     thesis_exposure = _compute_thesis_exposure(holdings_reports, macro_theses)
 
@@ -367,6 +396,9 @@ def generate_strategy(
         "existing_flags": existing_flags,
         "summary": summary,
         "thesis_exposure": thesis_exposure,
+        "sizing": sizing_result.get("allocations", []),
+        "cash_weight_pct": sizing_result.get("cash_weight_pct", 0.0),
+        "concentration_flags": sizing_result.get("concentration_flags", []),
     }
 
     log.info(

@@ -394,15 +394,31 @@ class VerboseFormatter:
 
     def _md_actions_risks(self) -> str:
         actions = self.strategy.get("actions", [])
+        sizing = self.strategy.get("sizing", [])
+        concentration_flags = self.strategy.get("concentration_flags", [])
         # Filter out mandate breaches (shown in dedicated banner)
         actions = [a for a in actions if "exceeds max" not in (a.get("reason", "") or "").lower()]
         risk = self.committee_result.get("risk_report", {})
-        if not actions and not risk:
+        if not actions and not risk and not sizing and not concentration_flags:
             return ""
         lines = [f"ACTIONS & RISKS\n{'-' * 40}"]
         if actions:
             for a in actions:
                 lines.append(f"  {a.get('action', 'HOLD').upper()} {a.get('ticker', '')} — {a.get('reason', '')}")
+        if sizing:
+            lines.append("\nSizing:")
+            for item in sizing[:8]:
+                lines.append(
+                    f"  {item.get('ticker', '')}: {item.get('recommended_weight_pct', 0):.1f}% "
+                    f"- {item.get('portfolio_impact', '')}"
+                )
+        if concentration_flags:
+            lines.append("\nConcentration:")
+            for flag in concentration_flags[:3]:
+                lines.append(
+                    f"  {flag.get('theme', '')}: {flag.get('exposure_pct', 0):.1f}% "
+                    f"vs {flag.get('threshold_pct', 0):.0f}% cap"
+                )
         top_risk = risk.get("top_risk", "")
         risk_score = risk.get("risk_score_portfolio")
         if top_risk:
@@ -1277,8 +1293,8 @@ class VerboseFormatter:
   <tbody>{rows_html}</tbody>
 </table>"""
 
-        movers_label = f'<div style="font-size:0.82em;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;margin-bottom:10px;font-weight:600">Movers</div>' if movers else ""
-        steady_label = f'<div style="font-size:0.82em;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;margin-top:18px;margin-bottom:6px;font-weight:600">Steady</div>' if steady else ""
+        movers_label = '<div style="font-size:0.82em;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;margin-bottom:10px;font-weight:600">Movers</div>' if movers else ""
+        steady_label = '<div style="font-size:0.82em;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;margin-top:18px;margin-bottom:6px;font-weight:600">Steady</div>' if steady else ""
 
         return f"""
 <div class="section">
@@ -1291,13 +1307,15 @@ class VerboseFormatter:
 
     def _html_actions_risks(self) -> str:
         actions = self.strategy.get("actions", [])
+        sizing = self.strategy.get("sizing", [])
+        concentration_flags = self.strategy.get("concentration_flags", [])
         # Filter out mandate breaches (shown in dedicated banner)
         actions = [a for a in actions if "exceeds max" not in (a.get("reason", "") or "").lower()]
         risk = self.committee_result.get("risk_report", {})
         top_risk = risk.get("top_risk", "") if isinstance(risk, dict) else ""
         risk_score = risk.get("risk_score_portfolio") if isinstance(risk, dict) else None
 
-        if not actions and not top_risk:
+        if not actions and not top_risk and not sizing and not concentration_flags:
             return ""
 
         # Action cards
@@ -1319,6 +1337,36 @@ class VerboseFormatter:
   <div class="action-reason">{reason}</div>
 </div>""")
             actions_html = "\n".join(action_items)
+
+        sizing_html = ""
+        if sizing:
+            rows = []
+            for item in sizing[:8]:
+                rows.append(
+                    f"<div><strong>{_esc(item.get('ticker', ''))}</strong>: "
+                    f"{item.get('recommended_weight_pct', 0):.1f}% "
+                    f"<span style=\"color:#64748b\">{_esc(item.get('portfolio_impact', ''))}</span></div>"
+                )
+            sizing_html = f"""
+<div class="risk-block">
+  <div class="risk-label">Sizing</div>
+  <div class="risk-text">{"".join(rows)}</div>
+</div>"""
+
+        concentration_html = ""
+        if concentration_flags:
+            rows = []
+            for flag in concentration_flags[:3]:
+                rows.append(
+                    f"<div><strong>{_esc(flag.get('theme', ''))}</strong>: "
+                    f"{flag.get('exposure_pct', 0):.1f}% vs "
+                    f"{flag.get('threshold_pct', 0):.0f}% cap</div>"
+                )
+            concentration_html = f"""
+<div class="risk-block">
+  <div class="risk-label">Concentration</div>
+  <div class="risk-text">{"".join(rows)}</div>
+</div>"""
 
         # Risk block
         risk_html = ""
@@ -1343,6 +1391,8 @@ class VerboseFormatter:
 <div class="section">
   <div class="section-title">Actions &amp; Risks</div>
   {actions_html}
+  {sizing_html}
+  {concentration_html}
   {risk_html}
 </div>"""
 
@@ -2182,7 +2232,6 @@ class VerboseFormatter:
             dt = _esc(self._cat_date(c))
             desc = _esc(self._cat_desc(c))
             days = self._days_away(c)
-            impact = self._cat_field(c, "impact_estimate", "medium")
 
             if days == 0:
                 day_label = '<span style="color:#dc2626;font-weight:600">TODAY</span>'
