@@ -352,8 +352,11 @@ async def run_analyst_committee(
     )
 
     if plan.tasks:
+        committee_config = (config or {}).get("committee", {})
         deep_researcher = MultiStepDeepResearcher(
-            max_full=(config or {}).get("committee", {}).get("deep_research_full_max", 3)
+            max_full=committee_config.get("deep_research_full_max", 3),
+            web_search_enabled=committee_config.get("web_search_enabled", True),
+            web_search_max_results=committee_config.get("web_search_max_results", 5),
         )
         stage35_tasks.append(
             (
