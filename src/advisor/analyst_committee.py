@@ -3,12 +3,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from typing import Any
 
+from src.advisor.council import CouncilRequest, CouncilResponse, GCPCouncilClient
+from src.shared import cost_tracker
 from src.shared import gemini_compat as anthropic
 from src.shared.agent_decorator import select_model, track_agent
 from src.shared.citations import CitationRegistry
 from src.shared.context_manager import ContextBudget
+from src.shared.model_registry import council_enabled
 from src.shared.prompt_loader import load_prompt
 from src.utils.logger import get_logger
 
@@ -254,6 +258,7 @@ async def run_analyst_committee(
     deep_research_tickers: list[str] | None = None,
     config: dict | None = None,
     mandate_breach_ctx: str = "",
+    run_type: str = "morning_full",
 ) -> dict[str, Any]:
     log.info("Running analyst committee for %d tickers", len(tickers))
 
@@ -441,6 +446,24 @@ async def run_analyst_committee(
             blocks_text = "\n\n---\n\n".join(block_texts)
             deep_research_prompt_section = f"## Deep Research\n{blocks_text}"
 
+    council_result = await _maybe_run_brief_council(
+        run_type=run_type,
+        tickers=tickers,
+        data_context=data_context,
+        macro_context=macro_context,
+        holdings_context=holdings_context,
+        conviction_context=conviction_context,
+        strategy_context=strategy_context,
+        config=config or {},
+    )
+    council_context = council_result.get("prompt_context", "")
+    if council_context:
+        deep_research_prompt_section = (
+            f"{deep_research_prompt_section}\n\n{council_context}"
+            if deep_research_prompt_section
+            else council_context
+        )
+
     editor_result = await editor.synthesize(
         growth_report=reports["growth"],
         value_report=reports["value"],
@@ -477,6 +500,337 @@ async def run_analyst_committee(
         "citations_html": citation_registry.format_for_html(),
         "agent_meta": agent_meta,
     }
+    if council_result.get("enabled"):
+        result["council"] = council_result.get("summary", {})
+        degraded_reasons = council_result.get("degraded_reasons", [])
+        if degraded_reasons:
+            result["degraded_reasons"] = degraded_reasons
     if editor_result.get("error"):
         result["error"] = editor_result["error"]
     return result
+
+
+def _brief_council_cost_cap_usd() -> float:
+    try:
+        return float(os.getenv("COUNCIL_COST_CAP_USD", "2.00"))
+    except ValueError:
+        return 2.0
+
+
+def _brief_council_max_tokens() -> int:
+    try:
+        return max(1000, min(4000, int(os.getenv("COUNCIL_BRIEF_MAX_TOKENS", "3500"))))
+    except ValueError:
+        return 3500
+
+
+def _top_council_tickers(tickers: list[str], conviction_context: str, config: dict[str, Any]) -> list[str]:
+    output_config = config.get("output", {}) if isinstance(config, dict) else {}
+    try:
+        max_names = max(1, int(output_config.get("max_conviction_list", 5)))
+    except (TypeError, ValueError):
+        max_names = 5
+
+    selected: list[str] = []
+    seen: set[str] = set()
+    for line in (conviction_context or "").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("- "):
+            continue
+        token = stripped[2:].split(":", 1)[0].strip().upper()
+        normalized = token.replace(".", "").replace("-", "")
+        if token and normalized.isalnum() and token not in seen:
+            selected.append(token)
+            seen.add(token)
+        if len(selected) >= max_names:
+            return selected
+
+    for ticker in tickers:
+        normalized_ticker = str(ticker).strip().upper()
+        if normalized_ticker and normalized_ticker not in seen:
+            selected.append(normalized_ticker)
+            seen.add(normalized_ticker)
+        if len(selected) >= max_names:
+            break
+    return selected
+
+
+async def _maybe_run_brief_council(
+    *,
+    run_type: str,
+    tickers: list[str],
+    data_context: dict[str, Any],
+    macro_context: str,
+    holdings_context: str,
+    conviction_context: str,
+    strategy_context: str,
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    if run_type != "morning_full" or not council_enabled():
+        return {"enabled": False}
+
+    cap_usd = _brief_council_cost_cap_usd()
+    if cap_usd <= 0:
+        return {
+            "enabled": True,
+            "summary": {"mode": "skipped", "cost_usd": 0.0, "responses": []},
+            "degraded_reasons": ["Model council skipped because COUNCIL_COST_CAP_USD is 0."],
+        }
+
+    within_budget, spent, budget_cap = cost_tracker.check_budget()
+    if not within_budget:
+        return {
+            "enabled": True,
+            "summary": {"mode": "skipped", "cost_usd": 0.0, "responses": []},
+            "degraded_reasons": [
+                f"Model council skipped because run budget is exhausted (${spent:.2f} / ${budget_cap:.2f})."
+            ],
+        }
+
+    selected_tickers = _top_council_tickers(tickers, conviction_context, config)
+    if not selected_tickers:
+        return {
+            "enabled": True,
+            "summary": {"mode": "skipped", "cost_usd": 0.0, "responses": []},
+            "degraded_reasons": ["Model council skipped because there were no conviction tickers to review."],
+        }
+
+    prompt = _build_brief_council_prompt(
+        selected_tickers=selected_tickers,
+        data_context=data_context,
+        macro_context=macro_context,
+        holdings_context=holdings_context,
+        conviction_context=conviction_context,
+        strategy_context=strategy_context,
+    )
+    request = CouncilRequest(
+        prompt=prompt,
+        system=(
+            "You are an adversarial investment council seat. Use only the supplied context, "
+            "separate evidence from inference, and explicitly challenge weak claims."
+        ),
+        max_tokens=_brief_council_max_tokens(),
+    )
+
+    try:
+        responses = await GCPCouncilClient().deliberate(request)
+    except Exception as exc:
+        log.warning("Model council skipped: %s", exc)
+        return {
+            "enabled": True,
+            "summary": {"mode": "failed", "cost_usd": 0.0, "responses": []},
+            "degraded_reasons": [f"Model council unavailable: {exc}"],
+        }
+
+    cost_usd, response_costs = _record_council_costs(responses)
+    degraded_reasons = [
+        f"{response.label} failed: {response.error}" for response in responses if response.error
+    ]
+    response_dicts = [
+        _council_response_to_dict(response, response_costs.get(_council_response_key(response), 0.0))
+        for response in responses
+    ]
+
+    if cost_usd > cap_usd:
+        degraded_reasons.append(
+            f"Model council omitted from CIO context because cost ${cost_usd:.2f} exceeded COUNCIL_COST_CAP_USD ${cap_usd:.2f}."
+        )
+        return {
+            "enabled": True,
+            "summary": {
+                "mode": "cost_cap_exceeded",
+                "selected_tickers": selected_tickers,
+                "cost_usd": round(cost_usd, 4),
+                "responses": response_dicts,
+            },
+            "degraded_reasons": degraded_reasons,
+        }
+
+    run_budget = cost_tracker.get_current_run_budget()
+    if run_budget is not None and cost_tracker.get_run_cost() > run_budget:
+        degraded_reasons.append(
+            f"Model council omitted from CIO context because run cost exceeded budget after council execution (${cost_tracker.get_run_cost():.2f} / ${run_budget:.2f})."
+        )
+        return {
+            "enabled": True,
+            "summary": {
+                "mode": "run_budget_exceeded",
+                "selected_tickers": selected_tickers,
+                "cost_usd": round(cost_usd, 4),
+                "responses": response_dicts,
+            },
+            "degraded_reasons": degraded_reasons,
+        }
+
+    prompt_context = _format_brief_council_context(responses)
+    mode = "completed" if prompt_context else "failed"
+    if not prompt_context:
+        degraded_reasons.append("Model council produced no usable responses for CIO synthesis.")
+
+    return {
+        "enabled": True,
+        "prompt_context": prompt_context,
+        "summary": {
+            "mode": mode,
+            "selected_tickers": selected_tickers,
+            "cost_usd": round(cost_usd, 4),
+            "responses": response_dicts,
+        },
+        "degraded_reasons": degraded_reasons,
+    }
+
+
+def _build_brief_council_prompt(
+    *,
+    selected_tickers: list[str],
+    data_context: dict[str, Any],
+    macro_context: str,
+    holdings_context: str,
+    conviction_context: str,
+    strategy_context: str,
+) -> str:
+    fundamentals = data_context.get("fundamentals", {})
+    valuations = data_context.get("valuation_data", {})
+    news_articles = data_context.get("news_articles", [])
+    prediction_markets = data_context.get("prediction_markets", {})
+
+    ticker_lines = []
+    for ticker in selected_tickers:
+        fund = fundamentals.get(ticker, {}) if isinstance(fundamentals, dict) else {}
+        valuation = valuations.get(ticker, {}) if isinstance(valuations, dict) else {}
+        ticker_lines.append(
+            f"- {ticker}: price={fund.get('current_price', 'N/A')} "
+            f"rev_growth={fund.get('revenue_growth', 'N/A')} "
+            f"forward_pe={fund.get('pe_forward', 'N/A')} "
+            f"target={valuation.get('target_price', 'N/A')} "
+            f"implied_cagr={valuation.get('implied_cagr', 'N/A')} "
+            f"mos={valuation.get('margin_of_safety', 'N/A')}"
+        )
+
+    headline_lines = []
+    for article in news_articles[:10]:
+        if isinstance(article, dict):
+            title = article.get("title") or article.get("headline")
+            if title:
+                headline_lines.append(f"- {title}")
+
+    prediction_context = json.dumps(prediction_markets, default=str)[:1600] if prediction_markets else "None."
+
+    return "\n".join(
+        [
+            "Review the top AlphaDesk conviction names as an independent model council seat.",
+            "Do not give personalized financial advice. Treat this as decision-support research.",
+            "",
+            f"Top conviction names: {', '.join(selected_tickers)}",
+            "",
+            "For each name, return concise sections:",
+            "1. Claims you accept from the AlphaDesk context and why.",
+            "2. Claims you reject or would haircut.",
+            "3. Missing evidence, source-quality problems, or crowded-narrative risk.",
+            "4. Final stance: Add / Hold / Trim / Avoid, with confidence.",
+            "",
+            "Ticker metrics:",
+            "\n".join(ticker_lines) if ticker_lines else "None.",
+            "",
+            "Conviction context:",
+            conviction_context or "None.",
+            "",
+            "Strategy context:",
+            strategy_context or "None.",
+            "",
+            "Holdings context:",
+            holdings_context or "None.",
+            "",
+            "Macro context:",
+            macro_context or "None.",
+            "",
+            "Prediction market context:",
+            prediction_context,
+            "",
+            "Recent headlines:",
+            "\n".join(headline_lines) if headline_lines else "None.",
+        ]
+    )
+
+
+def _record_council_costs(responses: list[CouncilResponse]) -> tuple[float, dict[str, float]]:
+    total_cost = 0.0
+    costs: dict[str, float] = {}
+    for response in responses:
+        if not response.ok:
+            continue
+        output_tokens = int(response.output_tokens or 0) + int(response.reasoning_tokens or 0)
+        cost = cost_tracker.record_usage(
+            "committee_model_council",
+            int(response.input_tokens or 0),
+            output_tokens,
+            model=response.model,
+        )
+        total_cost += cost
+        costs[_council_response_key(response)] = cost
+    return total_cost, costs
+
+
+def _format_brief_council_context(responses: list[CouncilResponse]) -> str:
+    usable = [response for response in responses if response.ok and response.text.strip()]
+    if not usable:
+        return ""
+
+    lines = [
+        "## Model Council",
+        "CIO judge instruction: synthesize these independent council seats with the analyst reports. "
+        "Explicitly surface material disagreements, rejected claims, and lower-confidence areas; do not average away dissent.",
+        _council_disagreement_note(usable),
+    ]
+    for response in usable:
+        lines.extend(
+            [
+                "",
+                f"### {response.label} ({response.model})",
+                response.text.strip()[:2200],
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _council_disagreement_note(responses: list[CouncilResponse]) -> str:
+    stances: dict[str, str] = {}
+    for response in responses:
+        text = response.text.lower()
+        if any(word in text for word in ("avoid", "sell", "trim", "underweight")):
+            stance = "bearish"
+        elif any(word in text for word in ("hold", "neutral", "wait")):
+            stance = "neutral"
+        elif any(word in text for word in ("add", "buy", "overweight", "constructive")):
+            stance = "bullish"
+        else:
+            stance = "unclear"
+        stances[response.label] = stance
+
+    unique_stances = {stance for stance in stances.values() if stance != "unclear"}
+    stance_text = ", ".join(f"{label}: {stance}" for label, stance in stances.items())
+    if len(unique_stances) > 1:
+        return f"Council disagreement detected across seats ({stance_text})."
+    if len(unique_stances) == 1:
+        return f"Council stance alignment: {next(iter(unique_stances))} ({stance_text})."
+    return f"Council stance unclear from model text ({stance_text})."
+
+
+def _council_response_to_dict(response: CouncilResponse, cost_usd: float) -> dict[str, Any]:
+    provider = getattr(response.provider, "value", str(response.provider))
+    return {
+        "provider": provider,
+        "model": response.model,
+        "label": response.label,
+        "ok": response.ok,
+        "text": response.text,
+        "input_tokens": response.input_tokens,
+        "output_tokens": response.output_tokens,
+        "reasoning_tokens": response.reasoning_tokens,
+        "cost_usd": round(cost_usd, 6),
+        "error": response.error,
+    }
+
+
+def _council_response_key(response: CouncilResponse) -> str:
+    return f"{response.label}:{response.model}"

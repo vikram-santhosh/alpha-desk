@@ -1210,6 +1210,7 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
                 deep_research_tickers=_deep_tickers,
                 config=config,
                 mandate_breach_ctx=_mandate_breach_ctx,
+                run_type=run_profile.run_type,
             )
     
             brief_text = committee_result.get("formatted_brief", "")
