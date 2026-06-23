@@ -548,7 +548,16 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
         log.exception("Macro scanner failed — continuing with existing theses")
 
     try:
-        updated_theses = update_macro_theses(macro_data, news_signals)
+        macro_easing_prob_threshold = config.get("strategy", {}).get(
+            "macro_easing_prob_threshold",
+            0.30,
+        )
+        updated_theses = update_macro_theses(
+            macro_data,
+            news_signals,
+            prediction_data,
+            macro_easing_prob_threshold=macro_easing_prob_threshold,
+        )
         # Enrich theses with prediction market context
         if prediction_shifts:
             for thesis in updated_theses:
@@ -1015,7 +1024,20 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
     # Build context strings for the committee editor
     _macro_ctx_parts = []
     for t in updated_theses:
-        _macro_ctx_parts.append(f"- {t.get('title')}: {t.get('status', 'intact')}")
+        status = t.get("status") or t.get("current_status", "intact")
+        line = f"- {t.get('title')}: {status}"
+        prediction_context = t.get("prediction_context", [])
+        if prediction_context:
+            prediction_bits = []
+            for market in prediction_context[:2]:
+                title = market.get("title", "prediction market")
+                probability = market.get("probability")
+                if isinstance(probability, (int, float)):
+                    prediction_bits.append(f"{title} {probability * 100:.0f}%")
+                else:
+                    prediction_bits.append(title)
+            line += " | prediction markets: " + "; ".join(prediction_bits)
+        _macro_ctx_parts.append(line)
     _macro_ctx_str = "\n".join(_macro_ctx_parts) if _macro_ctx_parts else "No macro theses."
 
     _holdings_ctx_str = "\n".join(
@@ -1050,6 +1072,7 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
         "holdings_reports": holdings_reports,
         "valuation_data": valuation_data,
         "macro_data": macro_data,
+        "prediction_markets": prediction_data,
         "strategy": strategy,
         "news_articles": news_desk_result.get("top_articles", []),
         "signals": agent_bus_signals,

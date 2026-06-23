@@ -35,22 +35,28 @@ holdings:
 # Active macro theses (seeded, then managed by the system)
 macro_theses:
   - title: "Hyperscaler CapEx Boom"
-    description: "MSFT, GOOG, META, AMZN guiding CapEx higher → chip/infra revenue tailwind"
+    description: "Test whether MSFT, GOOG, META, and AMZN capex guidance is still accelerating enough to support chip and infrastructure revenue."
     affected_tickers: [NVDA, AVGO, VRT, MRVL, AMD, TSM]
   - title: "AI Infrastructure Build-Out"
-    description: "GPU, networking, power, and foundry demand accelerating through 2027"
+    description: "Evaluate whether GPU, networking, power, and foundry demand is accelerating, decelerating, or shifting by vendor through 2027."
     affected_tickers: [NVDA, AMD, AVGO, MRVL, TSM, VRT]
   - title: "Cybersecurity / Zero Trust Adoption"
-    description: "Ransomware threat + regulatory mandates driving enterprise security spend"
+    description: "Test whether ransomware risk and regulatory mandates are translating into measurable enterprise security spending."
     affected_tickers: [RBRK]
-  - title: "Fed Easing Cycle"
-    description: "Rate cuts expected in 2026, dollar weakening, growth tailwind"
+  - title: "Fed Policy Direction"
+    description: "Direction of Fed policy through 2026; evaluate FRED realized rates plus prediction-market-implied path without assuming cuts or hikes."
     affected_tickers: [AMZN, GOOG, META, NFLX, UBER]
+  - title: "Rate Regime / Higher-for-Longer"
+    description: "Test whether rates stay restrictive enough to pressure long-duration growth, credit-sensitive consumers, and valuation multiples."
+    affected_tickers: [VTI, AMZN, GOOG, META, MSFT, UBER]
+  - title: "Geopolitical / Energy Shock"
+    description: "Evaluate whether geopolitics, tariffs, shipping disruption, or energy-price shocks are changing margins, supply chains, or risk appetite."
+    affected_tickers: [NVDA, AVGO, TSM, VRT, AMZN, VTI]
   - title: "Big Beautiful Bill / Fiscal Stimulus"
-    description: "Tax cuts + infrastructure + defense spending"
+    description: "Evaluate whether fiscal, tax, infrastructure, or defense policy is becoming a material earnings or demand tailwind."
     affected_tickers: [MA, BRK.B]
   - title: "Digital Payments Secular Growth"
-    description: "Cross-border recovery, contactless adoption, value-added services"
+    description: "Test whether cross-border recovery, contactless adoption, and value-added services continue to drive payment-network growth."
     affected_tickers: [MA]
 
 # Superinvestors to track (CIK = SEC Central Index Key)
@@ -87,6 +93,7 @@ strategy:
   min_cagr_pct: 25
   min_margin_of_safety_pct: 15
   min_evidence_sources: 2
+  macro_easing_prob_threshold: 0.30
 
 # Earnings intelligence
 earnings:
