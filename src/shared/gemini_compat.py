@@ -1,8 +1,8 @@
 """LLM shim for AlphaDesk.
 
-Auto-selects backend based on available API keys:
-  1. ANTHROPIC_API_KEY → Anthropic Claude API
-  2. GEMINI_API_KEY or GOOGLE_API_KEY → Google Gemini API
+Backend selection logic:
+  - On GCP (detected via GOOGLE_CLOUD_PROJECT or K_SERVICE env vars): always Gemini
+  - Locally: ANTHROPIC_API_KEY → Anthropic, else GEMINI_API_KEY → Gemini
 
 Exposes the same interface so every call-site can keep using:
 
@@ -14,13 +14,13 @@ Exposes the same interface so every call-site can keep using:
 
 Model mapping (Anthropic):
   claude-haiku-*  → claude-haiku-4-5-20251001
-  claude-sonnet-* → claude-sonnet-4-6-20250514
-  claude-opus-*   → claude-opus-4-6-20250514
+  claude-sonnet-* → claude-sonnet-4-6
+  claude-opus-*   → claude-opus-4-6
 
 Model mapping (Gemini):
-  claude-haiku-*  → gemini-2.0-flash
-  claude-sonnet-* → gemini-2.5-flash
-  claude-opus-*   → gemini-2.5-pro
+  claude-haiku-*  → gemini-3.1-flash-lite-preview
+  claude-sonnet-* → gemini-3.1-pro-preview
+  claude-opus-*   → gemini-3.1-pro-preview
 """
 from __future__ import annotations
 
@@ -50,19 +50,17 @@ def _resolve_anthropic_model(model: str) -> str:
 
 # ── Gemini model mapping ────────────────────────────────────────────────────
 
-GEMINI_OPUS = "gemini-2.5-pro"
-GEMINI_SONNET = "gemini-2.5-flash"
-GEMINI_HAIKU = "gemini-2.0-flash"
+GEMINI_OPUS = "gemini-3.1-pro-preview"
+GEMINI_SONNET = "gemini-3.1-pro-preview"
+GEMINI_HAIKU = "gemini-3.1-flash-lite-preview"
 
 
 def _resolve_gemini_model(model: str) -> str:
     """Map Claude model names to Gemini equivalents."""
-    if model.startswith("claude-haiku") or model.startswith("gemini-2.0-flash"):
+    if model.startswith("claude-haiku") or model.startswith("gemini-3.1-flash"):
         return GEMINI_HAIKU
-    if model.startswith("claude-opus") or model.startswith("gemini-2.5-pro"):
+    if model.startswith("claude-opus") or model.startswith("claude-sonnet") or model.startswith("gemini-3.1-pro"):
         return GEMINI_OPUS
-    if model.startswith("claude-sonnet") or model.startswith("gemini-2.5-flash"):
-        return GEMINI_SONNET
     if model.startswith("claude"):
         return GEMINI_SONNET
     if model.startswith("gemini"):
@@ -111,8 +109,20 @@ class APIConnectionError(APIError):
 
 # ── Backend detection ───────────────────────────────────────────────────────
 
+def _is_running_on_gcp() -> bool:
+    """Detect if running inside a GCP environment (Cloud Run, GCE, etc.)."""
+    # K_SERVICE is set by Cloud Run; GOOGLE_CLOUD_PROJECT by most GCP runtimes
+    return bool(os.getenv("K_SERVICE") or os.getenv("GOOGLE_CLOUD_PROJECT"))
+
+
 def _detect_backend(api_key: str | None = None) -> str:
-    """Return 'anthropic' or 'gemini' based on available keys."""
+    """Return 'anthropic' or 'gemini' based on environment.
+
+    On GCP: always use Gemini (cheaper, no extra key needed).
+    Locally: prefer Anthropic if ANTHROPIC_API_KEY is set, else Gemini.
+    """
+    if _is_running_on_gcp():
+        return "gemini"
     if api_key or os.getenv("ANTHROPIC_API_KEY"):
         return "anthropic"
     if os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"):
@@ -268,7 +278,7 @@ class _Messages:
 # ── Public client ────────────────────────────────────────────────────────────
 
 class Anthropic:
-    """Drop-in LLM client. Uses Anthropic if ANTHROPIC_API_KEY is set, else Gemini."""
+    """Drop-in LLM client. On GCP: Gemini. Locally: Anthropic if key present, else Gemini."""
 
     def __init__(self, api_key: str | None = None, **kwargs):
         self._api_key = api_key
