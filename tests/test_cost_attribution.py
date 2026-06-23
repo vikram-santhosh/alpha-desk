@@ -59,10 +59,10 @@ def test_gemini_alias_costs_are_recorded_with_resolved_model(monkeypatch, tmp_pa
         temperature=0.2,
     )
 
-    assert captured["model"] == "gemini-2.5-pro"
+    assert captured["model"] == "gemini-3.1-pro-preview"
     assert getattr(captured["config"], "response_mime_type") == "application/json"
     assert getattr(captured["config"], "temperature") == 0.2
-    assert response.model == "gemini-2.5-pro"
+    assert response.model == "gemini-3.1-pro-preview"
 
     cost = cost_tracker.record_usage(
         "unit_test_agent",

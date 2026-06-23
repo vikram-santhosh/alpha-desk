@@ -873,7 +873,9 @@ This file is append-only. Add a new session entry at the top of the session log 
 ### Result
 - Committed current feature-branch work as `88c72c4` (`feat: wire live cockpit persistence and top-buy scoring`).
 - Switched to local `main` and merged `codex/phase-f-final-a11y-polish` with a non-fast-forward merge commit.
-- `main` is ahead of `origin/main`; remote push was not performed in this session.
+- Fetched and merged the newer `origin/main` dashboard commit before pushing.
+- Updated one cost-attribution test expectation to match the merged Gemini 3.1 alias target.
+- Pushed local `main` to `origin/main`.
 
 ### Verification
 - `/tmp/alphadesk-api-test-venv/bin/python -m pytest tests/test_alpha_scout_core.py tests/test_api_council.py tests/test_cost_attribution.py -q` -> 38 passed, 1 third-party Starlette/httpx deprecation warning.
