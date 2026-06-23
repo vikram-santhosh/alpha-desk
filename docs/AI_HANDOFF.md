@@ -916,3 +916,28 @@ This file is append-only. Add a new session entry at the top of the session log 
 ### Caveats
 - Raw `/tmp/alphadesk-api-test-venv/bin/python -m pytest -q` collected unrelated untracked duplicate `* 2.py` test files and failed in `tests/test_cost_attribution 2.py` because that duplicate still expects the older `gemini-2.5-pro` alias. The tracked suite is green.
 - `/tmp/alphadesk-api-test-venv/bin/python tests/simulate_week.py` failed before reaching the current committee path because the stale simulator patches `src.advisor.analyst_committee.check_budget`, which is not an exported attribute. The generated preview artifact from this failed validation attempt was restored.
+## Session 2026-06-22 20:24 PDT - Codex
+
+### Goal
+- Verify whether the latest pushed `main` was actually running locally after the user still saw old results.
+
+### Result
+- Confirmed GitHub/local `main` was at `e38e405`, but the running local backend was an older process started on 2026-06-21 and the frontend on port 5173 was serving `/Users/vikram/workspace/alpha-desk/dashboard`, not this repo's `web/`.
+- Restarted FastAPI from `/Users/vikram/Documents/New project` on `127.0.0.1:8000` with live OpenRouter mode preserved from the old process environment.
+- Restarted Vite from `/Users/vikram/Documents/New project/web` on `127.0.0.1:5173`.
+- Fresh top-buys run completed as run `#11`, cost `$0.0147632`, no degraded reasons.
+
+### Fresh Top-Buys Run #11
+- AFRM rank 1, score 0.91.
+- TSM rank 2, score 0.893.
+- GOOG rank 3, score 0.882.
+- NVDA rank 4, score 0.881.
+- SMCI rank 5, score 0.881.
+- AVGO rank 6, score 0.881.
+- META rank 7, score 0.88.
+- AMZN rank 8, score 0.875.
+- CRWD rank 9, score 0.863.
+- MSFT rank 10, score 0.86.
+
+### Notes
+- If the browser still shows old content, hard-refresh `http://127.0.0.1:5173/` or close the prior tab. The local services are now running from the current repo.
