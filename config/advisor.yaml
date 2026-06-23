@@ -94,6 +94,11 @@ strategy:
   min_margin_of_safety_pct: 15
   min_evidence_sources: 2
   macro_easing_prob_threshold: 0.30
+  gate_by_role:
+    growth: {min_cagr_pct: 25, min_mos_pct: 15}
+    ballast: {min_cagr_pct: 10, min_mos_pct: 10, use_total_return: true}
+    defensive: {min_cagr_pct: 10, min_mos_pct: 10, use_total_return: true}
+    moonshot: {exempt: true}
 
 # Earnings intelligence
 earnings:

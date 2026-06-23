@@ -147,7 +147,7 @@ def should_add(
 
     Criteria:
         - On conviction list >= conviction_promotion_weeks (default 3)
-        - Passes 25% CAGR gate
+        - Passes the role-appropriate valuation gate
         - Has >= min_evidence_sources (default 3)
 
     Args:
@@ -163,10 +163,12 @@ def should_add(
     min_cagr = strategy.get("min_cagr_pct", 25)
     min_mos = strategy.get("min_margin_of_safety_pct", 15)
     min_evidence = strategy.get("min_evidence_sources", 3)
+    gate_by_role = strategy.get("gate_by_role", {})
 
     ticker = conviction_entry.get("ticker", "")
     weeks_on_list = conviction_entry.get("weeks_on_list", 0)
     conviction = conviction_entry.get("conviction", "low")
+    role = conviction_entry.get("role") or conviction_entry.get("category") or "growth"
 
     # Time check
     if weeks_on_list < promotion_weeks:
@@ -177,7 +179,11 @@ def should_add(
 
     # CAGR gate check
     passes_gate, gate_reason = passes_investment_gate(
-        valuation, min_cagr=min_cagr, min_mos=min_mos,
+        valuation,
+        min_cagr=min_cagr,
+        min_mos=min_mos,
+        role=role,
+        gate_by_role=gate_by_role,
     )
     if not passes_gate:
         return False, f"{ticker}: {gate_reason}"
@@ -198,7 +204,8 @@ def should_add(
     mos = valuation.get("margin_of_safety", 0)
     return True, (
         f"{ticker}: {weeks_on_list} weeks on list, conviction={conviction}, "
-        f"CAGR={cagr:.1f}%, MoS={mos:.1f}%, evidence={evidence_count}/5"
+        f"{gate_reason}, CAGR={cagr:.1f}%, MoS={mos:.1f}%, "
+        f"evidence={evidence_count}/5"
     )
 
 

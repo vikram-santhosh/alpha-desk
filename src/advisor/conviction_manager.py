@@ -40,6 +40,9 @@ def evidence_test(
     smart_money_data: dict | None,
     fundamentals: dict | None,
     valuation: dict | None,
+    *,
+    gate_config: dict | None = None,
+    role: str = "growth",
 ) -> tuple[int, list[str]]:
     """Test a ticker against 5 evidence sources.
 
@@ -165,7 +168,14 @@ def evidence_test(
 
     # 5. Valuation (CAGR gate)
     if valuation and not valuation.get("insufficient_data"):
-        passes, gate_reason = passes_investment_gate(valuation)
+        gate_config = gate_config or {}
+        passes, gate_reason = passes_investment_gate(
+            valuation,
+            min_cagr=gate_config.get("min_cagr_pct", 25),
+            min_mos=gate_config.get("min_margin_of_safety_pct", 15),
+            role=role,
+            gate_by_role=gate_config.get("gate_by_role", {}),
+        )
         if passes:
             sources_passing += 1
             descriptions.append(
@@ -634,7 +644,14 @@ def update_conviction_list(
         crowd = _build_crowd_data(ticker, candidates, prediction_by_ticker)
 
         sources_passing, descriptions = evidence_test(
-            ticker, earn_data, crowd, si_data, fund_data, val_data,
+            ticker,
+            earn_data,
+            crowd,
+            si_data,
+            fund_data,
+            val_data,
+            gate_config=strategy,
+            role=entry.get("role") or entry.get("category") or "growth",
         )
         weighted = score_weighted_conviction(
             guidance_data=earn_data,
@@ -726,7 +743,14 @@ def update_conviction_list(
             crowd = _build_crowd_data(ticker, [candidate], prediction_by_ticker)
 
             sources_passing, descriptions = evidence_test(
-                ticker, earn_data, crowd, si_data, fund_data, val_data,
+                ticker,
+                earn_data,
+                crowd,
+                si_data,
+                fund_data,
+                val_data,
+                gate_config=strategy,
+                role=candidate.get("role") or candidate.get("category") or "growth",
             )
             weighted = score_weighted_conviction(
                 guidance_data=earn_data,

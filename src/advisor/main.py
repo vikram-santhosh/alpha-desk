@@ -702,6 +702,13 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
                 if not val_result.get("insufficient_data"):
                     val_result["pe_trailing"] = fund.get("pe_trailing")
                     val_result["pe_forward"] = fund.get("pe_forward")
+                    dividend_yield = (
+                        fund.get("dividend_yield")
+                        or fund.get("dividendYield")
+                        or fund.get("yield")
+                    )
+                    if dividend_yield is not None:
+                        val_result["dividend_yield"] = dividend_yield
                 valuation_data[ticker] = val_result
             except Exception:
                 log.debug("Failed to compute valuation for %s", ticker)
@@ -786,7 +793,15 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
                     t = cand["ticker"]
                     try:
                         cand_fund = cand_fundamentals.get(t, {})
-                        valuation_data[t] = compute_target_price(t, cand_fund)
+                        cand_val = compute_target_price(t, cand_fund)
+                        dividend_yield = (
+                            cand_fund.get("dividend_yield")
+                            or cand_fund.get("dividendYield")
+                            or cand_fund.get("yield")
+                        )
+                        if dividend_yield is not None and not cand_val.get("insufficient_data"):
+                            cand_val["dividend_yield"] = dividend_yield
+                        valuation_data[t] = cand_val
                     except Exception:
                         pass
     
@@ -1792,7 +1807,7 @@ Conviction changes: {len(yesterday.get('conviction_changes', []))}
 INVESTOR PROFILE:
 - Holds positions for 1+ years. Low churn. Not a trader.
 - Current portfolio heavily concentrated in semiconductors and hyperscalers.
-- Only recommend changes when thesis is invalidated or opportunity passes the 25% CAGR gate.
+- Only recommend changes when thesis is invalidated or an opportunity passes its role-dependent valuation gate.
 - Weight company guidance and smart money over analyst opinions.
 - Cares about: thesis integrity, concentration risk, macro tailwinds/headwinds to their specific holdings.
 
