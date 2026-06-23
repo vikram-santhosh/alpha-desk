@@ -6,7 +6,7 @@ import { fetchCouncilModels } from "@/lib/api";
 import { useCouncilStream } from "@/lib/useCouncilStream";
 import { rise, stagger } from "@/lib/motion";
 import { cn } from "@/lib/cn";
-import type { CouncilEvent, JudgeAnalysis, ModelOption, PanelVerdict, Rating, Verdict } from "@/types";
+import type { CouncilEvent, CouncilProgress, JudgeAnalysis, ModelOption, PanelVerdict, Rating, Verdict } from "@/types";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { GlassInput } from "@/components/ui/GlassInput";
@@ -33,12 +33,13 @@ function reduceEvents(events: CouncilEvent[]) {
     (state, event) => {
       if (event.type === "panel_started") return { ...state, ticker: event.data.ticker, models: event.data.models };
       if (event.type === "panel_model_result") return { ...state, panel: [...state.panel.filter((item) => item.model_id !== event.data.model_id), event.data] };
+      if (event.type === "progress") return { ...state, progress: event.data };
       if (event.type === "judge_result") return { ...state, judge: event.data };
       if (event.type === "verdict") return { ...state, verdict: event.data };
       if (event.type === "error") return { ...state, error: event.data.message };
       return state;
     },
-    { models: [] as string[], panel: [] as PanelVerdict[], judge: undefined as JudgeAnalysis | undefined, verdict: undefined as Verdict | undefined, ticker: undefined as string | undefined, error: undefined as string | undefined }
+    { models: [] as string[], panel: [] as PanelVerdict[], judge: undefined as JudgeAnalysis | undefined, verdict: undefined as Verdict | undefined, ticker: undefined as string | undefined, error: undefined as string | undefined, progress: undefined as CouncilProgress | undefined }
   );
 }
 
@@ -58,12 +59,14 @@ function RunningCouncilBanner({
   completedIds,
   displayedModels,
   elapsedSeconds,
+  progress,
 }: {
   activeRun?: { ticker: string; models: string[] };
   completedCount: number;
   completedIds: string[];
   displayedModels: string[];
   elapsedSeconds: number;
+  progress?: CouncilProgress;
 }) {
   const total = Math.max(1, displayedModels.length || activeRun?.models.length || 1);
   const pct = Math.max(8, Math.min(96, Math.round((completedCount / total) * 100)));
@@ -77,7 +80,7 @@ function RunningCouncilBanner({
               Live council running{activeRun?.ticker ? ` for ${activeRun.ticker}` : ""}
             </p>
             <p className="mt-1 text-xs leading-relaxed text-(--color-text-secondary)">
-              Calling OpenRouter seats sequentially, then running cross-examination. Elapsed {formatElapsed(elapsedSeconds)}.
+              {progress?.message ?? "Calling OpenRouter seats in parallel, then running cross-examination."} Elapsed {formatElapsed(elapsedSeconds)}.
             </p>
           </div>
         </div>
@@ -405,6 +408,7 @@ export default function CouncilView() {
             completedIds={state.panel.map((item) => item.model_id)}
             displayedModels={displayedModels}
             elapsedSeconds={elapsedSeconds}
+            progress={state.progress}
           />
         </motion.div>
       )}

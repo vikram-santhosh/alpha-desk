@@ -10,7 +10,7 @@ import urllib.error
 import urllib.request
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime
-from typing import Any, Generator, Literal, Optional
+from typing import Any, AsyncGenerator, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -301,7 +301,7 @@ async def stream_council(
     if not model_ids:
         model_ids = [model.model_id for model in get_council_models() if model.enabled]
 
-    async def event_generator() -> Generator[str, None, None]:
+    async def event_generator() -> AsyncGenerator[str, None]:
         yield _sse("panel_started", {"ticker": ticker_value, "models": model_ids})
         try:
             if _cost_cap_usd() <= 0:
@@ -310,6 +310,14 @@ async def stream_council(
                     council_mode="skipped",
                 )
                 yield _sse("done", done)
+                return
+
+            if os.getenv("OPENROUTER_API_KEY"):
+                async for event_name, event_data in _stream_openrouter_council_events(
+                    ticker_value,
+                    model_ids,
+                ):
+                    yield _sse(event_name, event_data)
                 return
 
             result = _apply_cost_guardrail(
@@ -846,16 +854,13 @@ async def _run_openrouter_council(ticker: str, models: list[str]) -> CouncilResu
     selected_models = _openrouter_analysis_models(models)
     execution_mode = "openrouter_mock" if _mock_openrouter_enabled() else "openrouter_live"
     if _mock_openrouter_enabled():
-        tasks = [
-            asyncio.to_thread(_run_openrouter_panel_model_sync, ticker, model_id)
-            for model_id in selected_models
-        ]
+        tasks = [_run_openrouter_panel_model_async(ticker, model_id) for model_id in selected_models]
         results = await asyncio.gather(*tasks, return_exceptions=True)
     else:
         results = []
         for model_id in selected_models:
             try:
-                results.append(await asyncio.to_thread(_run_openrouter_panel_model_sync, ticker, model_id))
+                results.append(await _run_openrouter_panel_model_async(ticker, model_id))
             except Exception as exc:
                 results.append(exc)
 
@@ -890,8 +895,7 @@ async def _run_openrouter_council(ticker: str, models: list[str]) -> CouncilResu
             if item.confidence <= 0 or _is_degraded_panel_response(item):
                 continue
             try:
-                result = await asyncio.to_thread(
-                    _run_openrouter_cross_exam_sync,
+                result = await _run_openrouter_cross_exam_async(
                     ticker,
                     item.model_id,
                     item,
@@ -908,6 +912,177 @@ async def _run_openrouter_council(ticker: str, models: list[str]) -> CouncilResu
 
     return _synthesize_openrouter_council(ticker, panel, cost_usd, degraded_reasons).model_copy(
         update={"execution_mode": execution_mode}
+    )
+
+
+async def _stream_openrouter_council_events(
+    ticker: str,
+    models: list[str],
+) -> AsyncGenerator[tuple[str, Any], None]:
+    """Yield OpenRouter council SSE payloads as each seat completes."""
+    selected_models = _openrouter_analysis_models(models)
+    execution_mode = "openrouter_mock" if _mock_openrouter_enabled() else "openrouter_live"
+    panel: list[PanelVerdict] = []
+    degraded_reasons: list[str] = []
+    if _mock_openrouter_enabled():
+        degraded_reasons.append("OpenRouter mock mode active; council output is deterministic test data.")
+    cost_usd = 0.0
+    total = len(selected_models)
+
+    yield "progress", {
+        "phase": "panel",
+        "message": f"Launching {total} OpenRouter council seats.",
+        "completed": 0,
+        "total": total,
+    }
+    async for model_id, result in _openrouter_panel_results_as_completed(ticker, selected_models):
+        if isinstance(result, Exception):
+            verdict = _failed_panel_verdict(ticker, model_id, result)
+            degraded_reasons.append(f"{_label_from_model_id(model_id)} failed: {result}")
+            cost = 0.0
+        else:
+            verdict, cost = result
+            if _is_degraded_panel_response(verdict):
+                degraded_reasons.append(
+                    f"{verdict.label} returned incomplete or unstructured output after retry."
+                )
+        panel.append(verdict)
+        cost_usd += cost
+        yield "panel_model_result", verdict
+        yield "progress", {
+            "phase": "panel",
+            "message": f"{verdict.label} returned an initial thesis.",
+            "model_id": verdict.model_id,
+            "completed": len(panel),
+            "total": total,
+        }
+
+    if not panel:
+        raise RuntimeError("OpenRouter council returned no panel results.")
+
+    if not _mock_openrouter_enabled() and len(panel) > 1:
+        usable_panel = [item for item in panel if item.confidence > 0 and not _is_degraded_panel_response(item)]
+        if usable_panel:
+            yield "progress", {
+                "phase": "cross_exam",
+                "message": f"Cross-examining {len(usable_panel)} usable council seats.",
+                "completed": 0,
+                "total": len(usable_panel),
+            }
+        completed_cross_exam = 0
+        async for item, result in _openrouter_cross_exam_results_as_completed(ticker, usable_panel, panel):
+            completed_cross_exam += 1
+            if isinstance(result, Exception):
+                degraded_reasons.append(f"{item.label} cross-examination failed: {result}")
+                yield "progress", {
+                    "phase": "cross_exam",
+                    "message": f"{item.label} cross-examination degraded; keeping its first-pass thesis.",
+                    "model_id": item.model_id,
+                    "completed": completed_cross_exam,
+                    "total": len(usable_panel),
+                }
+                continue
+            critique, cost = result
+            cost_usd += cost
+            merged = _merge_cross_exam_verdict(item, critique)
+            panel = [merged if existing.model_id == item.model_id else existing for existing in panel]
+            yield "panel_model_result", merged
+            yield "progress", {
+                "phase": "cross_exam",
+                "message": f"{merged.label} completed cross-examination.",
+                "model_id": merged.model_id,
+                "completed": completed_cross_exam,
+                "total": len(usable_panel),
+            }
+
+    result = _synthesize_openrouter_council(ticker, panel, cost_usd, degraded_reasons).model_copy(
+        update={"execution_mode": execution_mode}
+    )
+    result = _apply_cost_guardrail(result)
+    result = _save_council_result(result, ticker, models)
+    yield "judge_result", result.judge
+    yield "verdict", result.verdict
+    yield "done", DoneEvent(
+        cost_usd=result.cost_usd,
+        degraded_reasons=result.degraded_reasons,
+        council_mode=result.execution_mode,
+        run_id=result.run_id,
+        saved_at=result.saved_at,
+    )
+
+
+async def _openrouter_panel_results_as_completed(
+    ticker: str,
+    selected_models: list[str],
+) -> AsyncGenerator[tuple[str, tuple[PanelVerdict, float] | Exception], None]:
+    async def run_one(model_id: str) -> tuple[str, tuple[PanelVerdict, float] | Exception]:
+        try:
+            result = await asyncio.wait_for(
+                _run_openrouter_panel_model_async(ticker, model_id),
+                timeout=_model_timeout_s(),
+            )
+            return model_id, result
+        except Exception as exc:
+            return model_id, exc
+
+    tasks = [asyncio.create_task(run_one(model_id)) for model_id in selected_models]
+    for task in asyncio.as_completed(tasks):
+        yield await task
+
+
+async def _openrouter_cross_exam_results_as_completed(
+    ticker: str,
+    usable_panel: list[PanelVerdict],
+    full_panel: list[PanelVerdict],
+) -> AsyncGenerator[tuple[PanelVerdict, tuple[PanelVerdict, float] | Exception], None]:
+    async def run_one(item: PanelVerdict) -> tuple[PanelVerdict, tuple[PanelVerdict, float] | Exception]:
+        try:
+            result = await asyncio.wait_for(
+                _run_openrouter_cross_exam_async(ticker, item.model_id, item, full_panel),
+                timeout=_model_timeout_s(),
+            )
+            return item, result
+        except Exception as exc:
+            return item, exc
+
+    tasks = [asyncio.create_task(run_one(item)) for item in usable_panel]
+    for task in asyncio.as_completed(tasks):
+        yield await task
+
+
+async def _run_openrouter_panel_model_async(ticker: str, model_id: str) -> tuple[PanelVerdict, float]:
+    return await asyncio.to_thread(_run_openrouter_panel_model_sync, ticker, model_id)
+
+
+async def _run_openrouter_cross_exam_async(
+    ticker: str,
+    model_id: str,
+    own_verdict: PanelVerdict,
+    panel: list[PanelVerdict],
+) -> tuple[PanelVerdict, float]:
+    return await asyncio.to_thread(
+        _run_openrouter_cross_exam_sync,
+        ticker,
+        model_id,
+        own_verdict,
+        panel,
+    )
+
+
+def _failed_panel_verdict(ticker: str, model_id: str, exc: Exception) -> PanelVerdict:
+    message = str(exc) or exc.__class__.__name__
+    if isinstance(exc, asyncio.TimeoutError):
+        message = f"Timed out after {_model_timeout_s():.0f}s."
+    return PanelVerdict(
+        model_id=model_id,
+        label=_label_from_model_id(model_id),
+        rating="Hold",
+        confidence=0.0,
+        thesis=f"{_label_from_model_id(model_id)} did not return a reliable thesis for {ticker}: {message}",
+        dissent=False,
+        accepted_claims=[],
+        rejected_claims=["This seat produced no usable evidence for or against the claim."],
+        challenges=["Retry this model or remove it from the roster if provider latency persists."],
     )
 
 
@@ -995,7 +1170,7 @@ def _run_openrouter_panel_prompt_sync(
         "temperature": 0.2,
     }
 
-    timeout_s = float(os.getenv("COUNCIL_MODEL_TIMEOUT_S", "60"))
+    timeout_s = _model_timeout_s()
     try:
         response_data = _openrouter_completion_raw(request_body, request_headers, timeout_s)
     except RuntimeError as exc:
@@ -2946,6 +3121,13 @@ def _cost_cap_usd() -> float:
 def _stream_timeout_s() -> float:
     try:
         return float(os.getenv("COUNCIL_STREAM_TIMEOUT_S", os.getenv("COUNCIL_MODEL_TIMEOUT_S", "60")))
+    except ValueError:
+        return 60.0
+
+
+def _model_timeout_s() -> float:
+    try:
+        return float(os.getenv("COUNCIL_MODEL_TIMEOUT_S", "60"))
     except ValueError:
         return 60.0
 

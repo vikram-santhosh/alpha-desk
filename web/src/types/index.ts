@@ -268,8 +268,17 @@ export interface DoneEvent {
   saved_at?: string;
 }
 
+export interface CouncilProgress {
+  phase: string;
+  message: string;
+  model_id?: string;
+  completed?: number;
+  total?: number;
+}
+
 export type CouncilEvent =
   | { type: "panel_started"; data: { ticker: string; models: string[] } }
+  | { type: "progress"; data: CouncilProgress }
   | { type: "panel_model_result"; data: PanelVerdict }
   | { type: "judge_result"; data: JudgeAnalysis }
   | { type: "verdict"; data: Verdict }

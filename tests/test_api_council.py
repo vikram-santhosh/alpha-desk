@@ -210,6 +210,77 @@ def test_council_stream_times_out_without_silent_failure(monkeypatch):
     assert events[-1][1]["council_mode"] == "timeout"
 
 
+def test_openrouter_stream_emits_panel_results_before_synthesis(monkeypatch):
+    api_app = importlib.reload(importlib.import_module("src.api.app"))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_MOCK", "1")
+    client = TestClient(api_app.app)
+
+    response = client.get(
+        "/api/council/stream"
+        "?ticker=NVDA&models=z-ai/glm-5.2,moonshotai/kimi-k2.7-code"
+    )
+
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+    names = [name for name, _ in events]
+    assert names[0] == "panel_started"
+    assert "progress" in names
+    assert names.index("panel_model_result") < names.index("judge_result")
+    assert names.index("judge_result") < names.index("verdict")
+    assert names[-1] == "done"
+    assert events[-1][1]["council_mode"] == "openrouter_mock"
+    assert isinstance(events[-1][1]["run_id"], int)
+
+
+def test_openrouter_stream_keeps_partial_panel_when_one_model_times_out(monkeypatch):
+    api_app = importlib.reload(importlib.import_module("src.api.app"))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.delenv("OPENROUTER_MOCK", raising=False)
+    monkeypatch.setenv("COUNCIL_MODEL_TIMEOUT_S", "0.01")
+
+    async def fake_panel(ticker, model_id):
+        if model_id == "slow-model":
+            await api_app.asyncio.sleep(0.05)
+        return (
+            api_app.PanelVerdict(
+                model_id=model_id,
+                label=api_app._label_from_model_id(model_id),
+                rating="Buy",
+                confidence=0.8,
+                thesis=f"{ticker} has a durable upside thesis from {model_id}.",
+                dissent=False,
+                accepted_claims=["Revenue growth supports the thesis."],
+                rejected_claims=[],
+                challenges=["Validate valuation sensitivity."],
+            ),
+            0.02,
+        )
+
+    async def fake_cross_exam(ticker, model_id, own_verdict, panel):
+        return own_verdict, 0.01
+
+    monkeypatch.setattr(api_app, "_run_openrouter_panel_model_async", fake_panel)
+    monkeypatch.setattr(api_app, "_run_openrouter_cross_exam_async", fake_cross_exam)
+    client = TestClient(api_app.app)
+
+    response = client.get("/api/council/stream?ticker=AFRM&models=fast-model,slow-model")
+
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+    panel_events = [data for name, data in events if name == "panel_model_result"]
+    done = events[-1][1]
+    assert events[-1][0] == "done"
+    assert done["council_mode"] == "openrouter_live"
+    assert isinstance(done["run_id"], int)
+    assert any(item["model_id"] == "fast-model" and item["confidence"] == 0.8 for item in panel_events)
+    slow = next(item for item in panel_events if item["model_id"] == "slow-model")
+    assert slow["confidence"] == 0.0
+    assert "did not return a reliable thesis" in slow["thesis"]
+    assert any("Slow Model failed" in reason for reason in done["degraded_reasons"])
+    assert "timeout" not in done["council_mode"]
+
+
 def test_portfolio_endpoint_flags_concentration(monkeypatch):
     api_app = importlib.reload(importlib.import_module("src.api.app"))
 

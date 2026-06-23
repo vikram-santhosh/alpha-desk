@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { councilStreamUrl, fetchLatestCouncilRun } from "@/lib/api";
 import type {
   CouncilEvent,
+  CouncilProgress,
   CouncilResult,
   CouncilRunRequest,
   DoneEvent,
@@ -123,6 +124,9 @@ export function useCouncilStream(): CouncilStreamState {
       source.addEventListener("panel_started", (event) => {
         pushEvent({ type: "panel_started", data: parseEventData<{ ticker: string; models: string[] }>(event) });
       });
+      source.addEventListener("progress", (event) => {
+        pushEvent({ type: "progress", data: parseEventData<CouncilProgress>(event) });
+      });
       source.addEventListener("panel_model_result", (event) => {
         pushEvent({ type: "panel_model_result", data: parseEventData<PanelVerdict>(event) });
       });
@@ -134,15 +138,26 @@ export function useCouncilStream(): CouncilStreamState {
       });
       source.addEventListener("done", (event) => {
         const doneEvent: CouncilEvent = { type: "done", data: parseEventData<DoneEvent>(event) };
+        const timedOut =
+          doneEvent.data.council_mode === "timeout" ||
+          doneEvent.data.degraded_reasons.some((reason) => reason.toLowerCase().includes("timed out"));
         setEvents((current) => {
           const nextEvents = [...current, doneEvent];
-          lastCompletedEventsRef.current = nextEvents;
+          if (!timedOut) {
+            lastCompletedEventsRef.current = nextEvents;
+          }
           return nextEvents;
         });
-        setStatus("complete");
+        if (timedOut) {
+          setError(doneEvent.data.degraded_reasons.join(" ") || "Council timed out before completion.");
+          setStatus("error");
+        } else {
+          setStatus("complete");
+        }
         closeStream();
       });
       source.addEventListener("error", () => {
+        if (sourceRef.current !== source) return;
         const message = "Council stream failed. Confirm FastAPI is running at the configured backend URL.";
         setError(message);
         setStatus("error");

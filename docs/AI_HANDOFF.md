@@ -962,3 +962,43 @@ This file is append-only. Add a new session entry at the top of the session log 
 - Browser smoke via system Chrome:
   - `/` rendered `Backend Cockpit`, Alpha Scout, Model Council, Macro Regime, Portfolio, and `Backend ready` with zero console/page errors.
   - `/scout` rendered saved top-buys data with run id, backend cost, and NVDA/META/AMZN present.
+## Session 2026-06-22 21:21 PDT - Codex
+
+### Goal
+- Fix the Model Council timeout/blank-skeleton behavior reported from the web cockpit.
+
+### Root Cause
+- `GET /api/council/stream` emitted `panel_started`, then ran the entire OpenRouter council under one wrapper timeout before yielding any panel results.
+- Four live model seats plus the adversarial cross-exam round could exceed that wrapper timeout, so the UI showed empty cards and then a misleading `complete` status with `Mode: timeout`.
+
+### Result
+- Added an OpenRouter-specific streaming path that emits `progress` and `panel_model_result` events as each model returns.
+- Initial seats and cross-exam seats now run with per-model timeouts and stream partial results instead of making the whole UI wait for the slowest provider.
+- Timed-out or failed seats become explicit zero-confidence degraded panel cards while usable seats still synthesize and persist.
+- The frontend now consumes `progress` SSE events, updates the running banner copy, and treats a backend `timeout` done event as an error state rather than a green complete state.
+- Restarted local FastAPI and Vite from this repo using detached processes:
+  - Backend: `127.0.0.1:8000`
+  - Frontend: `127.0.0.1:5173`
+
+### Live Verification
+- Ran live `AFRM` council stream against the fixed backend with:
+  - `z-ai/glm-5.2`
+  - `moonshotai/kimi-k2.7-code`
+  - `deepseek/deepseek-v4-pro`
+  - `google/gemini-3.5-flash`
+- Initial panel cards streamed by 26s.
+- Cross-exam and final synthesis completed at 66s.
+- Saved council run `#20`, execution mode `openrouter_live`, cost `$0.052389`, no degraded reasons.
+- Browser smoke on `/council?ticker=AFRM` showed saved run `#20`, all four panels, `Mode: openrouter_live`, and no console/page errors.
+
+### Verification
+- `/tmp/alphadesk-api-test-venv/bin/python -m pytest tests/test_api_council.py -q` -> 28 passed, 1 third-party Starlette/httpx deprecation warning.
+- `/tmp/alphadesk-api-test-venv/bin/python -m ruff check src/api tests/test_api_council.py` -> passed.
+- `cd web && npm run typecheck` -> passed.
+- `cd web && npm test -- --run` -> 1 passed.
+- `cd web && npm run build` -> passed.
+- `git ls-files 'tests/*.py' | tr '\n' ' ' | xargs /tmp/alphadesk-api-test-venv/bin/python -m pytest -q` -> 362 passed, 1 skipped, 1 third-party Starlette/httpx deprecation warning.
+
+### Notes
+- No API keys were written to repo files, logs, diffs, or this handoff.
+- The unrelated untracked duplicate `* 2` files remain untouched.
