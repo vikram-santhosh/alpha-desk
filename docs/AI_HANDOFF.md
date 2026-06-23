@@ -941,3 +941,24 @@ This file is append-only. Add a new session entry at the top of the session log 
 
 ### Notes
 - If the browser still shows old content, hard-refresh `http://127.0.0.1:5173/` or close the prior tab. The local services are now running from the current repo.
+## Session 2026-06-22 20:53 PDT - Codex
+
+### Goal
+- Fix the frontend/backend split after the user noticed the theme changed while the backend was updated.
+
+### Result
+- Ported the previously-running dark glass dashboard theme into this repo's `web/` app.
+- Kept the dashboard trimmed to live backend pages: Backend Cockpit, Alpha Scout, Council, Macro, and Portfolio.
+- Updated frontend tooling to Tailwind 4 + Vite 8, restored the `@` alias, and added a Vitest smoke test for the cockpit shell.
+- Removed stale generated Vite/PostCSS config artifacts that caused the wrong theme pipeline to load locally.
+- Restarted Vite from `/Users/vikram/Documents/New project/web` on `127.0.0.1:5173`; backend remains live from this repo on `127.0.0.1:8000`.
+
+### Verification
+- `cd web && npm run typecheck` -> passed.
+- `cd web && npm test -- --run` -> 1 passed.
+- `cd web && npm run build` -> passed, clean Tailwind 4 build.
+- `/tmp/alphadesk-api-test-venv/bin/python -m pytest tests/test_api_council.py tests/test_alpha_scout_core.py tests/test_council_brief_integration.py -q` -> 40 passed, 1 third-party Starlette/httpx deprecation warning.
+- `git ls-files 'tests/*.py' | tr '\n' ' ' | xargs /tmp/alphadesk-api-test-venv/bin/python -m pytest -q` -> 360 passed, 1 skipped, 1 third-party Starlette/httpx deprecation warning.
+- Browser smoke via system Chrome:
+  - `/` rendered `Backend Cockpit`, Alpha Scout, Model Council, Macro Regime, Portfolio, and `Backend ready` with zero console/page errors.
+  - `/scout` rendered saved top-buys data with run id, backend cost, and NVDA/META/AMZN present.
