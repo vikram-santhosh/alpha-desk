@@ -774,9 +774,10 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
                     cand_fundamentals,
                     holding_tickers,
                     fundamentals,
-                    config.get("conviction_weights", {
+                    config.get("screening_weights", {
                         "technical": 0.30, "fundamental": 0.30,
                         "sentiment": 0.20, "diversification": 0.20,
+                        "novelty": 0.0,
                     }),
                     default=discovery_candidates[:20],
                 )

@@ -117,10 +117,20 @@ prediction_markets:
 # Conviction hierarchy weights (must sum to 1.0)
 conviction_weights:
   company_guidance: 0.30
-  crowd_sentiment: 0.25
-  smart_money: 0.20
-  fundamentals: 0.15
-  analyst_consensus: 0.10
+  fundamentals: 0.28
+  smart_money: 0.22
+  analyst_consensus: 0.12
+  crowd_sentiment: 0.08
+
+# Alpha Scout screening weights are separate from conviction hierarchy weights.
+screening_weights:
+  technical: 0.25
+  fundamental: 0.30
+  sentiment: 0.15
+  diversification: 0.15
+  novelty: 0.10
+  catalyst_proximity: 0.03
+  evidence_quality: 0.02
 
 # Screening (reused from Alpha Scout)
 screening:

@@ -10,6 +10,13 @@ from src.utils.logger import get_logger
 log = get_logger(__name__)
 
 CONFIG_DIR = Path("config")
+CONVICTION_WEIGHT_KEYS = {
+    "company_guidance",
+    "fundamentals",
+    "smart_money",
+    "analyst_consensus",
+    "crowd_sentiment",
+}
 
 
 def load_config(name: str) -> dict[str, Any]:
@@ -32,8 +39,34 @@ def load_config(name: str) -> dict[str, Any]:
     with open(path) as f:
         data = yaml.safe_load(f)
 
+    if name == "advisor" and isinstance(data, dict):
+        validate_advisor_config(data)
+
     log.info("Loaded config: %s (%d keys)", name, len(data) if data else 0)
     return data or {}
+
+
+def validate_advisor_config(config: dict[str, Any]) -> None:
+    """Warn on advisor config drift without preventing the run."""
+    weights = config.get("conviction_weights") or {}
+    if not weights:
+        return
+
+    missing = sorted(CONVICTION_WEIGHT_KEYS - set(weights))
+    unexpected = sorted(set(weights) - CONVICTION_WEIGHT_KEYS)
+    if missing:
+        log.warning("conviction_weights missing keys: %s", ", ".join(missing))
+    if unexpected:
+        log.warning("conviction_weights has unknown keys: %s", ", ".join(unexpected))
+
+    total = 0.0
+    for key in CONVICTION_WEIGHT_KEYS & set(weights):
+        try:
+            total += float(weights.get(key, 0))
+        except (TypeError, ValueError):
+            log.warning("conviction_weights.%s is not numeric: %s", key, weights.get(key))
+    if abs(total - 1.0) > 0.01:
+        log.warning("conviction_weights should sum to 1.0; current sum is %.3f", total)
 
 
 def load_portfolio() -> dict[str, Any]:
