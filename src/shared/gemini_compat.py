@@ -53,9 +53,11 @@ def _resolve_anthropic_model(model: str) -> str:
 # Slugs can be overridden via env (OPENROUTER_OPUS / _SONNET / _HAIKU) since
 # OpenRouter occasionally revises them.
 
-OPENROUTER_OPUS   = os.getenv("OPENROUTER_OPUS",   "anthropic/claude-opus-4")
-OPENROUTER_SONNET = os.getenv("OPENROUTER_SONNET", "anthropic/claude-sonnet-4")
-OPENROUTER_HAIKU  = os.getenv("OPENROUTER_HAIKU",  "anthropic/claude-3.5-haiku")
+# User-chosen models (override via env). Roles map by cost/capability:
+#   heavy synthesis → Kimi K2.6 · standard analysis → GLM 5.2 · bulk extraction → Gemini 3.5 Flash
+OPENROUTER_OPUS   = os.getenv("OPENROUTER_OPUS",   "moonshotai/kimi-k2.6")
+OPENROUTER_SONNET = os.getenv("OPENROUTER_SONNET", "z-ai/glm-5.2")
+OPENROUTER_HAIKU  = os.getenv("OPENROUTER_HAIKU",  "google/gemini-3.5-flash")
 
 
 def _resolve_openrouter_model(model: str) -> str:
