@@ -619,7 +619,7 @@ def test_council_models_return_openrouter_roster_when_fusion_is_configured(monke
     payload = response.json()
     assert [model["model_id"] for model in payload] == [
         "z-ai/glm-5.2",
-        "moonshotai/kimi-k2.7-code",
+        "moonshotai/kimi-k2.6",
         "deepseek/deepseek-v4-pro",
         "google/gemini-3.5-flash",
     ]
@@ -874,9 +874,11 @@ def test_openrouter_fusion_maps_gcp_model_ids(monkeypatch):
         ["claude-opus-4-8", "gemini-3.1-pro-preview", "xai/grok-4.20-reasoning", "openrouter/fusion"],
     )
 
+    # Legacy / GCP model ids all collapse onto the four allowed OpenRouter models.
     assert captured["extra_body"]["tools"][0]["parameters"]["analysis_models"] == [
-        "google/gemini-3.1-pro-preview",
-        "x-ai/grok-4.3",
+        "moonshotai/kimi-k2.6",
+        "google/gemini-3.5-flash",
+        "z-ai/glm-5.2",
     ]
 
 

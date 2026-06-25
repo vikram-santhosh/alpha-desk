@@ -83,8 +83,6 @@ class GCPCouncilClient:
             )
 
     def _call_model(self, spec: ModelSpec, request: CouncilRequest) -> CouncilResponse:
-        if spec.provider == CouncilProvider.OPENROUTER:
-            return self._call_openrouter(spec, request)
         if spec.provider == CouncilProvider.GCP_GEMINI:
             return self._call_gemini(spec, request)
         if spec.provider == CouncilProvider.GCP_CLAUDE:
@@ -92,29 +90,6 @@ class GCPCouncilClient:
         if spec.provider == CouncilProvider.GCP_GROK:
             return self._call_grok_agent_platform(spec, request)
         raise ValueError(f"Unsupported council provider: {spec.provider}")
-
-    def _call_openrouter(self, spec: ModelSpec, request: CouncilRequest) -> CouncilResponse:
-        """Run a council seat through OpenRouter (one key, serves all models)."""
-        from src.shared import gemini_compat
-
-        client = gemini_compat.Anthropic()
-        message = client.messages.create(
-            model=spec.model_id,  # already an OpenRouter slug; passed through
-            max_tokens=request.max_tokens,
-            messages=[{"role": "user", "content": request.prompt}],
-            system=request.system,
-        )
-        text = (message.content[0].text if message.content else "").strip()
-        if not text:
-            raise RuntimeError(f"{spec.label} returned empty text")
-        return CouncilResponse(
-            provider=spec.provider,
-            model=spec.model_id,
-            label=spec.label,
-            text=text,
-            input_tokens=int(getattr(message.usage, "input_tokens", 0) or 0),
-            output_tokens=int(getattr(message.usage, "output_tokens", 0) or 0),
-        )
 
     def _call_gemini(self, spec: ModelSpec, request: CouncilRequest) -> CouncilResponse:
         from google import genai

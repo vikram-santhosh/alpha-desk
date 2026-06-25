@@ -42,6 +42,7 @@ def test_gemini_alias_costs_are_recorded_with_resolved_model(monkeypatch, tmp_pa
     monkeypatch.setitem(sys.modules, "google", SimpleNamespace(genai=fake_genai))
     monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
     monkeypatch.setitem(sys.modules, "google.genai.types", fake_types)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setenv("ALPHADESK_DATA_DIR", str(tmp_path))

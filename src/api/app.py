@@ -12,13 +12,13 @@ from dataclasses import asdict, is_dataclass
 from datetime import date, datetime
 from typing import Any, AsyncGenerator, Literal, Optional
 
-from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-load_dotenv()  # OPENROUTER_API_KEY etc. — selects the OpenRouter council path
+# NOTE: .env is loaded by the server launcher (run_api.py), not at import time —
+# importing this module (e.g. in tests) must not mutate the process environment.
 
 from src.advisor import council
 from src.api import run_store
@@ -238,16 +238,19 @@ DEFAULT_OPENROUTER_ANALYSIS_MODELS = [
     ),
 ]
 
+# Inference is restricted to four OpenRouter models: GLM 5.2, Kimi K2.6,
+# Gemini 3.5 Flash, DeepSeek V4. Legacy names alias onto that set (heavy →
+# Kimi, pro/flash → Gemini 3.5 Flash, anything else → GLM 5.2).
 OPENROUTER_MODEL_ALIASES = {
-    "claude-opus-4-8": "anthropic/claude-opus-4.8",
+    "claude-opus-4-8": "moonshotai/kimi-k2.6",
     "gemini-flash-3.5": "google/gemini-3.5-flash",
     "gemini-3.5-flash": "google/gemini-3.5-flash",
-    "gemini-3.1-pro-preview": "google/gemini-3.1-pro-preview",
+    "gemini-3.1-pro-preview": "google/gemini-3.5-flash",
     "kimi-k2.6": "moonshotai/kimi-k2.6",
     "moonshotai/kimi-k2.6": "moonshotai/kimi-k2.6",
     "deepseek-v4-pro": "deepseek/deepseek-v4-pro",
     "glm-5.2": "z-ai/glm-5.2",
-    "xai/grok-4.20-reasoning": "x-ai/grok-4.3",
+    "xai/grok-4.20-reasoning": "z-ai/glm-5.2",
 }
 
 

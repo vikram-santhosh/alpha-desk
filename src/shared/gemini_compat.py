@@ -53,24 +53,34 @@ def _resolve_anthropic_model(model: str) -> str:
 # Slugs can be overridden via env (OPENROUTER_OPUS / _SONNET / _HAIKU) since
 # OpenRouter occasionally revises them.
 
-# User-chosen models (override via env). Roles map by cost/capability:
-#   heavy synthesis → Kimi K2.6 · standard analysis → GLM 5.2 · bulk extraction → Gemini 3.5 Flash
-OPENROUTER_OPUS   = os.getenv("OPENROUTER_OPUS",   "moonshotai/kimi-k2.6")
-OPENROUTER_SONNET = os.getenv("OPENROUTER_SONNET", "z-ai/glm-5.2")
-OPENROUTER_HAIKU  = os.getenv("OPENROUTER_HAIKU",  "google/gemini-3.5-flash")
+# Inference is restricted to exactly these four models (override via env).
+# Roles map by cost/capability: heavy → Kimi K2.6 · standard → GLM 5.2 ·
+# bulk → Gemini 3.5 Flash · plus DeepSeek V4. Nothing else can be called.
+OPENROUTER_OPUS     = os.getenv("OPENROUTER_OPUS",     "moonshotai/kimi-k2.6")
+OPENROUTER_SONNET   = os.getenv("OPENROUTER_SONNET",   "z-ai/glm-5.2")
+OPENROUTER_HAIKU    = os.getenv("OPENROUTER_HAIKU",    "google/gemini-3.5-flash")
+OPENROUTER_DEEPSEEK = os.getenv("OPENROUTER_DEEPSEEK", "deepseek/deepseek-v4-pro")
+
+ALLOWED_OPENROUTER_MODELS = {
+    OPENROUTER_OPUS, OPENROUTER_SONNET, OPENROUTER_HAIKU, OPENROUTER_DEEPSEEK,
+}
 
 
 def _resolve_openrouter_model(model: str) -> str:
-    """Map shorthand Claude names to OpenRouter slugs (pass through real slugs)."""
+    """Resolve any model name to one of the four allowed OpenRouter models.
+
+    Claude shorthands map by role; a raw slug passes through only if it is in
+    the allowed set, otherwise it collapses to GLM 5.2. Any other bare name
+    (e.g. "gemini-2.5-flash") also collapses to GLM 5.2 — so no inference can
+    ever hit a model outside the chosen four.
+    """
     if "/" in model:
-        return model  # already an OpenRouter slug, e.g. "anthropic/claude-sonnet-4"
+        return model if model in ALLOWED_OPENROUTER_MODELS else OPENROUTER_SONNET
     if model.startswith("claude-haiku"):
         return OPENROUTER_HAIKU
     if model.startswith("claude-opus"):
         return OPENROUTER_OPUS
-    if model.startswith("claude"):
-        return OPENROUTER_SONNET
-    return model
+    return OPENROUTER_SONNET
 
 
 # ── Gemini model mapping ────────────────────────────────────────────────────
