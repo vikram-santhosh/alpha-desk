@@ -63,13 +63,6 @@ def score_tickers(
     for sig in deduped:
         by_ticker.setdefault(sig.ticker, []).append(sig)
 
-    # MAX_RAW: theoretical max if every sensor votes BULL at full strength/confidence.
-    # Using the actual weight set passed in (not a hardcoded constant).
-    all_sensor_names = {sig.sensor for sig in deduped}
-    max_raw = sum(weights.get(s, DEFAULT_SENSOR_WEIGHT) for s in all_sensor_names)
-    if max_raw <= 0:
-        max_raw = _FALLBACK_MAX_RAW
-
     scores: list[TickerScore] = []
 
     for ticker, ticker_signals in by_ticker.items():
@@ -97,8 +90,15 @@ def score_tickers(
             elif sig.direction == Direction.BEAR:
                 bear_platforms.append(sig.sensor)
 
-        # Normalize to 0–10
-        raw_score = max(0.0, raw / max_raw * SCORE_SCALE)
+        # Normalize against the platforms that ACTUALLY REPORTED for this ticker —
+        # not the union of all sensors. Otherwise adding more sensors dilutes every
+        # score and corroboration would lower conviction instead of raising it.
+        # raw_score = conviction-per-reporting-platform (0..1) × 10; the breadth gate
+        # below then caps how high a *thinly-corroborated* name may climb.
+        denom = sum(weights.get(s.sensor, DEFAULT_SENSOR_WEIGHT) for s in ticker_signals)
+        if denom <= 0:
+            denom = _FALLBACK_MAX_RAW
+        raw_score = max(0.0, raw / denom * SCORE_SCALE)
         raw_score = min(raw_score, SCORE_SCALE)
 
         # Breadth gate

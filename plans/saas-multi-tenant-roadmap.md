@@ -1,5 +1,10 @@
 # AlphaDesk SaaS — Multi-Tenant Product Roadmap
 
+> ⚠️ **SHELVED / NON-AUTHORITATIVE (2026-06-24).** AlphaDesk is a personal,
+> local-first tool — see [`docs/ALPHADESK.md`](../docs/ALPHADESK.md). This SaaS
+> direction is an explicit non-goal and is kept for history only. Do not build
+> against it without re-deciding the charter.
+
 ## Vision
 
 Transform AlphaDesk from a single-user CLI/Telegram investment intelligence tool into a multi-tenant SaaS platform where users can sign up, upload portfolios, receive personalized daily reports, track recommendation outcomes, and visualize portfolio performance — all through a web interface.

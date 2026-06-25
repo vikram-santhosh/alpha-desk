@@ -6,14 +6,27 @@ import time
 from src.score_engine.aggregator import score_tickers
 from src.score_engine.sensors.base import REGISTRY, gather_all_votes
 from src.score_engine.sensors.earnings import EarningsSensor
+from src.score_engine.sensors.news import NewsSensor
+from src.score_engine.sensors.prediction import PredictionSensor
 from src.score_engine.sensors.reddit import RedditSensor
+from src.score_engine.sensors.substack import SubstackSensor
+from src.score_engine.sensors.superinvestor import SuperinvestorSensor
+from src.score_engine.sensors.valuation import ValuationSensor
+from src.score_engine.sensors.youtube import YouTubeSensor
 from src.score_engine.signals import RunRequest, RunResult, TickerSignal
 from src.score_engine.snapshot import load_snapshot, new_snapshot_id, save_snapshot
 from src.score_engine.weights import WEIGHTS_VERSION, load_score_engine_config, load_weights
 
 # Register built-in sensors (M1: earnings + reddit; M2 adds the rest)
+# Built-in sensors (M2: full multi-platform corroboration).
 REGISTRY.register(EarningsSensor())
 REGISTRY.register(RedditSensor())
+REGISTRY.register(SuperinvestorSensor())
+REGISTRY.register(ValuationSensor())
+REGISTRY.register(NewsSensor())
+REGISTRY.register(PredictionSensor())
+REGISTRY.register(YouTubeSensor())
+REGISTRY.register(SubstackSensor())
 
 
 def _get_tickers() -> list[str]:
