@@ -13,18 +13,21 @@ interface ScoreCardProps {
   index: number;
 }
 
+// Tiers mirror the calibration rubric in docs/ALPHADESK.md.
 const TIER_CONFIG = {
-  top:    { label: "Top tier",   glow: "violet" as const, bar: "bg-(--color-accent-violet)", text: "text-(--color-accent-violet)" },
-  mid:    { label: "Confirmed",  glow: "cyan"   as const, bar: "bg-(--color-accent-cyan)",   text: "text-(--color-accent-cyan)"   },
-  low:    { label: "Weak",       glow: false    as const, bar: "bg-(--color-accent-amber)",   text: "text-(--color-accent-amber)"  },
-  bear:   { label: "Bearish",    glow: "rose"   as const, bar: "bg-(--color-accent-rose)",    text: "text-(--color-accent-rose)"   },
+  conviction: { label: "Conviction", glow: "violet" as const, bar: "bg-(--color-accent-violet)",  text: "text-(--color-accent-violet)"  },
+  strong:     { label: "Strong",     glow: "cyan"   as const, bar: "bg-(--color-accent-cyan)",    text: "text-(--color-accent-cyan)"    },
+  moderate:   { label: "Moderate",   glow: false    as const, bar: "bg-(--color-accent-emerald)", text: "text-(--color-accent-emerald)" },
+  weak:       { label: "Weak",       glow: false    as const, bar: "bg-(--color-accent-amber)",   text: "text-(--color-accent-amber)"   },
+  avoid:      { label: "Avoid",      glow: "rose"   as const, bar: "bg-(--color-accent-rose)",    text: "text-(--color-accent-rose)"    },
 };
 
 function getTier(score: number) {
-  if (score >= 8)   return TIER_CONFIG.top;
-  if (score >= 7)   return TIER_CONFIG.mid;
-  if (score >= 3)   return TIER_CONFIG.low;
-  return TIER_CONFIG.bear;
+  if (score >= 8.5) return TIER_CONFIG.conviction;
+  if (score >= 7)   return TIER_CONFIG.strong;
+  if (score >= 5)   return TIER_CONFIG.moderate;
+  if (score >= 3)   return TIER_CONFIG.weak;
+  return TIER_CONFIG.avoid;
 }
 
 function DirectionIcon({ direction }: { direction: string }) {
@@ -78,9 +81,9 @@ export function ScoreCard({ entry, rank, index }: ScoreCardProps) {
               <span className="text-sm font-normal text-(--color-text-tertiary)">/10</span>
             </span>
             <StatusBadge variant={
-              tier === TIER_CONFIG.top ? "success" :
-              tier === TIER_CONFIG.mid ? "info" :
-              tier === TIER_CONFIG.bear ? "critical" : "warning"
+              tier === TIER_CONFIG.conviction ? "success" :
+              tier === TIER_CONFIG.strong ? "info" :
+              tier === TIER_CONFIG.avoid ? "critical" : "warning"
             }>
               {tier.label}
             </StatusBadge>
