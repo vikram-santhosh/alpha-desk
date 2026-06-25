@@ -12,10 +12,13 @@ from dataclasses import asdict, is_dataclass
 from datetime import date, datetime
 from typing import Any, AsyncGenerator, Literal, Optional
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+
+load_dotenv()  # OPENROUTER_API_KEY etc. — selects the OpenRouter council path
 
 from src.advisor import council
 from src.api import run_store
@@ -216,8 +219,8 @@ DEFAULT_OPENROUTER_ANALYSIS_MODELS = [
         enabled=True,
     ),
     ModelOption(
-        model_id="moonshotai/kimi-k2.7-code",
-        label="Kimi K2.7 Code",
+        model_id="moonshotai/kimi-k2.6",
+        label="Kimi K2.6",
         provider="moonshotai",
         enabled=True,
     ),
@@ -240,8 +243,8 @@ OPENROUTER_MODEL_ALIASES = {
     "gemini-flash-3.5": "google/gemini-3.5-flash",
     "gemini-3.5-flash": "google/gemini-3.5-flash",
     "gemini-3.1-pro-preview": "google/gemini-3.1-pro-preview",
-    "kimi-k2.6": "moonshotai/kimi-k2.7-code",
-    "moonshotai/kimi-k2.6": "moonshotai/kimi-k2.7-code",
+    "kimi-k2.6": "moonshotai/kimi-k2.6",
+    "moonshotai/kimi-k2.6": "moonshotai/kimi-k2.6",
     "deepseek-v4-pro": "deepseek/deepseek-v4-pro",
     "glm-5.2": "z-ai/glm-5.2",
     "xai/grok-4.20-reasoning": "x-ai/grok-4.3",
@@ -251,7 +254,8 @@ OPENROUTER_MODEL_ALIASES = {
 app = FastAPI(title="AlphaDesk Cockpit API")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    # Local personal tool: allow any localhost port (dev server may vary).
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -493,6 +497,77 @@ async def get_macro_regime() -> MacroRegimeResponse:
 async def get_macro_themes() -> list[MacroThemeResponse]:
     """Return current backend macro themes."""
     return (await asyncio.to_thread(_build_macro_dashboard)).themes
+
+
+# ── Score engine (deterministic, breadth-gated Top Buys) ─────────────────────
+
+def _score_result_to_dict(result) -> dict:
+    from src.score_engine.signals import Direction
+    top = []
+    for ts in result.top:
+        breakdown = []
+        for b in ts.breakdown:
+            bd = dict(b)
+            if isinstance(bd.get("direction"), Direction):
+                bd["direction"] = bd["direction"].name
+            breakdown.append(bd)
+        top.append({
+            "ticker": ts.ticker,
+            "score": ts.score,
+            "platforms_reporting": ts.platforms_reporting,
+            "platforms_failed": ts.platforms_failed,
+            "breakdown": breakdown,
+        })
+    return {
+        "top": top,
+        "snapshot_id": result.snapshot_id,
+        "weights_version": result.weights_version,
+        "diagnostics": result.diagnostics,
+    }
+
+
+@app.get("/api/score/top-buys")
+async def get_score_top_buys() -> dict:
+    """Return the most recent saved score snapshot (fast, no LLM)."""
+    from src.score_engine.snapshot import list_snapshots, load_snapshot
+    from src.score_engine.aggregator import score_tickers
+    from src.score_engine.weights import load_weights
+    from src.score_engine.signals import RunResult
+
+    rows = list_snapshots(limit=1)
+    if not rows:
+        raise HTTPException(status_code=404, detail="No score snapshots yet — run the engine")
+    snap = load_snapshot(rows[0]["snapshot_id"])
+    if snap is None:
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+    scores = snap["scores"] or score_tickers(snap["signals"], load_weights(), [])
+    ranked = sorted(scores, key=lambda s: (-s.score, s.ticker))[:10]
+    result = RunResult(
+        top=ranked,
+        snapshot_id=snap["snapshot_id"],
+        weights_version=snap["weights_version"],
+        diagnostics={
+            "elapsed_s": 0.0,
+            "signals_collected": len(snap["signals"]),
+            "sensors_ok": sorted({sig.sensor for sig in snap["signals"]}),
+            "sensors_empty": [],
+            "sensors_failed": [],
+            "tickers_scored": len(scores),
+        },
+    )
+    return _score_result_to_dict(result)
+
+
+@app.post("/api/score/run")
+async def post_score_run(payload: dict | None = None) -> dict:
+    """Run the full score engine (gathers sensors, may take ~20s)."""
+    from src.score_engine.engine import run_scoring
+    from src.score_engine.signals import RunRequest
+
+    payload = payload or {}
+    req = RunRequest(top_n=int(payload.get("top_n", 10)), depth=payload.get("depth", "standard"))
+    result = await run_scoring(req)
+    return _score_result_to_dict(result)
 
 
 def _build_macro_dashboard() -> MacroDashboardResponse:

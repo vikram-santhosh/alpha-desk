@@ -20,6 +20,7 @@ class CouncilProvider(str, Enum):
     GCP_GEMINI = "gcp_gemini"
     GCP_CLAUDE = "gcp_claude"
     GCP_GROK = "gcp_grok"
+    OPENROUTER = "openrouter"
 
 
 @dataclass(frozen=True)
@@ -44,25 +45,32 @@ def _env_flag(name: str, default: bool) -> bool:
 
 COUNCIL_ROSTER: list[ModelSpec] = [
     ModelSpec(
-        provider=CouncilProvider.GCP_GEMINI,
-        model_id=os.getenv("COUNCIL_GEMINI_MODEL", "gemini-3.1-pro-preview"),
-        label=os.getenv("COUNCIL_GEMINI_LABEL", "Gemini 3.1 Pro"),
+        provider=CouncilProvider.OPENROUTER,
+        model_id=os.getenv("COUNCIL_GLM_MODEL", "z-ai/glm-5.2"),
+        label=os.getenv("COUNCIL_GLM_LABEL", "GLM 5.2"),
+        cost_tier=CostTier.FRONTIER,
+        enabled=_env_flag("COUNCIL_ENABLE_GLM", True),
+    ),
+    ModelSpec(
+        provider=CouncilProvider.OPENROUTER,
+        model_id=os.getenv("COUNCIL_KIMI_MODEL", "moonshotai/kimi-k2.6"),
+        label=os.getenv("COUNCIL_KIMI_LABEL", "Kimi K2.6"),
+        cost_tier=CostTier.FRONTIER,
+        enabled=_env_flag("COUNCIL_ENABLE_KIMI", True),
+    ),
+    ModelSpec(
+        provider=CouncilProvider.OPENROUTER,
+        model_id=os.getenv("COUNCIL_GEMINI_MODEL", "google/gemini-3.5-flash"),
+        label=os.getenv("COUNCIL_GEMINI_LABEL", "Gemini 3.5 Flash"),
         cost_tier=CostTier.FRONTIER,
         enabled=_env_flag("COUNCIL_ENABLE_GEMINI", True),
     ),
     ModelSpec(
-        provider=CouncilProvider.GCP_CLAUDE,
-        model_id=os.getenv("COUNCIL_CLAUDE_MODEL", "claude-opus-4-8"),
-        label=os.getenv("COUNCIL_CLAUDE_LABEL", "Claude Opus 4.8"),
+        provider=CouncilProvider.OPENROUTER,
+        model_id=os.getenv("COUNCIL_DEEPSEEK_MODEL", "deepseek/deepseek-v4-pro"),
+        label=os.getenv("COUNCIL_DEEPSEEK_LABEL", "DeepSeek V4"),
         cost_tier=CostTier.FRONTIER,
-        enabled=_env_flag("COUNCIL_ENABLE_CLAUDE", True),
-    ),
-    ModelSpec(
-        provider=CouncilProvider.GCP_GROK,
-        model_id=os.getenv("COUNCIL_GROK_MODEL", "xai/grok-4.20-reasoning"),
-        label=os.getenv("COUNCIL_GROK_LABEL", "Grok 4.20 Reasoning"),
-        cost_tier=CostTier.FRONTIER,
-        enabled=_env_flag("COUNCIL_ENABLE_GROK", True),
+        enabled=_env_flag("COUNCIL_ENABLE_DEEPSEEK", True),
     ),
 ]
 
