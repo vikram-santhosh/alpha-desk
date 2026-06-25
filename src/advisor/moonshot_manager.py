@@ -34,6 +34,7 @@ def update_moonshot_list(
     prediction_data: list[dict] | None = None,
     earnings_data: dict | None = None,
     valuation_data: dict | None = None,
+    portfolio_safety_score: int | None = None,
 ) -> dict:
     """Update the persistent moonshot list.
 
@@ -55,6 +56,26 @@ def update_moonshot_list(
     strategy = config.get("strategy", {})
     moonshot_max_pct = strategy.get("moonshot_max_pct", 3)
     moonshot_config = config.get("moonshot", {})
+
+    # ── Safety gate: suppress new moonshots when portfolio risk is high ──
+    # If safety score < 30, only keep existing moonshots (review them, but
+    # don't add speculative new ones). If < 50, limit to 1 moonshot.
+    safety_gate_active = False
+    effective_max = max_moonshots
+    if portfolio_safety_score is not None:
+        if portfolio_safety_score < 30:
+            safety_gate_active = True
+            effective_max = 0  # No new moonshots in crisis mode
+            log.warning(
+                "Safety gate: portfolio safety %d/100 — suppressing new moonshots",
+                portfolio_safety_score,
+            )
+        elif portfolio_safety_score < 50:
+            effective_max = min(max_moonshots, 1)
+            log.info(
+                "Safety gate: portfolio safety %d/100 — limiting to %d moonshot(s)",
+                portfolio_safety_score, effective_max,
+            )
 
     current_list = memory.get_moonshot_list(active_only=True)
     current_tickers = {entry["ticker"] for entry in current_list}
@@ -105,7 +126,7 @@ def update_moonshot_list(
     # Refresh after updates
     current_list = memory.get_moonshot_list(active_only=True)
     current_tickers = {entry["ticker"] for entry in current_list}
-    slots_available = max_moonshots - len(current_list)
+    slots_available = effective_max - len(current_list)
 
     # --- Phase 2: Consider new moonshots ---
     if slots_available > 0:
@@ -443,7 +464,7 @@ Respond with ONLY valid JSON, no markdown code blocks."""
         )
 
         usage = response.usage
-        record_usage(_AGENT_NAME, usage.input_tokens, usage.output_tokens, model=_MODEL)
+        record_usage(_AGENT_NAME, usage.input_tokens, usage.output_tokens, model=_MODEL, response=response)
 
         if not response.content:
             log.warning("Empty Opus response for %s", ticker)

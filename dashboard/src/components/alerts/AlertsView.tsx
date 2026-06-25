@@ -4,6 +4,7 @@ import { Bell, BellOff, ShieldCheck } from "lucide-react";
 import { fetchAlerts } from "@/lib/api";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { MockDataBadge } from "@/components/ui/MockDataBadge";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { formatDateTime, formatPercent } from "@/lib/format";
@@ -93,8 +94,8 @@ export default function AlertsView() {
 
   if (loading) {
     return (
-      <div className="mx-auto max-w-7xl px-4 py-6 md:px-6 lg:px-8">
-        <div className="mb-6 space-y-2">
+      <div className="mx-auto max-w-7xl space-y-6">
+        <div className="space-y-2">
           <Skeleton className="h-8 w-48" />
           <Skeleton className="h-4 w-72" />
         </div>
@@ -114,7 +115,7 @@ export default function AlertsView() {
 
   if (error) {
     return (
-      <div className="mx-auto max-w-7xl px-4 py-12 md:px-6 lg:px-8">
+      <div className="mx-auto max-w-7xl py-12">
         <EmptyState
           title="Couldn’t load alerts"
           description={error.message || "Something went wrong fetching breach data."}
@@ -126,7 +127,7 @@ export default function AlertsView() {
   }
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-6 md:px-6 lg:px-8">
+    <div className="mx-auto max-w-7xl space-y-6">
       <motion.div
         initial={reduceMotion ? "visible" : "hidden"}
         animate="visible"
@@ -135,9 +136,12 @@ export default function AlertsView() {
       >
         <motion.div variants={rise} className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight text-(--color-text-primary)">
-              Alerts
-            </h1>
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="text-2xl font-semibold tracking-tight text-(--color-text-primary)">
+                Alerts
+              </h1>
+              <MockDataBadge />
+            </div>
             <p className="text-sm text-(--color-text-secondary)">
               Active breaches, state history, and threshold configuration.
             </p>

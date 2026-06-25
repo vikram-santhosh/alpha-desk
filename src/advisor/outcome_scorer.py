@@ -35,27 +35,44 @@ def _fetch_price(ticker: str) -> float | None:
         return None
 
 
-def _fetch_spy_return(start_date: str, end_date: str) -> float | None:
-    """Fetch SPY return between two dates for alpha calculation."""
+def _fetch_price_as_of(ticker: str, target_date: date) -> float | None:
+    """Fetch the closing price for a ticker on or before a specific date."""
     try:
-        spy = yf.Ticker("SPY")
-        hist = spy.history(start=start_date, end=end_date)
-        if len(hist) < 2:
+        t = yf.Ticker(ticker)
+        # Look back a few days to ensure we capture a trading day <= target_date
+        start = target_date - timedelta(days=7)
+        hist = t.history(
+            start=start.isoformat(),
+            end=(target_date + timedelta(days=1)).isoformat(),
+        )
+        if hist.empty:
             return None
-        start_price = float(hist["Close"].iloc[0])
-        end_price = float(hist["Close"].iloc[-1])
-        return ((end_price - start_price) / start_price) * 100
+        # yfinance returns a DatetimeIndex; use only rows on or before target_date
+        valid = hist[hist.index.date <= target_date]
+        if valid.empty:
+            return None
+        return float(valid["Close"].iloc[-1])
     except Exception:
-        log.debug("Failed to fetch SPY return")
+        log.debug("Failed to fetch %s price as of %s", ticker, target_date)
         return None
+
+
+def _compute_spy_return(start_date: date, end_date: date) -> float | None:
+    """Compute SPY return (%) between start and end dates, inclusive."""
+    start_price = _fetch_price_as_of("SPY", start_date)
+    end_price = _fetch_price_as_of("SPY", end_date)
+    if start_price is None or end_price is None or start_price <= 0:
+        return None
+    return ((end_price - start_price) / start_price) * 100
 
 
 def score_all_outcomes() -> dict:
     """Score all open recommendations against actual outcomes.
 
     For each open recommendation:
-    - Fetches current price
-    - Computes returns for each time horizon that's due
+    - Fetches current price (used only for invalidation and very recent recs)
+    - Computes horizon returns using the price as of each horizon date
+    - Computes SPY/alpha over the matching window for each horizon
     - Checks invalidation (universal -20% stop)
     - Auto-closes recommendations older than 180 days
 
@@ -67,6 +84,14 @@ def score_all_outcomes() -> dict:
     today = date.today()
     scored = 0
     closed = 0
+
+    # (horizon_days, price_column, return_column, spy_column, alpha_column)
+    horizons = [
+        (1, "price_1d", "return_1d_pct", "spy_return_1d_pct", "alpha_1d_pct"),
+        (7, "price_1w", "return_1w_pct", "spy_return_1w_pct", "alpha_1w_pct"),
+        (30, "price_1m", "return_1m_pct", "spy_return_1m_pct", "alpha_1m_pct"),
+        (90, "price_3m", "return_3m_pct", "spy_return_3m_pct", "alpha_3m_pct"),
+    ]
 
     for rec in open_recs:
         rec_id = rec.get("id")
@@ -93,48 +118,46 @@ def score_all_outcomes() -> dict:
             log.info("Auto-closed expired recommendation: %s (age %d days)", ticker, days_old)
             continue
 
-        # Fetch current price
+        # Fetch current price for invalidation and very recent recs without a horizon price
         current_price = _fetch_price(ticker)
         if current_price is None:
-            # Ticker might be delisted
             if days_old > 30:
                 close_recommendation(rec_id, "delisted_or_no_data")
                 closed += 1
                 log.warning("Closed %s: no price data after %d days", ticker, days_old)
             continue
 
+        current_return_pct = ((current_price - entry_price) / entry_price) * 100
         updates: dict[str, Any] = {}
 
-        # Compute returns for each horizon
-        return_pct = ((current_price - entry_price) / entry_price) * 100
+        for horizon_days, price_col, return_col, spy_col, alpha_col in horizons:
+            if days_old < horizon_days or rec.get(price_col) is not None:
+                continue
 
-        if days_old >= 1 and rec.get("price_1d") is None:
-            updates["price_1d"] = current_price
-            updates["return_1d_pct"] = round(return_pct, 2)
+            horizon_date = rec_date + timedelta(days=horizon_days)
+            horizon_price = _fetch_price_as_of(ticker, horizon_date)
+            if horizon_price is None:
+                # Don't backfill with today's price; leave the column null until data is available
+                log.debug(
+                    "No %s price as of %s for %s; leaving %s null",
+                    ticker, horizon_date, ticker, return_col,
+                )
+                continue
 
-        if days_old >= 7 and rec.get("price_1w") is None:
-            updates["price_1w"] = current_price
-            updates["return_1w_pct"] = round(return_pct, 2)
+            horizon_return = ((horizon_price - entry_price) / entry_price) * 100
+            updates[price_col] = horizon_price
+            updates[return_col] = round(horizon_return, 2)
 
-        if days_old >= 30 and rec.get("price_1m") is None:
-            updates["price_1m"] = current_price
-            updates["return_1m_pct"] = round(return_pct, 2)
-
-            # Compute SPY return for alpha
-            spy_return = _fetch_spy_return(rec_date_str, today.isoformat())
+            spy_return = _compute_spy_return(rec_date, horizon_date)
             if spy_return is not None:
-                updates["spy_return_1m_pct"] = round(spy_return, 2)
-                updates["alpha_1m_pct"] = round(return_pct - spy_return, 2)
+                updates[spy_col] = round(spy_return, 2)
+                updates[alpha_col] = round(horizon_return - spy_return, 2)
 
-        if days_old >= 90 and rec.get("price_3m") is None:
-            updates["price_3m"] = current_price
-            updates["return_3m_pct"] = round(return_pct, 2)
-
-        # Check universal invalidation: -20% from entry
-        if return_pct <= -20 and not rec.get("invalidation_triggered"):
+        # Check universal invalidation: -20% from entry using the latest price
+        if current_return_pct <= -20 and not rec.get("invalidation_triggered"):
             updates["invalidation_triggered"] = 1
-            updates["invalidation_detail"] = f"Down {return_pct:.1f}% from entry (${entry_price:.2f} → ${current_price:.2f})"
-            log.warning("Invalidation triggered for %s: %+.1f%%", ticker, return_pct)
+            updates["invalidation_detail"] = f"Down {current_return_pct:.1f}% from entry (${entry_price:.2f} → ${current_price:.2f})"
+            log.warning("Invalidation triggered for %s: %+.1f%%", ticker, current_return_pct)
 
         if updates:
             update_recommendation_outcome(rec_id, **updates)

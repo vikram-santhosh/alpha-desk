@@ -25,6 +25,8 @@ MODEL_PRICING = {
     "gemini-1.5-pro": {"input": 1.25, "output": 5.0},
     "gemini-1.5-flash": {"input": 0.075, "output": 0.30},
     "gemini-2.0-flash": {"input": 0.10, "output": 0.40},
+    "gemini-3.1-pro-preview": {"input": 1.25, "output": 10.0},
+    "gemini-3.1-flash-lite-preview": {"input": 0.075, "output": 0.30},
     # Legacy names retained for historical DB entries
     "gemini-3-pro-preview": {"input": 1.25, "output": 10.0},
     "claude-opus-4-6": {"input": 15.0, "output": 75.0},
@@ -129,7 +131,13 @@ def _get_pricing(model: str | None) -> dict[str, float]:
 
 
 def record_usage(
-    agent: str, input_tokens: int, output_tokens: int, model: str | None = None, run_id: str | None = None
+    agent: str,
+    input_tokens: int,
+    output_tokens: int,
+    model: str | None = None,
+    run_id: str | None = None,
+    *,
+    response=None,
 ) -> float:
     """Record an API call's token usage and cost.
 
@@ -137,13 +145,23 @@ def record_usage(
         agent: Name of the agent making the call.
         input_tokens: Number of input tokens used.
         output_tokens: Number of output tokens used.
-        model: Model ID used for the call (for accurate pricing).
+        model: Model ID requested for the call (fallback if response is not provided).
         run_id: Run identifier to attribute this cost to a specific run.
+        response: Optional response object. If it has a ``model`` attribute, that
+            resolved backend model ID is used for pricing instead of the requested
+            ``model`` alias. This prevents the Gemini compatibility shim from being
+            billed at Anthropic rates.
 
     Returns:
         Cost in USD for this call.
     """
-    pricing = _get_pricing(model)
+    resolved_model = model
+    if response is not None:
+        response_model = getattr(response, "model", None)
+        if response_model:
+            resolved_model = response_model
+
+    pricing = _get_pricing(resolved_model)
     cost = (
         input_tokens / 1_000_000 * pricing["input"]
         + output_tokens / 1_000_000 * pricing["output"]
@@ -158,7 +176,7 @@ def record_usage(
     conn.commit()
     conn.close()
 
-    log.info("Cost recorded: %s — $%.4f (%d in, %d out)", agent, cost, input_tokens, output_tokens)
+    log.info("Cost recorded: %s — $%.4f (%d in, %d out, model=%s)", agent, cost, input_tokens, output_tokens, resolved_model or "unknown")
     return cost
 
 

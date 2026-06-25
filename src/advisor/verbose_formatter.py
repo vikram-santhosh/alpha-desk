@@ -66,17 +66,25 @@ def _color(val: float | None) -> str:
 def _status_pill(status: str) -> str:
     """HTML pill badge for thesis status."""
     s = status.lower()
+    if s == "strong":
+        return '<span style="background:#bbf7d0;color:#14532d;padding:3px 9px;border-radius:12px;font-size:0.8em;font-weight:600">STRONG</span>'
     if s == "strengthening":
         return '<span style="background:#dcfce7;color:#166534;padding:3px 9px;border-radius:12px;font-size:0.8em;font-weight:600">STRENGTHENING</span>'
     if s in ("stable", "intact"):
         return '<span style="background:#dbeafe;color:#1e40af;padding:3px 9px;border-radius:12px;font-size:0.8em;font-weight:600">STABLE</span>'
     if s in ("evolving", "monitoring"):
         return '<span style="background:#fef3c7;color:#92400e;padding:3px 9px;border-radius:12px;font-size:0.8em;font-weight:600">EVOLVING</span>'
+    if s == "under_review":
+        return '<span style="background:#fed7aa;color:#9a3412;padding:3px 9px;border-radius:12px;font-size:0.8em;font-weight:600">UNDER REVIEW</span>'
     if s == "weakening":
         return '<span style="background:#fed7aa;color:#9a3412;padding:3px 9px;border-radius:12px;font-size:0.8em;font-weight:600">WEAKENING</span>'
+    if s == "degraded":
+        return '<span style="background:#fecaca;color:#991b1b;padding:3px 9px;border-radius:12px;font-size:0.8em;font-weight:600">DEGRADED</span>'
     if s in ("broken", "invalidated"):
         return '<span style="background:#fecaca;color:#991b1b;padding:3px 9px;border-radius:12px;font-size:0.8em;font-weight:600">BROKEN</span>'
-    return '<span style="background:#e2e8f0;color:#475569;padding:3px 9px;border-radius:12px;font-size:0.8em;font-weight:600">UNKNOWN</span>'
+    # Default to STABLE rather than UNKNOWN — at minimum communicates something
+    log.warning("Unrecognized thesis status '%s' — defaulting to STABLE pill", status)
+    return '<span style="background:#dbeafe;color:#1e40af;padding:3px 9px;border-radius:12px;font-size:0.8em;font-weight:600">STABLE</span>'
 
 
 def _conviction_pill(conviction: str) -> str:
@@ -1961,15 +1969,23 @@ class VerboseFormatter:
             stance = stance_match.group(1).upper()
         stance_pill = self._stance_pill(stance) if stance else ""
 
-        # Clean content for display — remove header lines and stance line
+        # Clean content for display — remove header lines, stance line, and prompt scaffolding
         content_clean = re.sub(r'##.*?\n', '', content).strip()
         content_clean = re.sub(r'Stance:\s*(Add|Hold|Trim|Avoid|Watch).*', '', content_clean, flags=re.IGNORECASE).strip()
+        # Strip prompt scaffolding that can leak into output
+        content_clean = re.sub(r'(?:Bullet count constraint|Total|Requirements|TOTAL output).*?(?:\n|$)', '', content_clean, flags=re.IGNORECASE).strip()
+        content_clean = re.sub(r'(?:What We Know|What We Could Be Wrong About|Action & Catalysts):\s*\d+\s*bullets?', '', content_clean, flags=re.IGNORECASE).strip()
         # Convert markdown bold/italic
         content_clean = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', content_clean)
         content_clean = re.sub(r'\*(.+?)\*', r'<em>\1</em>', content_clean)
-        # Truncate if too long
+        # Truncate if too long — ensure we break at a word boundary
         if len(content_clean) > 400:
-            content_clean = content_clean[:400].rsplit(' ', 1)[0] + '…'
+            truncated = content_clean[:400]
+            # Find last space to avoid mid-word breaks
+            last_space = truncated.rfind(' ')
+            if last_space > 300:  # Only backtrack if we keep at least 300 chars
+                truncated = truncated[:last_space]
+            content_clean = truncated + '…'
 
         return f"""
 <div style="background:#f8fafc;border-radius:8px;padding:12px 16px;border-left:3px solid #e2e8f0">
@@ -2001,6 +2017,11 @@ class VerboseFormatter:
         Detects format: if >= 3 subsection headers (### ), renders with sectioned boxes.
         Otherwise renders as flowing prose.
         """
+        # Strip prompt scaffolding that can leak into LLM output
+        block_text = re.sub(r'(?:Bullet count constraint|Requirements|TOTAL output).*?(?:\n|$)', '', block_text, flags=re.IGNORECASE).strip()
+        block_text = re.sub(r'(?:What We Know|What We Could Be Wrong About|Action & Catalysts):\s*\d+\s*bullets?', '', block_text, flags=re.IGNORECASE).strip()
+        block_text = re.sub(r'\(Constraint:.*?\)', '', block_text).strip()
+
         header_count = len(re.findall(r'^###\s', block_text, re.MULTILINE))
 
         if header_count >= 3:

@@ -161,7 +161,7 @@ Analyze this track record and respond with ONLY valid JSON:
             messages=[{"role": "user", "content": prompt}],
         )
         usage = response.usage
-        record_usage(AGENT_NAME, usage.input_tokens, usage.output_tokens, model=MODEL)
+        record_usage(AGENT_NAME, usage.input_tokens, usage.output_tokens, model=MODEL, response=response)
 
         text = response.content[0].text.strip()
         if "```json" in text:

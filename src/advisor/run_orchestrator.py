@@ -28,7 +28,7 @@ def _call_model(prompt: str, *, model: str, max_tokens: int) -> dict[str, Any]:
         max_tokens=max_tokens,
         messages=[{"role": "user", "content": prompt}],
     )
-    return {"text": response.content[0].text.strip(), "usage": response.usage, "model": model}
+    return {"text": response.content[0].text.strip(), "usage": response.usage, "model": response.model}
 
 
 class RunOrchestrator:
@@ -40,6 +40,11 @@ class RunOrchestrator:
                 from src.advisor.main import _run_pipeline
 
                 return await _run_pipeline(profile)
+            if profile.run_type == "score":
+                from src.score_engine.engine import run_scoring
+                from src.score_engine.signals import RunRequest
+                result = await run_scoring(RunRequest(top_n=10))
+                return {"score_result": result, "run_type": "score", "run_id": profile.run_id}
             if profile.run_type == "evening_wrap":
                 return await self._execute_evening_wrap(profile)
             return await self._execute_weekend_review(profile)

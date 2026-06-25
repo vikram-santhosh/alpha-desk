@@ -20,6 +20,7 @@ import { Gauge } from "@/components/ui/Gauge";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { GlassInput } from "@/components/ui/GlassInput";
+import { MockDataBadge } from "@/components/ui/MockDataBadge";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { Sparkline } from "@/components/ui/Sparkline";
 import { StatCard } from "@/components/ui/StatCard";
@@ -177,13 +178,16 @@ function BreachesSection({
         icon={AlertTriangle}
         title={section.title}
         action={
-          <GlassButton
-            variant="ghost"
-            rightIcon={<ArrowRight className="h-3.5 w-3.5" />}
-            onClick={() => onNavigate?.("/alerts")}
-          >
-            View alerts
-          </GlassButton>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <MockDataBadge />
+            <GlassButton
+              variant="ghost"
+              rightIcon={<ArrowRight className="h-3.5 w-3.5" />}
+              onClick={() => onNavigate?.("/alerts")}
+            >
+              View alerts
+            </GlassButton>
+          </div>
         }
       />
       <StreamingLine text={summary} className="mb-4" />
@@ -215,7 +219,7 @@ function MoversSection({ section }: { section: DailyBriefSection }) {
 
   return (
     <GlassCard className="p-4">
-      <SectionHeader icon={TrendingUp} title={section.title} />
+      <SectionHeader icon={TrendingUp} title={section.title} action={<MockDataBadge />} />
       <StreamingLine text={summary} className="mb-4" />
       <div className="grid gap-3 sm:grid-cols-2">
         {movers.map((pos) => (
@@ -255,6 +259,17 @@ function MacroSection({ section }: { section: DailyBriefSection }) {
           <div className="mt-3">
             <AgentTag name={regime.agent} confidence={regime.confidence} />
           </div>
+          <div className="mt-3">
+            <StatusBadge
+              variant={
+                regime.source === "backend" && !regime.degradedReasons?.length
+                  ? "success"
+                  : "warning"
+              }
+            >
+              {regime.source === "backend" ? "Backend macro" : "Mock macro"}
+            </StatusBadge>
+          </div>
           <p className="mt-2 text-xs text-(--color-text-tertiary)">
             Scanned {formatDateTime(regime.scannedAt)}
           </p>
@@ -284,7 +299,7 @@ function SentimentSection({ section }: { section: DailyBriefSection }) {
 
   return (
     <GlassCard className="p-4">
-      <SectionHeader icon={Radio} title={section.title} />
+      <SectionHeader icon={Radio} title={section.title} action={<MockDataBadge />} />
       <StreamingLine text={summary} className="mb-4" />
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {tickers.map((t) => (
@@ -348,7 +363,7 @@ function ResearchSection({ section }: { section: DailyBriefSection }) {
 
   return (
     <GlassCard className="p-4">
-      <SectionHeader icon={FlaskConical} title={section.title} />
+      <SectionHeader icon={FlaskConical} title={section.title} action={<MockDataBadge />} />
       <div className="mb-3 flex flex-wrap items-center gap-2">
         {report.tickers.map((ticker) => (
           <span
@@ -405,6 +420,9 @@ function MoonshotSection({ section }: { section: DailyBriefSection }) {
               {moonshot.name}
             </span>
             <StatusBadge variant="info">{moonshot.sector}</StatusBadge>
+            <StatusBadge variant={moonshot.source === "backend" ? "success" : "warning"}>
+              {moonshot.source === "backend" ? "Backend" : "Mock"}
+            </StatusBadge>
           </div>
           <div className="mt-3">
             <ConvictionMeter value={moonshot.conviction} />
@@ -412,6 +430,11 @@ function MoonshotSection({ section }: { section: DailyBriefSection }) {
           <div className="mt-4">
             <StreamingLine text={moonshot.whyNow} />
           </div>
+          {moonshot.sourceDetail && (
+            <p className="mt-2 text-xs text-(--color-text-tertiary)">
+              {moonshot.sourceDetail}
+            </p>
+          )}
         </div>
         <div className="w-full sm:w-40">
           <div className="mb-1 flex justify-between text-xs text-(--color-text-secondary)">
@@ -529,9 +552,12 @@ export default function CommandCenter({
   };
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6">
+    <div className="mx-auto max-w-7xl space-y-6">
       {/* Ask AlphaDesk */}
       <section className="space-y-3">
+        <div className="flex justify-end">
+          <MockDataBadge label="Mock AI answer" />
+        </div>
         <form
           onSubmit={handleAsk}
           className={cn(
@@ -582,6 +608,11 @@ export default function CommandCenter({
       </section>
 
       {/* Stat row */}
+      {summary && (
+        <div className="flex justify-end">
+          <MockDataBadge label="Mock portfolio summary" />
+        </div>
+      )}
       {loading && !summary ? (
         <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
           {Array.from({ length: 5 }).map((_, i) => (

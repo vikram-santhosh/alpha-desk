@@ -14,6 +14,7 @@ import { stagger, rise, fade } from "@/lib/motion";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { GlassInput } from "@/components/ui/GlassInput";
 import { GlassButton } from "@/components/ui/GlassButton";
+import { MockDataBadge } from "@/components/ui/MockDataBadge";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { AgentTag } from "@/components/ui/AgentTag";
 import { StreamingText } from "@/components/ui/StreamingText";
@@ -377,21 +378,24 @@ export default function ResearchView() {
   );
 
   return (
-    <div className="min-h-full p-4 sm:p-6 lg:p-8">
+    <div className="min-h-full">
       <motion.div
         variants={stagger}
         initial="hidden"
         animate="visible"
-        className="mx-auto max-w-5xl space-y-6"
+        className="mx-auto max-w-7xl space-y-6"
       >
         <motion.div
           variants={rise}
           className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"
         >
           <div>
-            <h1 className="text-2xl font-semibold text-(--color-text-primary)">
-              Research
-            </h1>
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="text-2xl font-semibold text-(--color-text-primary)">
+                Research
+              </h1>
+              <MockDataBadge />
+            </div>
             <p className="text-sm text-(--color-text-secondary)">
               Cross-agent scans and deep-dive reports.
             </p>
@@ -429,6 +433,7 @@ export default function ResearchView() {
               >
                 {isRunning ? "Running…" : "Run"}
               </GlassButton>
+              <MockDataBadge label="Mock run" className="self-start sm:self-center" />
             </div>
           </GlassCard>
         </motion.div>

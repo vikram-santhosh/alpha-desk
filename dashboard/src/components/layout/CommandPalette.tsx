@@ -19,6 +19,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { AgentTag } from "@/components/ui/AgentTag";
 import { GlassButton } from "@/components/ui/GlassButton";
+import { MockDataBadge } from "@/components/ui/MockDataBadge";
 import { StreamingText } from "@/components/ui/StreamingText";
 
 const commands = [
@@ -195,7 +196,10 @@ function CommandPaletteDialog({ onClose, onNavigate }: CommandPaletteDialogProps
                     <span className="flex h-6 w-6 items-center justify-center rounded-full bg-(--color-accent-violet)/20 text-(--color-accent-violet)">
                       AI
                     </span>
-                    Ask AlphaDesk: “{query.trim()}”
+                    <span className="min-w-0 flex-1 truncate">
+                      Ask AlphaDesk: “{query.trim()}”
+                    </span>
+                    <MockDataBadge label="Mock AI" />
                   </Command.Item>
                 )}
               </>
@@ -212,7 +216,10 @@ function CommandPaletteDialog({ onClose, onNavigate }: CommandPaletteDialogProps
             {result && (
               <div className="p-4">
                 <div className="mb-3 flex items-center justify-between">
-                  <AgentTag name={result.agent} confidence={result.confidence} />
+                  <div className="flex flex-wrap items-center gap-2">
+                    <AgentTag name={result.agent} confidence={result.confidence} />
+                    <MockDataBadge label="Mock AI" />
+                  </div>
                   <GlassButton variant="ghost" onClick={() => setResult(null)}>
                     Back
                   </GlassButton>

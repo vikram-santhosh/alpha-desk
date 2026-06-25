@@ -45,7 +45,7 @@ def _call_reviewer(prompt: str) -> dict[str, Any]:
     return {
         "text": response.content[0].text.strip(),
         "usage": response.usage,
-        "model": REVIEWER_MODEL,
+        "model": response.model,
     }
 
 

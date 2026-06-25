@@ -5,12 +5,22 @@ Takes the top-N screened candidates and uses Gemini to:
 - Generate 2-3 sentence thesis per ticker
 - Categorize as "portfolio" (buy) vs "watchlist" (monitor)
 - Assign conviction: high / medium / low
+
+Added guardrails:
+- Recommended tickers are validated against the candidate universe plus a
+  lightweight yfinance existence check.  Fake tickers are quarantined and logged
+  instead of being emitted as buy recommendations.
+- Theses that cite hard figures without a matching fetched-fundamentals source
+  carry an "unverified_figures" tag.
 """
 from __future__ import annotations
 
 import json
+import re
 from datetime import date
 from typing import Any
+
+import yfinance as yf
 
 from src.shared import gemini_compat as anthropic
 
@@ -25,12 +35,57 @@ from src.shared.schemas import (
     EvidenceItem,
     validate_recommendation,
 )
+from src.shared.security import sanitize_ticker
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
 
 AGENT_NAME = "alpha_scout"
 MODEL = "claude-opus-4-6"
+
+
+def _validate_ticker(ticker: str, valid_tickers: set[str]) -> tuple[bool, str]:
+    """Return (is_valid, reason) for a ticker recommended by the LLM.
+
+    Validation order:
+    1. Must be a syntactically valid ticker symbol.
+    2. Must be in the screened candidate universe for this run.
+    3. If not in the universe, a lightweight yfinance existence check is used as
+       a fallback so novel-but-real tickers are not silently discarded.
+    """
+    try:
+        clean = sanitize_ticker(ticker)
+    except ValueError as exc:
+        return False, f"invalid ticker syntax: {exc}"
+
+    if clean in valid_tickers:
+        return True, "in_candidate_universe"
+
+    # Lightweight existence check: requires at least one recent trading day
+    try:
+        t = yf.Ticker(clean)
+        hist = t.history(period="5d")
+        if not hist.empty:
+            return True, "yfinance_existence_check"
+    except Exception:
+        log.debug("yfinance existence check failed for %s", clean)
+
+    return False, "not_in_candidate_universe_or_yfinance"
+
+
+def _has_unverified_figures(ticker: str, thesis: str, fund_lookup: dict[str, dict]) -> bool:
+    """Return True if the thesis contains hard figures without fetched fundamentals.
+
+    This is a lightweight heuristic, not full fact-checking.  If the ticker is
+    in the candidate universe and has non-empty fundamentals data, we treat the
+    figures as potentially sourced; otherwise they are tagged unverified.
+    """
+    if not re.search(r"\d+(?:\.\d+)?%?|\$\d+", thesis):
+        return False  # no hard numbers cited
+
+    fund = fund_lookup.get(ticker, {})
+    has_fundamentals = bool(fund and any(v is not None for v in fund.values()))
+    return not has_fundamentals
 
 
 def _build_candidate_summary(candidate: dict[str, Any]) -> str:
@@ -92,6 +147,7 @@ def synthesize_recommendations(
     top_n: int = 20,
     max_portfolio: int = 5,
     max_watchlist: int = 10,
+    portfolio_safety_score: int | None = None,
 ) -> dict[str, Any]:
     """Use Gemini to synthesize ranked recommendations.
 
@@ -109,6 +165,28 @@ def synthesize_recommendations(
     """
     if not scored_candidates:
         return {"portfolio_recs": [], "watchlist_recs": [], "raw_synthesis": ""}
+
+    # Safety-aware filtering: when portfolio risk is elevated, constrain recs
+    safety_constraint = ""
+    if portfolio_safety_score is not None:
+        if portfolio_safety_score < 30:
+            # Crisis mode: only surface hedges and diversifiers
+            safety_constraint = (
+                f"\n\nCRITICAL PORTFOLIO CONTEXT: Safety score is {portfolio_safety_score}/100 (crisis level). "
+                "DO NOT recommend high-beta, speculative, or momentum stocks. "
+                "ONLY recommend: hedges (inverse ETFs, put strategies), diversifiers "
+                "(uncorrelated assets, value/defensive names), or low-beta quality stocks. "
+                "Suppress all moonshot-type recommendations."
+            )
+            max_portfolio = min(max_portfolio, 2)
+            log.warning("Safety gate: score %d — constraining to hedges/diversifiers only", portfolio_safety_score)
+        elif portfolio_safety_score < 50:
+            safety_constraint = (
+                f"\n\nPORTFOLIO CONTEXT: Safety score is {portfolio_safety_score}/100 (elevated risk). "
+                "Prioritize quality, low-beta, and diversifying picks over high-growth/speculative names. "
+                "Limit speculative watchlist entries to 2 maximum."
+            )
+            max_watchlist = min(max_watchlist, 5)
 
     # Check budget
     within_budget, spent, cap = check_budget()
@@ -141,6 +219,8 @@ For each recommendation, provide:
 - **conviction**: "high", "medium", or "low"
 - **thesis**: A 2-3 sentence investment thesis explaining WHY. Reference specific data points (P/E, growth, signals, sector dynamics).
 
+{safety_constraint}
+
 Respond ONLY with valid JSON in this exact format:
 {{
   "portfolio": [
@@ -160,7 +240,7 @@ Respond ONLY with valid JSON in this exact format:
         )
 
         usage = response.usage
-        record_usage(AGENT_NAME, usage.input_tokens, usage.output_tokens, model=MODEL)
+        record_usage(AGENT_NAME, usage.input_tokens, usage.output_tokens, model=MODEL, response=response)
 
         raw_text = response.content[0].text
         log.info(
@@ -177,8 +257,7 @@ Respond ONLY with valid JSON in this exact format:
 
 
 def _parse_synthesis(raw_text: str, scored_candidates: list[dict[str, Any]]) -> dict[str, Any]:
-    """Parse the JSON output from Gemini."""
-    # Try to extract JSON from the response
+    """Parse the JSON output from Gemini and validate tickers."""
     text = raw_text.strip()
 
     # Handle markdown code blocks
@@ -194,40 +273,78 @@ def _parse_synthesis(raw_text: str, scored_candidates: list[dict[str, Any]]) -> 
         return {
             "portfolio_recs": [],
             "watchlist_recs": [],
+            "quarantined_recs": [],
             "raw_synthesis": raw_text,
         }
 
-    # Build lookup for scores
+    # Build lookup for scores and fundamentals
     score_lookup = {c["ticker"]: c.get("scores", {}) for c in scored_candidates}
     fund_lookup = {c["ticker"]: c.get("fundamentals_summary", {}) for c in scored_candidates}
+    valid_tickers = set(score_lookup.keys())
 
-    portfolio_recs = []
+    def _build_rec(rec: dict, category: str) -> dict[str, Any]:
+        ticker = rec.get("ticker", "")
+        thesis = rec.get("thesis", "")
+        tags: list[str] = []
+        if _has_unverified_figures(ticker, thesis, fund_lookup):
+            tags.append("unverified_figures")
+
+        return {
+            "ticker": ticker,
+            "category": category,
+            "conviction": rec.get("conviction", "medium"),
+            "thesis": thesis,
+            "scores": score_lookup.get(ticker, {}),
+            "fundamentals_summary": fund_lookup.get(ticker, {}),
+            "validation": "in_candidate_universe",
+            "tags": tags,
+        }
+
+    portfolio_recs: list[dict[str, Any]] = []
+    watchlist_recs: list[dict[str, Any]] = []
+    quarantined_recs: list[dict[str, Any]] = []
+
     for rec in data.get("portfolio", []):
         ticker = rec.get("ticker", "")
-        portfolio_recs.append({
-            "ticker": ticker,
-            "category": "portfolio",
-            "conviction": rec.get("conviction", "medium"),
-            "thesis": rec.get("thesis", ""),
-            "scores": score_lookup.get(ticker, {}),
-            "fundamentals_summary": fund_lookup.get(ticker, {}),
-        })
+        is_valid, reason = _validate_ticker(ticker, valid_tickers)
+        if not is_valid:
+            log.warning("Quarantined portfolio recommendation: %s (%s)", ticker, reason)
+            quarantined_recs.append({
+                "ticker": ticker,
+                "category": "portfolio",
+                "conviction": rec.get("conviction", "medium"),
+                "thesis": rec.get("thesis", ""),
+                "quarantine_reason": reason,
+            })
+            continue
+        portfolio_recs.append(_build_rec(rec, "portfolio"))
 
-    watchlist_recs = []
     for rec in data.get("watchlist", []):
         ticker = rec.get("ticker", "")
-        watchlist_recs.append({
-            "ticker": ticker,
-            "category": "watchlist",
-            "conviction": rec.get("conviction", "medium"),
-            "thesis": rec.get("thesis", ""),
-            "scores": score_lookup.get(ticker, {}),
-            "fundamentals_summary": fund_lookup.get(ticker, {}),
-        })
+        is_valid, reason = _validate_ticker(ticker, valid_tickers)
+        if not is_valid:
+            log.warning("Quarantined watchlist recommendation: %s (%s)", ticker, reason)
+            quarantined_recs.append({
+                "ticker": ticker,
+                "category": "watchlist",
+                "conviction": rec.get("conviction", "medium"),
+                "thesis": rec.get("thesis", ""),
+                "quarantine_reason": reason,
+            })
+            continue
+        watchlist_recs.append(_build_rec(rec, "watchlist"))
+
+    if quarantined_recs:
+        log.warning(
+            "Synthesis quarantined %d invalid ticker(s): %s",
+            len(quarantined_recs),
+            [r["ticker"] for r in quarantined_recs],
+        )
 
     return {
         "portfolio_recs": portfolio_recs,
         "watchlist_recs": watchlist_recs,
+        "quarantined_recs": quarantined_recs,
         "raw_synthesis": raw_text,
     }
 
@@ -251,6 +368,8 @@ def _fallback_recommendations(
             "thesis": f"Composite score {composite:.1f}. Source: {candidate.get('source', 'unknown')}.",
             "scores": candidate.get("scores", {}),
             "fundamentals_summary": candidate.get("fundamentals_summary", {}),
+            "validation": "in_candidate_universe",
+            "tags": [],
         }
 
         if composite >= 60 and len(portfolio_recs) < max_portfolio:
@@ -266,6 +385,7 @@ def _fallback_recommendations(
     return {
         "portfolio_recs": portfolio_recs,
         "watchlist_recs": watchlist_recs,
+        "quarantined_recs": [],
         "raw_synthesis": "(fallback — synthesis skipped due to budget or error)",
     }
 

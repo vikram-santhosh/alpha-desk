@@ -274,6 +274,22 @@ delivery:
     enabled: false
     send_verbose: true
 
+# Score Engine — sensor weights and tier thresholds
+score_engine:
+  breadth_min: 2
+  top_tier_min: 3
+  top_n: 10
+  weights:
+    earnings:       1.8
+    reddit:         0.8
+    news:           1.0
+    superinvestor:  1.5
+    valuation:      1.4
+    prediction:     1.2
+    youtube:        0.7
+    substack:       1.0
+    x:              0.6
+
 schedule:
   market_days:
     - time: "07:00"

@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from "motion/react";
-import { Suspense, lazy, useState } from "react";
+import { Suspense, lazy } from "react";
 import {
   BrowserRouter,
   Route,
@@ -9,29 +9,20 @@ import {
 } from "react-router-dom";
 
 import { AppShell } from "@/components/layout/AppShell";
-import { CommandPalette } from "@/components/layout/CommandPalette";
 import { Skeleton } from "@/components/ui/Skeleton";
 
-const AlertsView = lazy(() => import("@/components/alerts/AlertsView"));
-const CommandCenter = lazy(() => import("@/components/commandcenter/CommandCenter"));
-const DigestView = lazy(() => import("@/components/digest/DigestView"));
+const BackendCockpitView = lazy(() => import("@/components/backend/BackendCockpitView"));
+const CouncilView = lazy(() => import("@/components/council/CouncilView"));
 const MacroView = lazy(() => import("@/components/macro/MacroView"));
-const MarketsView = lazy(() => import("@/components/markets/MarketsView"));
-const MoonshotsView = lazy(() => import("@/components/moonshots/MoonshotsView"));
-const PortfolioView = lazy(() => import("@/components/portfolio/PortfolioView"));
-const ResearchView = lazy(() => import("@/components/research/ResearchView"));
-const SentimentView = lazy(() => import("@/components/sentiment/SentimentView"));
+const TopBuysView = lazy(() => import("@/components/scout/TopBuysView"));
+const PortfolioView = lazy(() => import("@/components/portfolio/BackendPortfolioView"));
 
 const routeToNavId: Record<string, string> = {
   "/": "dashboard",
+  "/scout": "scout",
+  "/council": "council",
   "/portfolio": "portfolio",
-  "/alerts": "alerts",
   "/macro": "macro",
-  "/sentiment": "sentiment",
-  "/research": "research",
-  "/moonshots": "moonshots",
-  "/markets": "markets",
-  "/digest": "digest",
 };
 
 const navIdToRoute: Record<string, string> = Object.fromEntries(
@@ -55,7 +46,6 @@ function PageLoader() {
 function AppRouter() {
   const location = useLocation();
   const navigate = useNavigate();
-  const [commandOpen, setCommandOpen] = useState(false);
 
   const activeNavId = routeToNavId[location.pathname] ?? "dashboard";
 
@@ -68,13 +58,7 @@ function AppRouter() {
     <AppShell
       activeNavId={activeNavId}
       onNavigate={handleNavigate}
-      onOpenCommandPalette={() => setCommandOpen(true)}
     >
-      <CommandPalette
-        open={commandOpen}
-        onClose={() => setCommandOpen(false)}
-        onNavigate={handleNavigate}
-      />
       <AnimatePresence mode="wait">
         <motion.div
           key={location.pathname}
@@ -85,15 +69,12 @@ function AppRouter() {
         >
           <Suspense fallback={<PageLoader />}>
             <Routes location={location}>
-              <Route path="/" element={<CommandCenter />} />
+              <Route path="/" element={<BackendCockpitView />} />
+              <Route path="/scout" element={<TopBuysView />} />
+              <Route path="/council" element={<CouncilView />} />
               <Route path="/portfolio" element={<PortfolioView />} />
-              <Route path="/alerts" element={<AlertsView />} />
               <Route path="/macro" element={<MacroView />} />
-              <Route path="/sentiment" element={<SentimentView />} />
-              <Route path="/research" element={<ResearchView />} />
-              <Route path="/moonshots" element={<MoonshotsView />} />
-              <Route path="/markets" element={<MarketsView />} />
-              <Route path="/digest" element={<DigestView />} />
+              <Route path="*" element={<BackendCockpitView />} />
             </Routes>
           </Suspense>
         </motion.div>

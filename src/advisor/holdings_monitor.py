@@ -25,6 +25,8 @@ def monitor_holdings(
     fundamentals: dict[str, dict[str, Any]],
     signals: list[dict],
     news_signals: list[dict],
+    macro_data: dict | None = None,
+    macro_theses: list[dict] | None = None,
 ) -> list[dict]:
     """Produce the daily holdings check-in with memory context.
 
@@ -94,6 +96,15 @@ def monitor_holdings(
                 r["position_pct"] = round(mv / total_value * 100, 1)
             else:
                 r["position_pct"] = None
+
+    # ── Dynamic thesis status: cross-reference holdings with macro context ──
+    if macro_data or macro_theses:
+        try:
+            _apply_dynamic_thesis_status(reports, macro_data, macro_theses, fundamentals)
+        except Exception:
+            log.exception(
+                "Dynamic thesis status failed — keeping original statuses"
+            )
 
     # Sector concentration check
     sector_weight: dict[str, float] = {}
@@ -214,6 +225,123 @@ def build_holdings_narrative(holding_reports: list[dict]) -> str:
         lines.append("")
 
     return "\n".join(lines)
+
+
+# ═══════════════════════════════════════════════════════
+# DYNAMIC THESIS STATUS
+# ═══════════════════════════════════════════════════════
+
+# 4-tier system: STRONG > INTACT > UNDER_REVIEW > DEGRADED
+# Evaluated against BOTH company-specific AND macro conditions.
+
+THESIS_STATUS_TIERS = {
+    "strong": "[STRONG]",
+    "intact": "[OK]",
+    "under_review": "[REVIEW]",
+    "degraded": "[INVALID]",
+}
+
+
+def _apply_dynamic_thesis_status(
+    reports: list[dict],
+    macro_data: dict | None,
+    macro_theses: list[dict] | None,
+    fundamentals: dict[str, dict[str, Any]],
+) -> None:
+    """Upgrade/downgrade thesis status based on macro context.
+
+    Modifies reports in-place. The key insight: thesis status must consider
+    MACRO CONTEXT, not just company-specific data. An AI infra thesis is
+    UNDER_REVIEW when datacenter energy costs spike, even if the company
+    reported fine results.
+    """
+    macro_data = macro_data or {}
+    macro_theses = macro_theses or []
+
+    # Extract macro signals
+    vix = macro_data.get("vix")
+    if isinstance(vix, dict):
+        vix = vix.get("value")
+    vix = vix if isinstance(vix, (int, float)) else None
+
+    oil = macro_data.get("oil") or macro_data.get("brent") or macro_data.get("wti")
+    if isinstance(oil, dict):
+        oil = oil.get("value")
+
+    # Build set of tickers affected by weakening/invalidated macro theses
+    macro_stressed_tickers: set[str] = set()
+    for mt in macro_theses:
+        status = mt.get("status") or mt.get("current_status", "intact")
+        if status in ("weakening", "invalidated"):
+            for t in mt.get("affected_tickers", []):
+                macro_stressed_tickers.add(t.upper())
+
+    high_vix = vix is not None and vix > 22
+
+    for report in reports:
+        ticker = report.get("ticker", "").upper()
+        current_status = report.get("thesis_status", "intact")
+        sector = (report.get("sector") or "").lower()
+        drawdown = report.get("drawdown_from_peak_pct")
+        change_pct = report.get("change_pct") or 0
+
+        # Start with the stored status as baseline
+        computed_status = current_status
+
+        # ── Downgrade conditions ──
+
+        # Macro thesis headwind
+        if ticker in macro_stressed_tickers:
+            if computed_status in ("intact", "strengthening", "strong"):
+                computed_status = "under_review"
+                report.setdefault("key_events", []).append(
+                    "Macro thesis headwind — status downgraded to UNDER REVIEW"
+                )
+
+        # High VIX + tech-correlated holding
+        if high_vix and sector in ("technology", "communication services"):
+            if computed_status in ("intact", "strengthening", "strong"):
+                computed_status = "under_review"
+                report.setdefault("key_events", []).append(
+                    f"VIX elevated ({vix:.0f}) + tech sector — UNDER REVIEW"
+                )
+
+        # Deep drawdown without recovery signal
+        if drawdown is not None and drawdown <= -20:
+            if computed_status in ("intact", "strong"):
+                computed_status = "under_review"
+
+        # Severe single-day move (>5% drop)
+        if change_pct <= -5:
+            if computed_status == "intact":
+                computed_status = "under_review"
+                report.setdefault("key_events", []).append(
+                    f"Sharp decline ({change_pct:+.1f}%) — thesis UNDER REVIEW"
+                )
+
+        # Already weakening + additional stress → degraded
+        if current_status == "weakening" and ticker in macro_stressed_tickers:
+            computed_status = "degraded"
+
+        # ── Upgrade conditions ──
+
+        # Strong fundamentals + positive momentum = upgrade to STRONG
+        fund = fundamentals.get(report.get("ticker", ""), {})
+        rev_growth = fund.get("revenue_growth")
+        if (current_status == "intact"
+                and computed_status == "intact"
+                and rev_growth is not None and rev_growth > 0.15
+                and change_pct > 0
+                and (drawdown is None or drawdown > -5)):
+            computed_status = "strong"
+
+        # Apply the computed status
+        if computed_status != current_status:
+            report["thesis_status"] = computed_status
+            log.info(
+                "Dynamic thesis: %s %s → %s",
+                ticker, current_status, computed_status,
+            )
 
 
 # ═══════════════════════════════════════════════════════
@@ -472,10 +600,13 @@ def _format_cum_return(
 def _thesis_status_icon(status: str) -> str:
     """Map thesis status to a simple text indicator."""
     mapping = {
+        "strong": "[STRONG]",
         "intact": "[OK]",
         "strengthening": "[STRONG]",
+        "under_review": "[REVIEW]",
         "evolving": "[WATCH]",
         "weakening": "[CAUTION]",
+        "degraded": "[INVALID]",
         "invalidated": "[INVALID]",
     }
     return mapping.get(status.lower(), "[?]")

@@ -30,6 +30,7 @@ import { Gauge } from "@/components/ui/Gauge";
 import { Sparkline } from "@/components/ui/Sparkline";
 import { DeltaChip } from "@/components/ui/DeltaChip";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { MockDataBadge } from "@/components/ui/MockDataBadge";
 import { AgentTag } from "@/components/ui/AgentTag";
 import { Drawer } from "@/components/ui/Drawer";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -385,7 +386,7 @@ export default function SentimentView() {
 
   if (loading) {
     return (
-      <div className="space-y-6 p-6">
+      <div className="mx-auto max-w-7xl space-y-6">
         <div className="flex items-center justify-between">
           <Skeleton className="h-8 w-48" />
           <Skeleton className="h-9 w-32" />
@@ -401,9 +402,9 @@ export default function SentimentView() {
 
   if (error) {
     return (
-      <div className="p-6">
+      <div className="mx-auto max-w-7xl">
         <EmptyState
-          title="Couldn’t load sentiment"
+          title="Couldn't load sentiment"
           description={error}
           icon={<RefreshCw className="h-6 w-6" />}
           action={{ label: "Retry", onClick: load }}
@@ -417,21 +418,26 @@ export default function SentimentView() {
       variants={stagger}
       initial={reduced ? "visible" : "hidden"}
       animate="visible"
-      className="space-y-6 p-6"
+      className="mx-auto max-w-7xl space-y-6"
     >
       {/* Header */}
       <motion.div variants={rise} className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-semibold text-(--color-text-primary)">Sentiment</h1>
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-2xl font-semibold text-(--color-text-primary)">Sentiment</h1>
+            <MockDataBadge />
+          </div>
           <p className="text-sm text-(--color-text-secondary)">
             Trending social signals ranked by LunarCrush social score
           </p>
         </div>
-        <Tooltip content="Data is sourced from LunarCrush, replacing the previous Reddit-only feed.">
-          <StatusBadge variant="info" icon={<Brain className="h-3 w-3" />}>
-            LunarCrush
-          </StatusBadge>
-        </Tooltip>
+        <div className="flex flex-wrap items-center gap-2">
+          <Tooltip content="Fixture data shaped like the LunarCrush feed.">
+            <StatusBadge variant="info" icon={<Brain className="h-3 w-3" />}>
+              LunarCrush shape
+            </StatusBadge>
+          </Tooltip>
+        </div>
       </motion.div>
 
       {/* Divergence highlights */}

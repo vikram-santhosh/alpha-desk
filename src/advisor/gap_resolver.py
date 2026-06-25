@@ -337,7 +337,7 @@ Be specific with numbers and mechanisms. State your confidence level (low/medium
         )
 
         usage = response.usage
-        record_usage(AGENT_NAME, usage.input_tokens, usage.output_tokens, model=MODEL)
+        record_usage(AGENT_NAME, usage.input_tokens, usage.output_tokens, model=MODEL, response=response)
         log.info("Gap resolver LLM call: %d in, %d out", usage.input_tokens, usage.output_tokens)
 
         return {
@@ -485,7 +485,7 @@ Provide a concise (3-5 sentence) analysis of the pattern described. Reference sp
         )
 
         usage = response.usage
-        record_usage(AGENT_NAME, usage.input_tokens, usage.output_tokens, model=MODEL)
+        record_usage(AGENT_NAME, usage.input_tokens, usage.output_tokens, model=MODEL, response=response)
         log.info("Gap resolver historical LLM: %d in, %d out", usage.input_tokens, usage.output_tokens)
 
         return {

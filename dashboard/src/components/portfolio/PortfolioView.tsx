@@ -20,6 +20,7 @@ import { Drawer } from "@/components/ui/Drawer";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { GlassCard } from "@/components/ui/GlassCard";
+import { MockDataBadge } from "@/components/ui/MockDataBadge";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { Sparkline } from "@/components/ui/Sparkline";
@@ -204,7 +205,7 @@ export default function PortfolioView() {
       initial={reducedMotion ? false : "hidden"}
       animate="visible"
       variants={stagger}
-      className="space-y-6"
+      className="mx-auto max-w-7xl space-y-6"
     >
       {/* Header */}
       <motion.div
@@ -212,9 +213,12 @@ export default function PortfolioView() {
         className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"
       >
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-(--color-text-primary)">
-            Portfolio
-          </h1>
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-2xl font-semibold tracking-tight text-(--color-text-primary)">
+              Portfolio
+            </h1>
+            <MockDataBadge />
+          </div>
           <p className="text-sm text-(--color-text-secondary)">
             Sleeve allocation, holdings, and risk commentary
           </p>

@@ -5,6 +5,7 @@ import { Activity, Calendar, TrendingUp } from "lucide-react";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { Sparkline } from "@/components/ui/Sparkline";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { MockDataBadge } from "@/components/ui/MockDataBadge";
 import { DeltaChip } from "@/components/ui/DeltaChip";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
@@ -280,12 +281,15 @@ export default function MarketsView() {
   const sorted = useMemo(() => sortMarkets(markets, sort), [markets, sort]);
 
   return (
-    <section className="space-y-6">
+    <section className="mx-auto max-w-7xl space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-(--color-text-primary)">
-            Prediction Markets
-          </h1>
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-2xl font-semibold tracking-tight text-(--color-text-primary)">
+              Prediction Markets
+            </h1>
+            <MockDataBadge />
+          </div>
           <p className="text-sm text-(--color-text-secondary)">
             Tracked markets with AlphaDesk model edge.
           </p>

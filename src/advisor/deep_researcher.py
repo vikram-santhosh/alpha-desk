@@ -344,7 +344,7 @@ class MultiStepDeepResearcher:
             max_tokens=1800,
             messages=[{"role": "user", "content": prompt}],
         )
-        return {"text": response.content[0].text.strip(), "usage": response.usage, "model": analysis_model}
+        return {"text": response.content[0].text.strip(), "usage": response.usage, "model": response.model}
 
     async def _fill_gaps(
         self,
@@ -408,7 +408,7 @@ class MultiStepDeepResearcher:
         response = await asyncio.to_thread(
             self.client.messages.create,
             model=PRO_MODEL,
-            max_tokens=1200 if tier == "full" else 500,
+            max_tokens=2500 if tier == "full" else 1000,
             messages=[{"role": "user", "content": prompt}],
         )
         return {"raw_text": response.content[0].text.strip(), "usage": response.usage, "model": PRO_MODEL}

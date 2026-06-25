@@ -1,10 +1,12 @@
 import type { Moonshot } from "@/types";
 import { GlassCard } from "@/components/ui/GlassCard";
+import { GlassButton } from "@/components/ui/GlassButton";
 import { StreamingText } from "@/components/ui/StreamingText";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { motion } from "motion/react";
 import { useReducedMotion } from "@/lib/useReducedMotion";
-import { ArrowBigDown, ArrowBigUp } from "lucide-react";
+import { ArrowBigDown, ArrowBigUp, BrainCircuit } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 
 interface MoonshotCardProps {
   moonshot: Moonshot;
@@ -20,8 +22,13 @@ const sectorVariantMap: Record<string, "info" | "warning" | "critical" | "succes
 
 export function MoonshotCard({ moonshot, index }: MoonshotCardProps) {
   const reducedMotion = useReducedMotion();
+  const navigate = useNavigate();
   const total = moonshot.asymmetry.downside + moonshot.asymmetry.upside;
   const upsidePct = total > 0 ? (moonshot.asymmetry.upside / total) * 100 : 50;
+  const openCouncilDeepDive = () => {
+    const params = new URLSearchParams({ ticker: moonshot.ticker, run: "1", from: "scout" });
+    navigate(`/council?${params.toString()}`);
+  };
 
   return (
     <motion.div
@@ -44,9 +51,14 @@ export function MoonshotCard({ moonshot, index }: MoonshotCardProps) {
               {moonshot.ticker}
             </p>
           </div>
-          <StatusBadge variant={sectorVariantMap[moonshot.sector] ?? "neutral"}>
-            {moonshot.sector}
-          </StatusBadge>
+          <div className="flex shrink-0 flex-col items-end gap-2">
+            <StatusBadge variant={sectorVariantMap[moonshot.sector] ?? "neutral"}>
+              {moonshot.sector}
+            </StatusBadge>
+            <StatusBadge variant={moonshot.source === "backend" ? "success" : "warning"}>
+              {moonshot.source === "backend" ? "Backend" : "Mock"}
+            </StatusBadge>
+          </div>
         </div>
 
         <div className="mt-4">
@@ -121,6 +133,20 @@ export function MoonshotCard({ moonshot, index }: MoonshotCardProps) {
             showScanline={false}
             className="text-sm leading-relaxed text-(--color-text-secondary)"
           />
+          {moonshot.sourceDetail && (
+            <p className="mt-2 text-xs text-(--color-text-tertiary)">
+              {moonshot.sourceDetail}
+            </p>
+          )}
+          <GlassButton
+            type="button"
+            variant="ghost"
+            leftIcon={<BrainCircuit className="h-4 w-4" />}
+            onClick={openCouncilDeepDive}
+            className="mt-4 w-full"
+          >
+            Deep dive
+          </GlassButton>
         </div>
       </GlassCard>
     </motion.div>

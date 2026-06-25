@@ -271,7 +271,8 @@ User question: {question}"""
                 usage.input_tokens,
                 usage.output_tokens,
                 model=MODEL,
-            )
+                response=response,
+)
 
             answer = response.content[0].text.strip()
             log.info(

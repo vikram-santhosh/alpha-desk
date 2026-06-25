@@ -42,7 +42,7 @@ export default function MacroView() {
 
   if (error) {
     return (
-      <div className="mx-auto max-w-7xl px-4 py-6">
+      <div className="mx-auto max-w-7xl">
         <GlassCard className="p-8">
           <EmptyState
             title="Macro scanner offline"
@@ -57,17 +57,17 @@ export default function MacroView() {
 
   return (
     <motion.div
-      className="mx-auto max-w-7xl px-4 py-6"
+      className="mx-auto max-w-7xl"
       variants={stagger}
       initial={reduceMotion ? "visible" : "hidden"}
       animate="visible"
     >
       <motion.div
         variants={rise}
-        className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"
+        className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"
       >
         <div>
-          <h1 className="text-2xl font-bold text-(--color-text-primary)">Macro Regime</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-(--color-text-primary)">Macro Regime</h1>
           <p className="text-sm text-(--color-text-secondary)">
             AI-scanned macro themes and regime gauge.
           </p>

@@ -1,4 +1,6 @@
 anthropic
+fastapi
+uvicorn[standard]
 google-genai
 pyyaml
 python-dotenv

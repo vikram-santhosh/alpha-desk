@@ -2,6 +2,7 @@ import { motion, useReducedMotion } from "motion/react";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { Gauge } from "@/components/ui/Gauge";
 import { AgentTag } from "@/components/ui/AgentTag";
+import { StatusBadge } from "@/components/ui/StatusBadge";
 import { StreamingText } from "@/components/ui/StreamingText";
 import { Skeleton } from "@/components/ui/Skeleton";
 import type { MacroRegime } from "@/types";
@@ -32,6 +33,15 @@ export function MacroRegimeSection({ regime, loading }: MacroRegimeSectionProps)
     );
   }
 
+  const sourceLabel =
+    regime.source === "backend"
+      ? regime.degradedReasons?.length
+        ? "Backend degraded"
+        : "Backend macro"
+      : "Mock macro";
+  const sourceVariant =
+    regime.source === "backend" && !regime.degradedReasons?.length ? "success" : "warning";
+
   return (
     <GlassCard
       as={motion.div}
@@ -54,6 +64,7 @@ export function MacroRegimeSection({ regime, loading }: MacroRegimeSectionProps)
           <div className="flex flex-wrap items-center gap-3">
             <h2 className="text-2xl font-bold text-(--color-text-primary)">{regime.call}</h2>
             <AgentTag name={regime.agent} confidence={regime.score} />
+            <StatusBadge variant={sourceVariant}>{sourceLabel}</StatusBadge>
           </div>
 
           <StreamingText
@@ -66,6 +77,11 @@ export function MacroRegimeSection({ regime, loading }: MacroRegimeSectionProps)
           <div className="mt-1 text-xs text-(--color-text-tertiary)">
             Scanned {minutesAgo(regime.scannedAt)}
           </div>
+          {regime.sourceDetail && (
+            <div className="text-xs text-(--color-text-tertiary)">
+              {regime.sourceDetail}
+            </div>
+          )}
         </div>
       </div>
     </GlassCard>

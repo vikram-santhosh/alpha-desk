@@ -1,4 +1,4 @@
-☀️ ALPHADESK DAILY BRIEF — Mar 17, 2026
+☀️ ALPHADESK DAILY BRIEF — Jun 18, 2026
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 💬 TODAY&apos;S TAKE

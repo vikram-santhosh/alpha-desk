@@ -219,7 +219,8 @@ def analyze_batch(
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
             model=MODEL,
-        )
+            response=response,
+)
 
         # Extract text from response
         response_text = ""

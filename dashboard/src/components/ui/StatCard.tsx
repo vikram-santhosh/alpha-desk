@@ -80,7 +80,7 @@ export function StatCard({
           </p>
           <div className="mt-1.5 flex items-baseline gap-1">
             <span className="text-(--color-text-tertiary) text-sm">{prefix}</span>
-            <span className="text-3xl font-semibold tracking-tight text-(--color-text-primary) font-mono">
+            <span className="text-3xl font-semibold tracking-tight text-(--color-text-primary) font-mono tabular-nums">
               {display}
             </span>
             <span className="text-(--color-text-tertiary) text-sm">{suffix}</span>

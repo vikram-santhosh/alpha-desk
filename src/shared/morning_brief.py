@@ -161,7 +161,7 @@ Format using Telegram HTML tags (<b>, <i>, <code>). Be concise and direct. No he
 
         # Track costs
         usage = response.usage
-        record_usage(AGENT_NAME, usage.input_tokens, usage.output_tokens, model=MODEL)
+        record_usage(AGENT_NAME, usage.input_tokens, usage.output_tokens, model=MODEL, response=response)
 
         synthesis = response.content[0].text
         log.info(

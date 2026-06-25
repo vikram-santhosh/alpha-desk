@@ -1,15 +1,11 @@
 import { cn } from "@/lib/cn";
 import { motion } from "motion/react";
 import {
-  BellRing,
-  FlaskConical,
+  BrainCircuit,
+  DatabaseZap,
   Globe,
-  LayoutDashboard,
-  Mail,
   Menu,
-  Radio,
   Rocket,
-  TrendingUp,
   Wallet,
 } from "lucide-react";
 import { useState } from "react";
@@ -22,15 +18,11 @@ export type NavItem = {
 };
 
 const navItems: NavItem[] = [
-  { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { id: "portfolio", label: "Portfolio", icon: Wallet },
-  { id: "alerts", label: "Alerts", icon: BellRing },
+  { id: "dashboard", label: "Backend", icon: DatabaseZap },
+  { id: "scout", label: "Alpha Scout", icon: Rocket },
+  { id: "council", label: "Council", icon: BrainCircuit },
   { id: "macro", label: "Macro", icon: Globe },
-  { id: "sentiment", label: "Sentiment", icon: Radio },
-  { id: "research", label: "Research", icon: FlaskConical },
-  { id: "moonshots", label: "Moonshots", icon: Rocket },
-  { id: "markets", label: "Markets", icon: TrendingUp },
-  { id: "digest", label: "Digest", icon: Mail },
+  { id: "portfolio", label: "Portfolio", icon: Wallet },
 ];
 
 interface SidebarProps {
@@ -131,7 +123,7 @@ export function Sidebar({
               ⌘K
             </kbd>
             {!collapsed && (
-              <span className="text-xs text-(--color-text-tertiary)">Command</span>
+              <span className="text-xs text-(--color-text-tertiary)">FastAPI</span>
             )}
           </div>
           <div
@@ -144,7 +136,7 @@ export function Sidebar({
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-(--color-accent-emerald) opacity-75" />
               <span className="relative inline-flex h-2 w-2 rounded-full bg-(--color-accent-emerald)" />
             </span>
-            {!collapsed && <span>Synced {lastSync}</span>}
+            {!collapsed && <span>Backend {lastSync}</span>}
           </div>
         </div>
       </aside>

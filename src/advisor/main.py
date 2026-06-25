@@ -7,6 +7,7 @@ and returns the 5-section daily brief.
 from __future__ import annotations
 
 import asyncio
+import functools
 import time
 from datetime import date
 from pathlib import Path
@@ -23,6 +24,7 @@ from src.shared.cost_tracker import (
     get_run_cost,
     record_usage,
 )
+from src.shared.security import sanitize_ticker
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -572,12 +574,34 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
                 fundamentals=fundamentals,
                 signals=agent_bus_signals,
                 news_signals=news_signals,
+                macro_data=macro_data,
+                macro_theses=updated_theses,
             )
         except Exception:
             log.exception("Failed to monitor holdings")
             holdings_reports = []
 
         holdings_narrative = build_holdings_narrative(holdings_reports)
+
+    # ── Step 5a: Exposure gap analysis ──────────────────────────────────
+    exposure_result: dict[str, Any] = {}
+    portfolio_safety_score: int | None = None
+    if holdings_reports:
+        try:
+            from src.advisor.exposure_analyzer import analyze_exposure_gaps
+            exposure_result = analyze_exposure_gaps(
+                holdings_reports=holdings_reports,
+                macro_data=macro_data,
+            )
+            portfolio_safety_score = exposure_result.get("safety_score")
+            log.info(
+                "Exposure analysis: safety=%s, %d gaps, %d overweight",
+                portfolio_safety_score,
+                len(exposure_result.get("gaps", [])),
+                len(exposure_result.get("overweights", [])),
+            )
+        except Exception:
+            log.exception("Exposure analysis failed — continuing without it")
 
     # ── Step 5b: Delta Engine — snapshot + compute changes ─────────────
     from src.advisor.delta_engine import (
@@ -625,7 +649,11 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
                 save_snapshot_task = asyncio.create_task(
                     _run_blocking_step(
                         "Save daily snapshot",
-                        save_today_snapshot,
+                        functools.partial(
+                            save_today_snapshot,
+                            run_type=run_profile.run_type,
+                            run_id=run_profile.run_id,
+                        ),
                         today_snapshot,
                         default=None,
                     )
@@ -822,10 +850,25 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
             from src.advisor.memory import record_recommendation
             from src.advisor.conviction_manager import build_evidence_items
             from src.shared.schemas import compute_evidence_quality_score
+            # Validate tickers before recording recommendations.
+            # The conviction manager only adds candidates from the discovery universe,
+            # but this guard catches any malformed ticker that slips through.
+            valid_tickers = set(all_tickers) | {c.get("ticker") for c in discovery_candidates if c.get("ticker")}
             for added_entry in conviction_result.get("added", []):
                 t = added_entry.get("ticker", "")
                 if not t:
                     continue
+                try:
+                    clean = sanitize_ticker(t)
+                except ValueError as exc:
+                    log.warning("Skipping invalid ticker from conviction add: %s (%s)", t, exc)
+                    continue
+                if clean not in valid_tickers:
+                    log.warning(
+                        "Quarantining conviction recommendation: %s not in candidate universe", clean
+                    )
+                    continue
+                t = clean  # use sanitized ticker from here on
                 # Build evidence items for this ticker
                 si_data = superinvestor_data.get(t)
                 earn_data = earnings_data.get("per_ticker", {}).get(t) if isinstance(earnings_data, dict) else None
@@ -844,13 +887,12 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
                 # Fetch actual thesis text from memory for skeptic review
                 thesis_text = ""
                 try:
-                    conv_entries = memory.get_conviction_list(active_only=True)
-                    for ce in conv_entries:
+                    for ce in memory.get("conviction_list", []):
                         if ce.get("ticker") == t:
                             thesis_text = ce.get("thesis", "")
                             break
                 except Exception:
-                    pass
+                    log.debug("conviction thesis lookup failed for %s", t, exc_info=True)
     
                 # Run skeptic challenge on new conviction additions
                 rec_dict = {
@@ -897,11 +939,18 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
                 prediction_data=prediction_data,
                 earnings_data=earnings_data if isinstance(earnings_data, dict) else {},
                 valuation_data=valuation_data,
+                portfolio_safety_score=portfolio_safety_score,
             )
         except Exception:
             log.exception("Failed to update moonshot list")
             moonshot_result = {"current_list": memory["moonshot_list"], "added": [], "removed": []}
     
+        try:
+            from src.advisor.memory import increment_moonshot_months
+            increment_moonshot_months(run_id=run_profile.run_id)
+        except Exception:
+            log.exception("Failed to increment moonshot months")
+
         # Generate novel ideas (weekly, runs on Monday or if never run)
         try:
             from src.advisor.idea_generator import should_run_ideas, generate_novel_ideas
@@ -1080,7 +1129,7 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
         _reddit_parts.append(f"Top themes: {'; '.join(_reddit_themes[:5])}")
     _reddit_ticker_lines: list[str] = []
     for sig in agent_bus_signals:
-        if sig.get("agent_name") == "street_ear":
+        if sig.get("source_agent") == "street_ear":
             payload = sig.get("payload", {})
             t = payload.get("ticker") or sig.get("ticker", "")
             sentiment = payload.get("sentiment_score", payload.get("sentiment", ""))
@@ -1102,7 +1151,7 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
     # Substack: expert newsletter signals from agent bus + formatted output
     _substack_lines: list[str] = []
     for sig in agent_bus_signals:
-        if sig.get("agent_name") == "substack_ear":
+        if sig.get("source_agent") == "substack_ear":
             payload = sig.get("payload", {})
             title = payload.get("title") or payload.get("narrative_title", "")
             summary = payload.get("summary") or payload.get("thesis_summary", "")
@@ -1146,6 +1195,15 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
                 if ct and ct not in _deep_tickers:
                     _deep_tickers.append(ct)
     
+            # Build exposure context for committee
+            _exposure_ctx_str = ""
+            if exposure_result:
+                try:
+                    from src.advisor.exposure_analyzer import format_exposure_for_prompt
+                    _exposure_ctx_str = format_exposure_for_prompt(exposure_result)
+                except Exception:
+                    pass
+
             committee_result = await run_analyst_committee(
                 tickers=all_tickers[:12],
                 data_context=_data_context,
@@ -1166,6 +1224,7 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
                 deep_research_tickers=_deep_tickers,
                 config=config,
                 mandate_breach_ctx=_mandate_breach_ctx,
+                exposure_context=_exposure_ctx_str,
             )
     
             brief_text = committee_result.get("formatted_brief", "")
@@ -1234,6 +1293,34 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
             if committee_result is not None:
                 synthesis["committee_result"] = committee_result
 
+    # ── Step 7b: Coherence audit ──────────────────────────────────────
+    coherence_result: dict[str, Any] = {}
+    if synthesis.get("formatted_brief") and portfolio_safety_score is not None:
+        try:
+            from src.advisor.coherence_auditor import audit_coherence, format_coherence_warnings
+            thesis_status_map = {
+                h.get("ticker", ""): h.get("thesis_status", "intact")
+                for h in holdings_reports
+            }
+            coherence_result = audit_coherence(
+                brief_text=synthesis["formatted_brief"],
+                safety_score=portfolio_safety_score,
+                exposure_gaps=exposure_result.get("gaps", []),
+                strategy_actions=strategy.get("actions", []),
+                thesis_statuses=thesis_status_map,
+                macro_theses=updated_theses,
+            )
+            coherence_warnings = format_coherence_warnings(coherence_result)
+            if coherence_warnings:
+                synthesis["formatted_brief"] = coherence_warnings + "\n\n" + synthesis["formatted_brief"]
+                log.info(
+                    "Coherence audit: score=%s, %d contradictions prepended",
+                    coherence_result.get("coherence_score"),
+                    len(coherence_result.get("contradictions", [])),
+                )
+        except Exception:
+            log.exception("Coherence audit failed — proceeding without it")
+
     # ── Step 8: Save memory state ──────────────────────────────────────
     if run_profile.run_type == "morning_full":
         try:
@@ -1259,6 +1346,7 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
         format_thesis_exposure_section,
         format_conviction_section,
         format_moonshot_section,
+        format_exposure_gaps_section,
     )
 
     daily_cost = get_daily_cost()
@@ -1313,6 +1401,11 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
             # Catalysts
             if catalyst_formatted:
                 sections.extend(["", SEPARATOR, "", catalyst_formatted])
+
+            # Exposure gap analysis (safety score + sector gaps)
+            exposure_gaps_section = format_exposure_gaps_section(exposure_result)
+            if exposure_gaps_section:
+                sections.extend(["", SEPARATOR, "", exposure_gaps_section])
 
             # Thesis exposure
             if thesis_exposure_section:
@@ -1415,24 +1508,16 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
             except Exception:
                 log.debug("Could not fetch scorecard for verbose report")
     
-            # Build sector scanner signals: current run + earlier signals from bus
+            # Build sector scanner signals: use current run signals only
+            # (previously merged with stale bus signals, causing duplicate/stale data)
             _all_sector_signals: list[dict] = list(sector_scanner_result.get("signals", []))
-            _seen_sector_ids = {s.get("id") for s in _all_sector_signals}
-            for _bus_sig in agent_bus_signals:
-                if _bus_sig.get("source_agent") == "sector_scanner" and _bus_sig.get("id") not in _seen_sector_ids:
-                    _payload = _bus_sig.get("payload", {})
-                    _all_sector_signals.append({
-                        "id": _bus_sig.get("id"),
-                        "type": _bus_sig.get("signal_type", ""),
-                        **_payload,
-                    })
 
             # Build structured signal lists from agent bus for Signal Intelligence section
             _reddit_sigs: list[dict] = []
             _substack_sigs: list[dict] = []
             _youtube_sigs: list[dict] = []
             for _bus_sig in agent_bus_signals:
-                _agent = _bus_sig.get("agent_name", "")
+                _agent = _bus_sig.get("source_agent", "")
                 _payload = _bus_sig.get("payload", {})
                 if _agent == "street_ear":
                     _t = _payload.get("ticker") or _bus_sig.get("ticker", "")
@@ -1544,6 +1629,16 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
     except Exception:
         log.exception("Failed to persist run snapshot")
 
+    # ── Cleanup: mark signals consumed + clear stale signals ─────────
+    if run_profile.run_type == "morning_full":
+        try:
+            from src.shared.agent_bus import clear_old_signals
+            cleared = clear_old_signals(days=1)
+            if cleared:
+                log.info("Cleaned %d stale signals (>1 day old)", cleared)
+        except Exception:
+            log.debug("Signal cleanup failed", exc_info=True)
+
     log.info("Advisor pipeline completed in %.1fs", total_time)
 
     return {
@@ -1575,6 +1670,8 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
             "delta_report": delta_report.to_dict() if delta_report else None,
             "catalysts": catalyst_data,
             "committee": synthesis.get("committee_result"),
+            "exposure": exposure_result,
+            "coherence": coherence_result,
         },
     }
 
@@ -1850,7 +1947,7 @@ Respond with ONLY the two sections."""
         if not response.content:
             return {"macro_summary": "Synthesis unavailable — empty response."}
         usage = response.usage
-        record_usage(AGENT_NAME, usage.input_tokens, usage.output_tokens, model=MODEL)
+        record_usage(AGENT_NAME, usage.input_tokens, usage.output_tokens, model=MODEL, response=response)
         full_text = response.content[0].text
 
         log.info("Synthesis complete: %d in, %d out", usage.input_tokens, usage.output_tokens)

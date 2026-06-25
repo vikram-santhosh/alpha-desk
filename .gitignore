@@ -30,6 +30,10 @@ Thumbs.db
 
 # Private data
 private/
+secrets.txt
+
+# Local Claude Code settings (keep launch.json, ignore machine-local prefs)
+.claude/settings.local.json
 
 # Runtime logs
 logs/
@@ -37,6 +41,9 @@ logs/
 # Generated reports & backtests
 reports/
 backtests/
+
+# Audit harness (throwaway)
+scratch/
 
 # Virtual environments
 venv/

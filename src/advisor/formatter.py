@@ -417,6 +417,66 @@ def format_thesis_exposure_section(thesis_exposure: list[dict[str, Any]]) -> str
     return "\n".join(lines)
 
 
+def format_exposure_gaps_section(exposure_result: dict[str, Any]) -> str:
+    """Format the exposure gap analysis for the Telegram report.
+
+    Shows sector breakdown, critical gaps, and safety score.
+    """
+    if not exposure_result:
+        return ""
+
+    safety = exposure_result.get("safety_score")
+    gaps = exposure_result.get("gaps", [])
+    overweights = exposure_result.get("overweights", [])
+    breakdown = exposure_result.get("sector_breakdown", {})
+
+    lines = ["\U0001f6e1\ufe0f <b>EXPOSURE ANALYSIS</b>", ""]
+
+    # Safety score with color indicator
+    if safety is not None:
+        if safety >= 60:
+            safety_label = "STABLE"
+        elif safety >= 40:
+            safety_label = "CAUTION"
+        elif safety >= 30:
+            safety_label = "ELEVATED RISK"
+        else:
+            safety_label = "CRISIS"
+        lines.append(f"  Portfolio Safety: <b>{safety}/100</b> ({safety_label})")
+        lines.append("")
+
+    # Sector breakdown (compact one-liner)
+    if breakdown:
+        parts = [f"{s}: {p:.0f}%" for s, p in breakdown.items()]
+        lines.append(f"  {' | '.join(parts)}")
+        lines.append("")
+
+    # Critical gaps (zero exposure)
+    critical = [g for g in gaps if g.get("severity") == "critical"]
+    if critical:
+        zero_names = [g["sector"] for g in critical]
+        lines.append(f"  \U0001f534 <b>Zero exposure:</b> {', '.join(zero_names)}")
+
+    # Warning gaps (underweight)
+    warnings = [g for g in gaps if g.get("severity") == "warning"]
+    if warnings:
+        for g in warnings:
+            lines.append(
+                f"  \U0001f7e1 {g['sector']}: {g['actual_pct']:.0f}% "
+                f"(benchmark: {g['benchmark_min']}-{g['benchmark_max']}%)"
+            )
+
+    # Overweights
+    if overweights:
+        for o in overweights:
+            lines.append(
+                f"  \U0001f7e0 <b>Overweight:</b> {o['sector']} at {o['actual_pct']:.0f}% "
+                f"(max benchmark: {o['benchmark_max']}%)"
+            )
+
+    return "\n".join(lines)
+
+
 # ═══════════════════════════════════════════════════════
 # §4 CONVICTION
 # ═══════════════════════════════════════════════════════

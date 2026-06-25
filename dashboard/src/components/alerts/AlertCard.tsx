@@ -12,6 +12,7 @@ import {
 import { GlassCard } from "@/components/ui/GlassCard";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { GlassButton } from "@/components/ui/GlassButton";
+import { MockDataBadge } from "@/components/ui/MockDataBadge";
 import { StreamingText } from "@/components/ui/StreamingText";
 import { AgentTag } from "@/components/ui/AgentTag";
 import { askAlphaDesk } from "@/lib/api";
@@ -207,6 +208,7 @@ export function AlertCard({ alert, onAcknowledge, onMute, className }: AlertCard
           >
             {explaining ? "Analyzing…" : "Explain this breach"}
           </GlassButton>
+          <MockDataBadge label="Mock AI" />
         </div>
 
         <AnimatePresence>
@@ -223,7 +225,10 @@ export function AlertCard({ alert, onAcknowledge, onMute, className }: AlertCard
                 className="mt-1 border-(--color-accent-violet)/20 bg-(--color-accent-violet)/5 p-4"
               >
                 <div className="mb-3 flex items-center justify-between gap-3">
-                  <AgentTag name={explanation.agent} confidence={explanation.confidence} />
+                  <div className="flex flex-wrap items-center gap-2">
+                    <AgentTag name={explanation.agent} confidence={explanation.confidence} />
+                    <MockDataBadge label="Mock AI" />
+                  </div>
                   <GlassButton
                     variant="icon"
                     onClick={() => setExplanation(null)}

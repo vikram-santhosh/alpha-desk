@@ -202,7 +202,8 @@ class EventDetector:
                 input_tokens=usage.input_tokens,
                 output_tokens=usage.output_tokens,
                 model=MODEL,
-            )
+                response=response,
+)
 
             # Extract text
             response_text = ""

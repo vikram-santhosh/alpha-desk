@@ -22,6 +22,23 @@ log = get_logger(__name__)
 DB_PATH = Path(os.environ.get("ALPHADESK_DATA_DIR", "data")) / "advisor_memory.db"
 
 
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, dtype: str) -> None:
+    """Add a column to a table only if it does not already exist.
+
+    SQLite does not support IF NOT EXISTS on ALTER TABLE ADD COLUMN, so we
+    inspect the table info and skip the migration when the column is present.
+    """
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column in existing:
+        return
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {dtype}")
+    except sqlite3.OperationalError as exc:
+        if "duplicate column name" in str(exc).lower():
+            return
+        raise
+
+
 def _get_db() -> sqlite3.Connection:
     """Get or create the advisor memory database with all tables."""
     DB_PATH.parent.mkdir(exist_ok=True)
@@ -87,6 +104,7 @@ def _get_db() -> sqlite3.Connection:
             ticker TEXT NOT NULL UNIQUE,
             date_added TEXT NOT NULL,
             months_on_list INTEGER DEFAULT 1,
+            last_months_increment_run_id TEXT,
             conviction TEXT DEFAULT 'medium',
             thesis TEXT NOT NULL,
             upside_case TEXT,
@@ -216,8 +234,14 @@ def _get_db() -> sqlite3.Connection:
             price_1w REAL, return_1w_pct REAL,
             price_1m REAL, return_1m_pct REAL,
             price_3m REAL, return_3m_pct REAL,
+            spy_return_1d_pct REAL,
+            alpha_1d_pct REAL,
+            spy_return_1w_pct REAL,
+            alpha_1w_pct REAL,
             spy_return_1m_pct REAL,
             alpha_1m_pct REAL,
+            spy_return_3m_pct REAL,
+            alpha_3m_pct REAL,
             thesis_played_out INTEGER,
             invalidation_triggered INTEGER DEFAULT 0,
             invalidation_detail TEXT,
@@ -273,6 +297,16 @@ def _get_db() -> sqlite3.Connection:
         CREATE INDEX IF NOT EXISTS idx_superinvestor_ticker ON superinvestor_positions(ticker);
         CREATE INDEX IF NOT EXISTS idx_strategy_flags_active ON strategy_flags(ticker, resolved);
     """)
+
+    # Schema migrations for existing databases (columns are already present in fresh DBs)
+    _add_column_if_missing(conn, "recommendation_outcomes", "spy_return_1d_pct", "REAL")
+    _add_column_if_missing(conn, "recommendation_outcomes", "alpha_1d_pct", "REAL")
+    _add_column_if_missing(conn, "recommendation_outcomes", "spy_return_1w_pct", "REAL")
+    _add_column_if_missing(conn, "recommendation_outcomes", "alpha_1w_pct", "REAL")
+    _add_column_if_missing(conn, "recommendation_outcomes", "spy_return_3m_pct", "REAL")
+    _add_column_if_missing(conn, "recommendation_outcomes", "alpha_3m_pct", "REAL")
+    _add_column_if_missing(conn, "moonshot_list", "last_months_increment_run_id", "TEXT")
+
     conn.commit()
     return conn
 
@@ -550,6 +584,44 @@ def upsert_moonshot(ticker: str, conviction: str, thesis: str,
     conn.commit()
     conn.close()
 
+
+
+
+def increment_moonshot_months(run_id: str | None = None) -> None:
+    """Advance months_on_list for active moonshots once per run/period.
+
+    Uses last_months_increment_run_id to ensure idempotency across retries.
+    """
+    conn = _get_db()
+    now = datetime.now().isoformat()
+
+    if run_id is None:
+        log.warning("increment_moonshot_months called without run_id; skipping")
+        conn.close()
+        return
+
+    rows = conn.execute("""
+        SELECT id, ticker, months_on_list, last_months_increment_run_id
+        FROM moonshot_list
+        WHERE status = 'active'
+    """).fetchall()
+
+    incremented = 0
+    for row_id, ticker, months, last_run_id in rows:
+        if last_run_id == run_id:
+            continue
+        new_months = (months or 1) + 1
+        conn.execute("""
+            UPDATE moonshot_list
+            SET months_on_list = ?, last_months_increment_run_id = ?, updated_at = ?
+            WHERE id = ?
+        """, (new_months, run_id, now, row_id))
+        incremented += 1
+        log.debug("Incremented moonshot months for %s: %d", ticker, new_months)
+
+    conn.commit()
+    conn.close()
+    log.info("Incremented moonshot months for %d entries (run_id=%s)", incremented, run_id)
 
 def remove_moonshot(ticker: str, reason: str = "") -> None:
     """Remove a moonshot from the active list."""
@@ -1015,6 +1087,13 @@ def record_recommendation(rec) -> None:
 
     Args:
         rec: A Recommendation dataclass or dict with required fields.
+
+    Note on duplicate tickers:
+        The table has a UNIQUE constraint on (ticker, recommendation_date, action).
+        Re-recommending the same ticker on the same date with the same action
+        refreshes the existing row (INSERT OR REPLACE) rather than creating a
+        duplicate tracked entry. This is intentional: it keeps the "latest
+        context" for that recommendation without inflating the scorecard sample.
     """
     conn = _get_db()
     now = datetime.now().isoformat()
@@ -1083,7 +1162,10 @@ def get_recommendations_by_ticker(ticker: str) -> list[dict[str, Any]]:
 _OUTCOME_FIELDS = frozenset({
     "price_1d", "return_1d_pct", "price_1w", "return_1w_pct",
     "price_1m", "return_1m_pct", "price_3m", "return_3m_pct",
+    "spy_return_1d_pct", "alpha_1d_pct",
+    "spy_return_1w_pct", "alpha_1w_pct",
     "spy_return_1m_pct", "alpha_1m_pct",
+    "spy_return_3m_pct", "alpha_3m_pct",
     "thesis_played_out", "invalidation_triggered", "invalidation_detail",
     "user_rating", "status", "closed_date", "closed_reason", "updated_at",
 })

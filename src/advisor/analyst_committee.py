@@ -32,7 +32,7 @@ def _call_model(prompt: str, *, model: str, max_tokens: int) -> dict[str, Any]:
     return {
         "text": response.content[0].text.strip(),
         "usage": response.usage,
-        "model": model,
+        "model": response.model,
     }
 
 
@@ -254,6 +254,7 @@ async def run_analyst_committee(
     deep_research_tickers: list[str] | None = None,
     config: dict | None = None,
     mandate_breach_ctx: str = "",
+    exposure_context: str = "",
 ) -> dict[str, Any]:
     log.info("Running analyst committee for %d tickers", len(tickers))
 
@@ -457,7 +458,7 @@ async def run_analyst_committee(
         preference_context=preference_context,
         causal_context=enriched_causal_context,
         supplementary_research=enriched_supplementary,
-        mandate_breach_ctx=mandate_breach_ctx,
+        mandate_breach_ctx=(mandate_breach_ctx + "\n\n" + exposure_context).strip() if exposure_context else mandate_breach_ctx,
         citations=citation_registry.format_for_prompt(),
         deep_research_context=deep_research_prompt_section,
     )

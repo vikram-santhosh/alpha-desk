@@ -1,5 +1,5 @@
 import { cn } from "@/lib/cn";
-import { Command, Wifi } from "lucide-react";
+import { Command, Server, Wifi } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { formatDateTime } from "@/lib/format";
@@ -40,25 +40,31 @@ export function AppShell({
           {/* Top bar */}
           <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-(--color-border-subtle) bg-(--color-surface-base)/70 px-4 backdrop-blur-xl sm:px-6">
             <div className="flex items-center gap-3">
-              <GlassButton
-                variant="ghost"
-                leftIcon={<Command className="h-4 w-4" />}
-                onClick={onOpenCommandPalette}
-                className="hidden sm:inline-flex"
-              >
-                Ask AlphaDesk…
-              </GlassButton>
-              <GlassButton
-                variant="icon"
-                onClick={onOpenCommandPalette}
-                className="sm:hidden"
-                aria-label="Open command palette"
-              >
-                <Command className="h-4 w-4" />
-              </GlassButton>
-              <span className="hidden text-xs text-(--color-text-tertiary) md:inline">
-                Press <kbd className="rounded bg-(--color-surface-elevated) px-1 py-0.5 font-mono">⌘K</kbd>
-              </span>
+              {onOpenCommandPalette ? (
+                <>
+                  <GlassButton
+                    variant="ghost"
+                    leftIcon={<Command className="h-4 w-4" />}
+                    onClick={onOpenCommandPalette}
+                    className="hidden sm:inline-flex"
+                  >
+                    Ask AlphaDesk…
+                  </GlassButton>
+                  <GlassButton
+                    variant="icon"
+                    onClick={onOpenCommandPalette}
+                    className="sm:hidden"
+                    aria-label="Open command palette"
+                  >
+                    <Command className="h-4 w-4" />
+                  </GlassButton>
+                </>
+              ) : (
+                <div className="hidden items-center gap-2 rounded-xl border border-(--color-border-subtle) bg-(--color-surface-glass) px-3 py-2 text-sm text-(--color-text-secondary) sm:flex">
+                  <Server className="h-4 w-4 text-(--color-accent-cyan)" />
+                  <span>FastAPI cockpit</span>
+                </div>
+              )}
             </div>
 
             <div className="flex items-center gap-4">

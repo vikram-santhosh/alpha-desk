@@ -9,6 +9,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { DeltaChip } from "@/components/ui/DeltaChip";
 import { Sparkline } from "@/components/ui/Sparkline";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { MockDataBadge } from "@/components/ui/MockDataBadge";
 import { Gauge } from "@/components/ui/Gauge";
 import { AgentTag } from "@/components/ui/AgentTag";
 import { GlassInput } from "@/components/ui/GlassInput";
@@ -377,12 +378,12 @@ export default function DigestView() {
   };
 
   return (
-    <div className="min-h-full p-6 lg:p-8">
+    <div className="min-h-full">
       <motion.div
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.4, ease: [0.25, 0.46, 0.45, 0.94] }}
-        className="mx-auto max-w-5xl"
+        className="mx-auto max-w-7xl"
       >
         <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
           <div>
@@ -390,9 +391,12 @@ export default function DigestView() {
               <Mail className="h-5 w-5" aria-hidden="true" />
               <span className="text-xs font-semibold uppercase tracking-wider">Email Digest</span>
             </div>
-            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-(--color-text-primary)">
-              Digest
-            </h1>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <h1 className="text-2xl font-semibold tracking-tight text-(--color-text-primary)">
+                Digest
+              </h1>
+              <MockDataBadge label="Mixed mock inputs" />
+            </div>
             <p className="mt-1 text-sm text-(--color-text-secondary)">
               Preview and copy your weekly AlphaDesk email digest.
             </p>
