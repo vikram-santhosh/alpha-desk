@@ -90,16 +90,22 @@ def score_tickers(
             elif sig.direction == Direction.BEAR:
                 bear_platforms.append(sig.sensor)
 
-        # Normalize against the platforms that ACTUALLY REPORTED for this ticker —
-        # not the union of all sensors. Otherwise adding more sensors dilutes every
-        # score and corroboration would lower conviction instead of raising it.
-        # raw_score = conviction-per-reporting-platform (0..1) × 10; the breadth gate
-        # below then caps how high a *thinly-corroborated* name may climb.
-        denom = sum(weights.get(s.sensor, DEFAULT_SENSOR_WEIGHT) for s in ticker_signals)
+        # Conviction-weighted normalization. Divide by the confidence-weighted
+        # weight of only the platforms that took a DIRECTIONAL stance. Neutral
+        # "no view" votes add 0 to the numerator and are excluded from the
+        # denominator so they don't dilute genuine consensus. The result is the
+        # average conviction (0..1) among platforms that have a view, scaled to
+        # 0..10; the breadth gate below caps how high a thinly-corroborated name
+        # may climb. Adding sensors can no longer lower a score.
+        denom = sum(
+            weights.get(s.sensor, DEFAULT_SENSOR_WEIGHT) * s.confidence
+            for s in ticker_signals if s.direction != Direction.NEUTRAL
+        )
         if denom <= 0:
-            denom = _FALLBACK_MAX_RAW
-        raw_score = max(0.0, raw / denom * SCORE_SCALE)
-        raw_score = min(raw_score, SCORE_SCALE)
+            raw_score = 0.0   # no directional conviction → not a buy
+        else:
+            raw_score = max(0.0, raw / denom * SCORE_SCALE)
+            raw_score = min(raw_score, SCORE_SCALE)
 
         # Breadth gate
         n_bull = len(bull_platforms)
