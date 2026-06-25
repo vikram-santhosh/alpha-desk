@@ -10,6 +10,13 @@ from src.utils.logger import get_logger
 
 log = get_logger(__name__)
 
+DEFAULT_GATE_BY_ROLE = {
+    "growth": {"min_cagr_pct": 25.0, "min_mos_pct": 15.0},
+    "ballast": {"min_cagr_pct": 10.0, "min_mos_pct": 10.0, "use_total_return": True},
+    "defensive": {"min_cagr_pct": 10.0, "min_mos_pct": 10.0, "use_total_return": True},
+    "moonshot": {"exempt": True},
+}
+
 
 def compute_cagr(current_price: float, target_price: float, years: int = 3) -> float:
     """Compute compound annual growth rate.
@@ -163,8 +170,12 @@ def compute_target_price(
 
 def passes_investment_gate(
     valuation: dict,
-    min_cagr: float = 25.0,
-    min_mos: float = 15.0,
+    min_cagr: float | None = 25.0,
+    min_mos: float | None = 15.0,
+    *,
+    role: str = "growth",
+    gate_by_role: dict | None = None,
+    dividend_yield: float | None = None,
 ) -> tuple[bool, str]:
     """Check if a valuation passes the investment gate.
 
@@ -172,6 +183,9 @@ def passes_investment_gate(
         valuation: Output from compute_target_price.
         min_cagr: Minimum required CAGR percentage.
         min_mos: Minimum required margin of safety percentage.
+        role: Portfolio role/category for role-dependent thresholds.
+        gate_by_role: Optional config table keyed by role.
+        dividend_yield: Optional dividend yield, decimal or percentage.
 
     Returns:
         Tuple of (passes, reason).
@@ -180,22 +194,88 @@ def passes_investment_gate(
         reason = valuation.get("reason", "insufficient data")
         return False, f"Cannot evaluate: {reason}"
 
+    role_key = _normalize_role(role)
+    thresholds = _thresholds_for_role(
+        role_key,
+        gate_by_role=gate_by_role,
+        fallback_min_cagr=min_cagr,
+        fallback_min_mos=min_mos,
+    )
+    if thresholds.get("exempt"):
+        return True, f"PASS: {role_key} role is exempt from the standard valuation gate"
+
+    min_cagr = float(thresholds.get("min_cagr_pct", 25.0))
+    min_mos = float(thresholds.get("min_mos_pct", 15.0))
+
     cagr = valuation.get("implied_cagr", 0)
     mos = valuation.get("margin_of_safety", 0)
+    dividend = _normalize_dividend_yield(
+        dividend_yield if dividend_yield is not None else valuation.get("dividend_yield")
+    )
+    return_measure = cagr
+    return_label = "CAGR"
+    if thresholds.get("use_total_return") or role_key in {"ballast", "defensive", "income"}:
+        return_measure = cagr + dividend
+        return_label = "total return"
 
-    cagr_ok = cagr >= min_cagr
+    cagr_ok = return_measure >= min_cagr
     mos_ok = mos >= min_mos
 
     if cagr_ok and mos_ok:
         return True, (
-            f"PASS: {cagr:.1f}% CAGR (>={min_cagr}%) and "
-            f"{mos:.1f}% margin of safety (>={min_mos}%)"
+            f"PASS ({role_key}): {return_measure:.1f}% {return_label} "
+            f"(>={min_cagr}%) and {mos:.1f}% margin of safety (>={min_mos}%)"
         )
 
     reasons = []
     if not cagr_ok:
-        reasons.append(f"CAGR {cagr:.1f}% < {min_cagr}% minimum")
+        if return_label == "total return" and dividend:
+            reasons.append(
+                f"Total return {return_measure:.1f}% "
+                f"(CAGR {cagr:.1f}% + dividend {dividend:.1f}%) < {min_cagr}% minimum"
+            )
+        else:
+            reasons.append(f"{return_label.title()} {return_measure:.1f}% < {min_cagr}% minimum")
     if not mos_ok:
         reasons.append(f"Margin of safety {mos:.1f}% < {min_mos}% minimum")
 
-    return False, f"FAIL: {'; '.join(reasons)}"
+    return False, f"FAIL ({role_key}): {'; '.join(reasons)}"
+
+
+def _normalize_role(role: str | None) -> str:
+    role_key = (role or "growth").strip().lower()
+    aliases = {
+        "core": "growth",
+        "new_position": "growth",
+        "income": "ballast",
+        "etf": "ballast",
+    }
+    return aliases.get(role_key, role_key)
+
+
+def _thresholds_for_role(
+    role: str,
+    *,
+    gate_by_role: dict | None,
+    fallback_min_cagr: float | None,
+    fallback_min_mos: float | None,
+) -> dict:
+    table = {**DEFAULT_GATE_BY_ROLE, **(gate_by_role or {})}
+    thresholds = dict(table.get(role) or table.get("growth") or DEFAULT_GATE_BY_ROLE["growth"])
+    if fallback_min_cagr is not None and not gate_by_role:
+        thresholds["min_cagr_pct"] = fallback_min_cagr
+    if fallback_min_mos is not None and not gate_by_role:
+        thresholds["min_mos_pct"] = fallback_min_mos
+    return thresholds
+
+
+def _normalize_dividend_yield(value: float | None) -> float:
+    if value is None:
+        return 0.0
+    try:
+        dividend = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if dividend <= 0:
+        return 0.0
+    return dividend * 100 if dividend <= 1 else dividend

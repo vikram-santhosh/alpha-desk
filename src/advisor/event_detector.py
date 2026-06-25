@@ -201,9 +201,8 @@ class EventDetector:
                 agent=AGENT_NAME,
                 input_tokens=usage.input_tokens,
                 output_tokens=usage.output_tokens,
-                model=MODEL,
-                response=response,
-)
+                model=response.model,
+            )
 
             # Extract text
             response_text = ""

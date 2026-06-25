@@ -173,11 +173,11 @@ class _Messages:
         **kwargs,
     ) -> _Message:
         if self._backend == "openrouter":
-            return self._create_openrouter(model, max_tokens, messages, system)
+            return self._create_openrouter(model, max_tokens, messages, system, kwargs)
         elif self._backend == "anthropic":
-            return self._create_anthropic(model, max_tokens, messages, system)
+            return self._create_anthropic(model, max_tokens, messages, system, kwargs)
         elif self._backend == "gemini":
-            return self._create_gemini(model, max_tokens, messages, system)
+            return self._create_gemini(model, max_tokens, messages, system, kwargs)
         else:
             raise APIError(
                 "No API key found. Set OPENROUTER_API_KEY (preferred), "
@@ -187,7 +187,12 @@ class _Messages:
     # ── Anthropic backend ───────────────────────────────────────────────────
 
     def _create_anthropic(
-        self, model: str, max_tokens: int, messages: list[dict], system: str | None
+        self,
+        model: str,
+        max_tokens: int,
+        messages: list[dict],
+        system: str | None,
+        options: dict[str, Any] | None = None,
     ) -> _Message:
         import anthropic as _anthropic
 
@@ -202,6 +207,10 @@ class _Messages:
         }
         if system:
             create_kwargs["system"] = system
+        options = options or {}
+        for key in ("temperature", "top_p", "stop_sequences"):
+            if key in options:
+                create_kwargs[key] = options[key]
 
         try:
             response = client.messages.create(**create_kwargs)
@@ -230,13 +239,18 @@ class _Messages:
                 input_tokens=response.usage.input_tokens,
                 output_tokens=response.usage.output_tokens,
             ),
-            model=resolved_model,
+            model=getattr(response, "model", resolved_model),
         )
 
     # ── OpenRouter backend (OpenAI-compatible, serves Claude) ────────────────
 
     def _create_openrouter(
-        self, model: str, max_tokens: int, messages: list[dict], system: str | None
+        self,
+        model: str,
+        max_tokens: int,
+        messages: list[dict],
+        system: str | None,
+        options: dict[str, Any] | None = None,
     ) -> _Message:
         import requests
 
@@ -251,6 +265,16 @@ class _Messages:
             content = msg["content"] if isinstance(msg["content"], str) else str(msg["content"])
             oai_messages.append({"role": msg["role"], "content": content})
 
+        payload: dict[str, Any] = {
+            "model": resolved_model,
+            "max_tokens": max_tokens,
+            "messages": oai_messages,
+        }
+        options = options or {}
+        for key in ("temperature", "top_p", "stop_sequences"):
+            if key in options:
+                payload[key] = options[key]
+
         try:
             resp = requests.post(
                 "https://openrouter.ai/api/v1/chat/completions",
@@ -259,11 +283,7 @@ class _Messages:
                     "Content-Type": "application/json",
                     "X-Title": "AlphaDesk",
                 },
-                json={
-                    "model": resolved_model,
-                    "max_tokens": max_tokens,
-                    "messages": oai_messages,
-                },
+                json=payload,
                 timeout=120,
             )
         except requests.exceptions.ConnectionError as exc:
@@ -292,7 +312,12 @@ class _Messages:
     # ── Gemini backend ──────────────────────────────────────────────────────
 
     def _create_gemini(
-        self, model: str, max_tokens: int, messages: list[dict], system: str | None
+        self,
+        model: str,
+        max_tokens: int,
+        messages: list[dict],
+        system: str | None,
+        options: dict[str, Any] | None = None,
     ) -> _Message:
         from google import genai
         from google.genai import types
@@ -309,9 +334,15 @@ class _Messages:
             text = msg["content"] if isinstance(msg["content"], str) else str(msg["content"])
             contents.append(types.Content(role=role, parts=[types.Part(text=text)]))
 
-        config = types.GenerateContentConfig(
-            max_output_tokens=max_tokens,
-        )
+        options = options or {}
+        config_kwargs: dict[str, Any] = {"max_output_tokens": max_tokens}
+        for key in ("temperature", "top_p", "top_k"):
+            if key in options:
+                config_kwargs[key] = options[key]
+        response_mime_type = options.get("response_mime_type")
+        if response_mime_type:
+            config_kwargs["response_mime_type"] = response_mime_type
+        config = types.GenerateContentConfig(**config_kwargs)
         if system:
             config.system_instruction = system
 

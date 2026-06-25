@@ -260,11 +260,8 @@ def format_holdings_section(holdings_reports: list[dict[str, Any]]) -> str:
         parts = []
         for h in summarized:
             ticker = h.get("ticker", "???")
-            price = h.get("price")
             change_pct = h.get("change_pct")
-            pct = h.get("position_pct") or 0
             chg_str = f"{change_pct:+.1f}%" if change_pct is not None else "N/A"
-            pct_str = f"{pct:.1f}%" if pct > 0 else ""
             parts.append(f"{ticker} {chg_str}")
         lines.append(f"  {' | '.join(parts)}")
         lines.append("")
@@ -279,7 +276,6 @@ def _format_holding_detail(h: dict, lines: list[str]) -> None:
     shares = h.get("shares") or 0
     entry_price = h.get("entry_price")
     change_pct = h.get("change_pct")
-    cumul = h.get("cumulative_return_pct")
     thesis = h.get("thesis", "")
     thesis_status = h.get("thesis_status", "intact")
     recent_trend = h.get("recent_trend", "")
@@ -341,9 +337,9 @@ def format_strategy_section(strategy: dict[str, Any]) -> str:
 
     actions = strategy.get("actions", [])
     flags = strategy.get("flags", []) or strategy.get("active_flags", [])
-    summary = strategy.get("summary", "")
-
-    if not actions and not flags:
+    sizing = strategy.get("sizing", [])
+    concentration_flags = strategy.get("concentration_flags", [])
+    if not actions and not flags and not sizing and not concentration_flags:
         lines.append("  \U0001f7e2 <b>NO CHANGES — all theses intact</b>")
         return "\n".join(lines)
 
@@ -363,6 +359,37 @@ def format_strategy_section(strategy: dict[str, Any]) -> str:
 
         if reason:
             lines.append(f"     {reason}")
+        action_sizing = action.get("sizing")
+        if action_sizing and action_sizing.get("recommended_weight_pct") is not None:
+            lines.append(f"     Target impact: {action_sizing.get('recommended_weight_pct'):+.1f}%")
+        lines.append("")
+
+    if sizing:
+        lines.append("<b>Suggested sizing:</b>")
+        for item in sizing[:8]:
+            ticker = sanitize_html(item.get("ticker", ""))
+            weight = item.get("recommended_weight_pct", 0)
+            entry = sanitize_html(item.get("entry_strategy", ""))
+            impact = sanitize_html(item.get("portfolio_impact", ""))
+            lines.append(f"  • <b>{ticker}</b>: {weight:.1f}% target")
+            if entry:
+                lines.append(f"     {entry}")
+            if impact:
+                lines.append(f"     {impact}")
+        lines.append("")
+
+    if concentration_flags:
+        lines.append("<b>Concentration trims:</b>")
+        for flag in concentration_flags[:3]:
+            theme = sanitize_html(flag.get("theme", ""))
+            exposure = flag.get("exposure_pct", 0)
+            threshold = flag.get("threshold_pct", 0)
+            lines.append(f"  ⚠ {theme}: {exposure:.1f}% vs {threshold:.0f}% cap")
+            for trim in flag.get("trim_suggestions", [])[:2]:
+                lines.append(
+                    f"     Trim {sanitize_html(trim.get('ticker', ''))}: "
+                    f"{trim.get('trim_pct', 0):.1f}%"
+                )
         lines.append("")
 
     if flags:
@@ -633,7 +660,7 @@ def format_daily_brief(
     # Lead with Opus synthesis ("What changed today")
     if macro_summary and macro_summary != "Synthesis unavailable — review sections below.":
         sections.append("")
-        sections.append(f"\U0001f4ac <b>TODAY&apos;S TAKE</b>")
+        sections.append("\U0001f4ac <b>TODAY&apos;S TAKE</b>")
         sections.append(f"  {sanitize_html(macro_summary)}")
 
     # Key headlines — show what news drove the analysis

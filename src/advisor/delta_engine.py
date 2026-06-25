@@ -202,23 +202,10 @@ def build_snapshot(
     return snapshot
 
 
-def save_today_snapshot(snapshot: dict, *, run_type: str = "morning_full", run_id: str | None = None) -> None:
-    """Save today's snapshot keyed by run_id; mirror to daily_snapshots for delta engine."""
-    from src.advisor.memory import save_run_snapshot
-    from src.shared.cost_tracker import get_current_run_id
-
-    resolved_run_id = run_id or get_current_run_id()
-    if resolved_run_id:
-        save_run_snapshot(
-            run_id=resolved_run_id,
-            run_type=run_type,
-            date_str=date.today().isoformat(),
-            snapshot_data=snapshot,
-            mirror_to_daily=True,
-        )
-    else:
-        from src.advisor.memory import save_daily_snapshot
-        save_daily_snapshot(date.today().isoformat(), snapshot)
+def save_today_snapshot(snapshot: dict) -> None:
+    """Save today's snapshot to the database."""
+    from src.advisor.memory import save_daily_snapshot
+    save_daily_snapshot(date.today().isoformat(), snapshot)
 
 
 # ═══════════════════════════════════════════════════════
@@ -700,7 +687,7 @@ MEDIUM SIGNIFICANCE:
         messages=[{"role": "user", "content": prompt}],
     )
     usage = response.usage
-    record_usage("delta_engine", usage.input_tokens, usage.output_tokens, model="claude-haiku-4-5", response=response)
+    record_usage("delta_engine", usage.input_tokens, usage.output_tokens, model=response.model)
     return response.content[0].text.strip()
 
 

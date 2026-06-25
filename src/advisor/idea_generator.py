@@ -125,9 +125,8 @@ def generate_novel_ideas(
         agent="idea_generator",
         input_tokens=usage.input_tokens,
         output_tokens=usage.output_tokens,
-        model=MODEL,
-        response=response,
-)
+        model=response.model,
+    )
 
     raw_text = response.content[0].text.strip()
     log.info("Raw idea response: %s", raw_text[:200])

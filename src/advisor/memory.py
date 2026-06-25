@@ -395,16 +395,19 @@ def get_recent_snapshots(ticker: str, days: int = 7) -> list[dict[str, Any]]:
 # ═══════════════════════════════════════════════════════
 
 def seed_macro_theses(theses_config: list[dict[str, Any]]) -> None:
-    """Seed macro theses from config. Only inserts new titles."""
+    """Seed macro theses from config and refresh editable seed text."""
     conn = _get_db()
     now = datetime.now().isoformat()
     today = date.today().isoformat()
     for t in theses_config:
         try:
             conn.execute("""
-                INSERT OR IGNORE INTO macro_theses
+                INSERT INTO macro_theses
                 (title, description, status, created_date, last_updated, affected_tickers, evidence_log)
                 VALUES (?, ?, 'intact', ?, ?, ?, '[]')
+                ON CONFLICT(title) DO UPDATE SET
+                    description = excluded.description,
+                    affected_tickers = excluded.affected_tickers
             """, (t["title"], t.get("description", ""),
                   today, now, json.dumps(t.get("affected_tickers", []))))
         except Exception:

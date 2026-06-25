@@ -248,7 +248,7 @@ def _analyze_batch(
 
     # Track costs
     usage = response.usage
-    record_usage(AGENT_NAME, usage.input_tokens, usage.output_tokens, model=MODEL, response=response)
+    record_usage(AGENT_NAME, usage.input_tokens, usage.output_tokens, model=response.model)
 
     response_text = ""
     for block in response.content:

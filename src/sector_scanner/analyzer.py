@@ -122,7 +122,7 @@ def analyze_sector_articles(
                 system=SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": prompt}],
             )
-            record_usage(AGENT_NAME, response.usage.input_tokens, response.usage.output_tokens, model=MODEL, response=response)
+            record_usage(AGENT_NAME, response.usage.input_tokens, response.usage.output_tokens, model=response.model)
 
             text = response.content[0].text if response.content else ""
             results = _parse_response(text, len(batch))

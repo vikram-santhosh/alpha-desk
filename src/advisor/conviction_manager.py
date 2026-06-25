@@ -11,12 +11,11 @@ from datetime import date
 from src.shared import gemini_compat as anthropic
 
 from src.advisor import memory
-from src.advisor.valuation_engine import compute_target_price, passes_investment_gate
+from src.advisor.valuation_engine import passes_investment_gate
 from src.shared.cost_tracker import check_budget, record_usage
 from src.shared.schemas import (
     EvidenceItem,
     compute_recency_decay,
-    compute_evidence_quality_score,
     BASE_WEIGHTS,
 )
 from src.utils.logger import get_logger
@@ -25,6 +24,13 @@ log = get_logger(__name__)
 
 _THESIS_AGENT = "advisor_conviction"
 _MODEL = "claude-opus-4-6"
+DEFAULT_CONVICTION_WEIGHTS = {
+    "company_guidance": 0.30,
+    "fundamentals": 0.28,
+    "smart_money": 0.22,
+    "analyst_consensus": 0.12,
+    "crowd_sentiment": 0.08,
+}
 
 
 def evidence_test(
@@ -34,6 +40,9 @@ def evidence_test(
     smart_money_data: dict | None,
     fundamentals: dict | None,
     valuation: dict | None,
+    *,
+    gate_config: dict | None = None,
+    role: str = "growth",
 ) -> tuple[int, list[str]]:
     """Test a ticker against 5 evidence sources.
 
@@ -159,7 +168,14 @@ def evidence_test(
 
     # 5. Valuation (CAGR gate)
     if valuation and not valuation.get("insufficient_data"):
-        passes, gate_reason = passes_investment_gate(valuation)
+        gate_config = gate_config or {}
+        passes, gate_reason = passes_investment_gate(
+            valuation,
+            min_cagr=gate_config.get("min_cagr_pct", 25),
+            min_mos=gate_config.get("min_margin_of_safety_pct", 15),
+            role=role,
+            gate_by_role=gate_config.get("gate_by_role", {}),
+        )
         if passes:
             sources_passing += 1
             descriptions.append(
@@ -199,7 +215,7 @@ def build_evidence_items(
         if sentiment == "raised" and tone == "confident":
             items.append(EvidenceItem(
                 source="earnings_transcript", date=today,
-                claim=f"Guidance raised, tone confident",
+                claim="Guidance raised, tone confident",
                 base_weight=BASE_WEIGHTS["earnings_guidance_raised_confident"],
                 recency_days=7,
             ))
@@ -403,6 +419,174 @@ def _determine_conviction(sources_passing: int) -> str:
         return "low"
 
 
+def _determine_weighted_conviction(score: float) -> str:
+    """Map weighted 0-1 conviction score to conviction level."""
+    if score >= 0.70:
+        return "high"
+    if score >= 0.45:
+        return "medium"
+    return "low"
+
+
+def _get_conviction_weights(config: dict | None) -> dict[str, float]:
+    raw = (config or {}).get("conviction_weights") or {}
+    weights = {
+        key: float(raw.get(key, default))
+        for key, default in DEFAULT_CONVICTION_WEIGHTS.items()
+    }
+    total = sum(weights.values())
+    if total <= 0:
+        return dict(DEFAULT_CONVICTION_WEIGHTS)
+    return {key: value / total for key, value in weights.items()}
+
+
+def score_weighted_conviction(
+    *,
+    guidance_data: dict | None,
+    crowd_data: dict | None,
+    smart_money_data: dict | None,
+    fundamentals: dict | None,
+    valuation: dict | None,
+    weights: dict[str, float] | None = None,
+) -> dict:
+    """Score conviction dimensions using the configured hierarchy weights."""
+    normalized_weights = weights or DEFAULT_CONVICTION_WEIGHTS
+    dimensions = {
+        "company_guidance": _score_company_guidance(guidance_data),
+        "fundamentals": _score_fundamentals(fundamentals, valuation),
+        "smart_money": _score_smart_money(smart_money_data),
+        "analyst_consensus": _score_analyst_consensus(fundamentals),
+        "crowd_sentiment": _score_crowd(crowd_data),
+    }
+    score = sum(normalized_weights.get(key, 0.0) * value for key, value in dimensions.items())
+    return {
+        "score": round(max(0.0, min(1.0, score)), 4),
+        "dimension_scores": dimensions,
+    }
+
+
+def _score_company_guidance(guidance_data: dict | None) -> float:
+    if not guidance_data:
+        return 0.0
+    sentiment = guidance_data.get("guidance_sentiment", "")
+    tone = guidance_data.get("management_tone", "")
+    if sentiment == "raised" and tone == "confident":
+        return 1.0
+    if sentiment == "raised" or tone == "confident":
+        return 0.80
+    if sentiment == "maintained" and tone != "defensive":
+        return 0.55
+    if sentiment == "lowered" or tone == "defensive":
+        return 0.0
+    return 0.20
+
+
+def _score_fundamentals(fundamentals: dict | None, valuation: dict | None) -> float:
+    if not fundamentals:
+        return 0.0
+    rev_growth = fundamentals.get("revenue_growth")
+    net_margin = fundamentals.get("net_margin")
+    gross_margin = fundamentals.get("gross_margin")
+    score = 0.0
+    if isinstance(rev_growth, (int, float)):
+        if rev_growth > 0.30:
+            score += 0.40
+        elif rev_growth > 0.15:
+            score += 0.30
+        elif rev_growth > 0:
+            score += 0.15
+    if isinstance(net_margin, (int, float)):
+        if net_margin > 0.15:
+            score += 0.30
+        elif net_margin > 0:
+            score += 0.15
+    if isinstance(gross_margin, (int, float)):
+        if gross_margin > 0.50:
+            score += 0.20
+        elif gross_margin > 0.30:
+            score += 0.10
+    if valuation and not valuation.get("insufficient_data"):
+        cagr = valuation.get("implied_cagr")
+        mos = valuation.get("margin_of_safety")
+        if isinstance(cagr, (int, float)) and cagr >= 25:
+            score += 0.05
+        if isinstance(mos, (int, float)) and mos >= 15:
+            score += 0.05
+    return max(0.0, min(1.0, score))
+
+
+def _score_smart_money(smart_money_data: dict | None) -> float:
+    if not smart_money_data:
+        return 0.0
+    si_count = smart_money_data.get("superinvestor_count", 0) or 0
+    insider_buying = bool(smart_money_data.get("insider_buying", False))
+    if si_count >= 3 and insider_buying:
+        return 1.0
+    if si_count >= 3:
+        return 0.90
+    if si_count >= 2 or insider_buying:
+        return 0.75
+    if si_count >= 1:
+        return 0.50
+    return 0.0
+
+
+def _score_analyst_consensus(fundamentals: dict | None) -> float:
+    if not fundamentals:
+        return 0.0
+    rating = str(
+        fundamentals.get("analyst_rating")
+        or fundamentals.get("recommendation_key")
+        or fundamentals.get("recommendation")
+        or ""
+    ).lower()
+    if "strong_buy" in rating or "strong buy" in rating:
+        return 1.0
+    if "buy" in rating or "outperform" in rating:
+        return 0.75
+    if "hold" in rating or "neutral" in rating:
+        return 0.35
+
+    current_price = fundamentals.get("current_price") or fundamentals.get("price")
+    target_price = fundamentals.get("target_mean_price") or fundamentals.get("analyst_target_price")
+    if isinstance(current_price, (int, float)) and isinstance(target_price, (int, float)) and current_price > 0:
+        upside = (target_price - current_price) / current_price
+        if upside > 0.25:
+            return 0.85
+        if upside > 0.10:
+            return 0.60
+        if upside > 0:
+            return 0.35
+    return 0.0
+
+
+def _score_crowd(crowd_data: dict | None) -> float:
+    if not crowd_data:
+        return 0.0
+    score = 0.0
+    reddit_sentiment = crowd_data.get("reddit_sentiment")
+    mentions = crowd_data.get("mentions", 0) or 0
+    if isinstance(reddit_sentiment, (int, float)):
+        if reddit_sentiment > 0.70 and mentions > 10:
+            score = max(score, 1.0)
+        elif reddit_sentiment > 0.50:
+            score = max(score, 0.70)
+        elif reddit_sentiment > 0.30:
+            score = max(score, 0.45)
+        elif reddit_sentiment < -0.30:
+            score = max(score, 0.0)
+
+    pred_prob = crowd_data.get("prediction_market_probability")
+    if isinstance(pred_prob, (int, float)):
+        if pred_prob > 0.70:
+            score = max(score, 0.85)
+        elif pred_prob > 0.60:
+            score = max(score, 0.60)
+        elif pred_prob < 0.30:
+            score = min(score, 0.20)
+    return max(0.0, min(1.0, score))
+
+
 def update_conviction_list(
     candidates: list[dict],
     superinvestor_data: dict,
@@ -431,6 +615,8 @@ def update_conviction_list(
     min_evidence = strategy.get("min_evidence_sources", 2)
     output_config = config.get("output", {})
     max_entries = output_config.get("max_conviction_list", 5)
+    conviction_weights = _get_conviction_weights(config)
+    min_weighted_score = strategy.get("min_weighted_conviction_score", min_evidence / 5)
 
     current_list = memory.get_conviction_list(active_only=True)
     current_tickers = {entry["ticker"] for entry in current_list}
@@ -458,17 +644,33 @@ def update_conviction_list(
         crowd = _build_crowd_data(ticker, candidates, prediction_by_ticker)
 
         sources_passing, descriptions = evidence_test(
-            ticker, earn_data, crowd, si_data, fund_data, val_data,
+            ticker,
+            earn_data,
+            crowd,
+            si_data,
+            fund_data,
+            val_data,
+            gate_config=strategy,
+            role=entry.get("role") or entry.get("category") or "growth",
         )
+        weighted = score_weighted_conviction(
+            guidance_data=earn_data,
+            crowd_data=crowd,
+            smart_money_data=si_data,
+            fundamentals=fund_data,
+            valuation=val_data,
+            weights=conviction_weights,
+        )
+        weighted_score = weighted["score"]
 
         old_conviction = entry.get("conviction", "medium")
-        new_conviction = _determine_conviction(sources_passing)
+        new_conviction = _determine_weighted_conviction(weighted_score)
 
         # If evidence has weakened below threshold, consider removal
-        if sources_passing < 2:
-            memory.remove_conviction(ticker, f"Evidence weakened to {sources_passing}/5")
-            removed.append({"ticker": ticker, "reason": f"Evidence {sources_passing}/5"})
-            log.info("Removed %s from conviction list: evidence %d/5", ticker, sources_passing)
+        if weighted_score < min_weighted_score:
+            memory.remove_conviction(ticker, f"Weighted evidence weakened to {weighted_score:.2f}")
+            removed.append({"ticker": ticker, "reason": f"Weighted evidence {weighted_score:.2f}"})
+            log.info("Removed %s from conviction list: weighted evidence %.2f", ticker, weighted_score)
             continue
 
         # Update conviction level if changed
@@ -496,10 +698,27 @@ def update_conviction_list(
 
     # --- Phase 2: Evaluate new candidates ---
     if slots_available > 0 and candidates:
-        # Sort candidates by composite score descending
+        def _candidate_weighted_sort_score(candidate: dict) -> tuple[float, float]:
+            ticker = candidate.get("ticker", "")
+            si_data = superinvestor_data.get(ticker)
+            earn_data = earnings_data.get("per_ticker", {}).get(ticker) if isinstance(earnings_data, dict) else None
+            fund_data = _fundamentals_for_candidate(candidate)
+            val_data = valuation_data.get(ticker)
+            crowd = _build_crowd_data(ticker, [candidate], prediction_by_ticker)
+            weighted = score_weighted_conviction(
+                guidance_data=earn_data,
+                crowd_data=crowd,
+                smart_money_data=si_data,
+                fundamentals=fund_data,
+                valuation=val_data,
+                weights=conviction_weights,
+            )
+            return weighted["score"], candidate.get("scores", {}).get("composite", 0)
+
+        # Sort candidates by weighted conviction first, screener score second.
         sorted_candidates = sorted(
             candidates,
-            key=lambda c: c.get("scores", {}).get("composite", 0),
+            key=_candidate_weighted_sort_score,
             reverse=True,
         )
 
@@ -519,29 +738,44 @@ def update_conviction_list(
             # Gather evidence data
             si_data = superinvestor_data.get(ticker)
             earn_data = earnings_data.get("per_ticker", {}).get(ticker) if isinstance(earnings_data, dict) else None
-            fund_data = candidate.get("fundamentals_summary") or {}
-            # Merge full fundamentals if available in candidate signal_data
-            if candidate.get("signal_data"):
-                for k, v in candidate["signal_data"].items():
-                    if k not in fund_data:
-                        fund_data[k] = v
+            fund_data = _fundamentals_for_candidate(candidate)
             val_data = valuation_data.get(ticker)
             crowd = _build_crowd_data(ticker, [candidate], prediction_by_ticker)
 
             sources_passing, descriptions = evidence_test(
-                ticker, earn_data, crowd, si_data, fund_data, val_data,
+                ticker,
+                earn_data,
+                crowd,
+                si_data,
+                fund_data,
+                val_data,
+                gate_config=strategy,
+                role=candidate.get("role") or candidate.get("category") or "growth",
             )
+            weighted = score_weighted_conviction(
+                guidance_data=earn_data,
+                crowd_data=crowd,
+                smart_money_data=si_data,
+                fundamentals=fund_data,
+                valuation=val_data,
+                weights=conviction_weights,
+            )
+            weighted_score = weighted["score"]
 
             # Relaxed threshold for discovery candidates (new names)
             min_evidence_discovery = max(min_evidence - 1, 2)
-            if sources_passing < min_evidence_discovery:
+            min_weighted_discovery = strategy.get(
+                "min_weighted_conviction_score_discovery",
+                min_evidence_discovery / 5,
+            )
+            if weighted_score < min_weighted_discovery:
                 log.debug(
-                    "Skipping %s: only %d/%d evidence sources (discovery threshold)",
-                    ticker, sources_passing, min_evidence_discovery,
+                    "Skipping %s: weighted evidence %.2f below %.2f",
+                    ticker, weighted_score, min_weighted_discovery,
                 )
                 continue
 
-            conviction = _determine_conviction(sources_passing)
+            conviction = _determine_weighted_conviction(weighted_score)
             thesis = _generate_thesis_via_opus(
                 ticker, candidate, descriptions, valuation=valuation_data.get(ticker),
             )
@@ -570,11 +804,13 @@ def update_conviction_list(
                 "ticker": ticker,
                 "conviction": conviction,
                 "evidence_sources": sources_passing,
+                "weighted_score": weighted_score,
+                "dimension_scores": weighted["dimension_scores"],
             })
             current_tickers.add(ticker)
             slots_available -= 1
-            log.info("Added %s to conviction list: conviction=%s, evidence=%d/5",
-                     ticker, conviction, sources_passing)
+            log.info("Added %s to conviction list: conviction=%s, weighted=%.2f",
+                     ticker, conviction, weighted_score)
 
     # Increment weeks for all active entries (done weekly in orchestrator,
     # but safe to call — memory layer handles idempotency)
@@ -608,6 +844,15 @@ def _extract_fundamentals_from_candidates(
         if c.get("ticker") == ticker:
             return c.get("fundamentals_summary") or {}
     return None
+
+
+def _fundamentals_for_candidate(candidate: dict) -> dict:
+    fund_data = dict(candidate.get("fundamentals_summary") or {})
+    if candidate.get("signal_data"):
+        for key, value in candidate["signal_data"].items():
+            if key not in fund_data:
+                fund_data[key] = value
+    return fund_data
 
 
 def _build_crowd_data(
@@ -730,7 +975,7 @@ RULES:
             log.warning("Empty Opus response for %s", ticker)
             return _build_thesis_fallback(ticker, candidate, descriptions)
         usage = response.usage
-        record_usage(_THESIS_AGENT, usage.input_tokens, usage.output_tokens, model=_MODEL, response=response)
+        record_usage(_THESIS_AGENT, usage.input_tokens, usage.output_tokens, model=response.model)
         thesis = response.content[0].text.strip()
         log.info("Opus thesis for %s (%d in, %d out)", ticker, usage.input_tokens, usage.output_tokens)
         return thesis

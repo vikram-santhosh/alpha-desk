@@ -7,7 +7,6 @@ and returns the 5-section daily brief.
 from __future__ import annotations
 
 import asyncio
-import functools
 import time
 from datetime import date
 from pathlib import Path
@@ -17,14 +16,17 @@ from src.shared import gemini_compat as anthropic
 
 from src.advisor.run_profile import RunProfile
 from src.shared.agent_bus import consume, get_latest_signal_id
-from src.shared.config_loader import load_config
+from src.shared.config_loader import (
+    load_config,
+    load_unified_holdings,
+    reconcile_holdings,
+)
 from src.shared.cost_tracker import (
     check_budget,
     get_daily_cost,
     get_run_cost,
     record_usage,
 )
-from src.shared.security import sanitize_ticker
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -34,15 +36,14 @@ MODEL = "claude-opus-4-6"
 
 
 def _load_advisor_config() -> dict[str, Any]:
-    """Load advisor config, with defaults for missing keys.
-
-    If private/portfolio.yaml exists, merges holdings (and any other keys)
-    from there — keeping private data out of the committed config.
-    """
+    """Load advisor config with current holdings reconciled from portfolio config."""
     try:
-        config = load_config("advisor")
+        advisor_metadata_config = load_config("advisor")
+        config = dict(advisor_metadata_config)
+        config["holdings"] = load_unified_holdings(advisor_config=advisor_metadata_config)
     except Exception:
         log.exception("Failed to load advisor config — using minimal defaults")
+        advisor_metadata_config = {}
         config = {"holdings": [], "macro_theses": [], "superinvestors": [],
                   "strategy": {}, "prediction_markets": {}, "screening": {},
                   "output": {}, "conviction_weights": {}}
@@ -55,8 +56,14 @@ def _load_advisor_config() -> dict[str, Any]:
             with open(private_path) as f:
                 private = yaml.safe_load(f) or {}
             if "holdings" in private:
-                config["holdings"] = private["holdings"]
-                log.info("Loaded %d holdings from private/portfolio.yaml", len(private["holdings"]))
+                config["holdings"] = reconcile_holdings(
+                    {"holdings": private["holdings"]},
+                    advisor_metadata_config,
+                )
+                log.info(
+                    "Loaded %d private portfolio holdings with advisor metadata",
+                    len(private["holdings"]),
+                )
             # Merge any other private overrides
             for key in ("macro_theses", "superinvestors"):
                 if key in private:
@@ -169,7 +176,7 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
         log.info("Skipping step %s (not in run_steps for %s)", "load_memory", run_profile.run_type)
         memory = {"holdings": [], "macro_theses": [], "conviction_list": [], "moonshot_list": []}
     else:
-        # Seed holdings and macro theses from config (only inserts new ones)
+        # Seed holdings and refresh editable macro thesis seed text from config.
         seed_holdings(config.get("holdings", []))
         seed_macro_theses(config.get("macro_theses", []))
 
@@ -541,7 +548,16 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
         log.exception("Macro scanner failed — continuing with existing theses")
 
     try:
-        updated_theses = update_macro_theses(macro_data, news_signals)
+        macro_easing_prob_threshold = config.get("strategy", {}).get(
+            "macro_easing_prob_threshold",
+            0.30,
+        )
+        updated_theses = update_macro_theses(
+            macro_data,
+            news_signals,
+            prediction_data,
+            macro_easing_prob_threshold=macro_easing_prob_threshold,
+        )
         # Enrich theses with prediction market context
         if prediction_shifts:
             for thesis in updated_theses:
@@ -559,12 +575,11 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
         updated_theses = memory["macro_theses"]
 
     # ── Step 5: Monitor holdings ───────────────────────────────────────
-    from src.advisor.holdings_monitor import monitor_holdings, build_holdings_narrative
+    from src.advisor.holdings_monitor import monitor_holdings
 
     if "holdings_monitor" not in run_profile.run_steps:
         log.info("Skipping step %s (not in run_steps for %s)", "holdings_monitor", run_profile.run_type)
         holdings_reports = []
-        holdings_narrative = ""
     else:
         log.info("Step 5: Monitoring holdings")
         try:
@@ -574,34 +589,10 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
                 fundamentals=fundamentals,
                 signals=agent_bus_signals,
                 news_signals=news_signals,
-                macro_data=macro_data,
-                macro_theses=updated_theses,
             )
         except Exception:
             log.exception("Failed to monitor holdings")
             holdings_reports = []
-
-        holdings_narrative = build_holdings_narrative(holdings_reports)
-
-    # ── Step 5a: Exposure gap analysis ──────────────────────────────────
-    exposure_result: dict[str, Any] = {}
-    portfolio_safety_score: int | None = None
-    if holdings_reports:
-        try:
-            from src.advisor.exposure_analyzer import analyze_exposure_gaps
-            exposure_result = analyze_exposure_gaps(
-                holdings_reports=holdings_reports,
-                macro_data=macro_data,
-            )
-            portfolio_safety_score = exposure_result.get("safety_score")
-            log.info(
-                "Exposure analysis: safety=%s, %d gaps, %d overweight",
-                portfolio_safety_score,
-                len(exposure_result.get("gaps", [])),
-                len(exposure_result.get("overweights", [])),
-            )
-        except Exception:
-            log.exception("Exposure analysis failed — continuing without it")
 
     # ── Step 5b: Delta Engine — snapshot + compute changes ─────────────
     from src.advisor.delta_engine import (
@@ -649,11 +640,7 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
                 save_snapshot_task = asyncio.create_task(
                     _run_blocking_step(
                         "Save daily snapshot",
-                        functools.partial(
-                            save_today_snapshot,
-                            run_type=run_profile.run_type,
-                            run_id=run_profile.run_id,
-                        ),
+                        save_today_snapshot,
                         today_snapshot,
                         default=None,
                     )
@@ -715,6 +702,13 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
                 if not val_result.get("insufficient_data"):
                     val_result["pe_trailing"] = fund.get("pe_trailing")
                     val_result["pe_forward"] = fund.get("pe_forward")
+                    dividend_yield = (
+                        fund.get("dividend_yield")
+                        or fund.get("dividendYield")
+                        or fund.get("yield")
+                    )
+                    if dividend_yield is not None:
+                        val_result["dividend_yield"] = dividend_yield
                 valuation_data[ticker] = val_result
             except Exception:
                 log.debug("Failed to compute valuation for %s", ticker)
@@ -787,9 +781,10 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
                     cand_fundamentals,
                     holding_tickers,
                     fundamentals,
-                    config.get("conviction_weights", {
+                    config.get("screening_weights", {
                         "technical": 0.30, "fundamental": 0.30,
                         "sentiment": 0.20, "diversification": 0.20,
+                        "novelty": 0.0,
                     }),
                     default=discovery_candidates[:20],
                 )
@@ -798,7 +793,15 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
                     t = cand["ticker"]
                     try:
                         cand_fund = cand_fundamentals.get(t, {})
-                        valuation_data[t] = compute_target_price(t, cand_fund)
+                        cand_val = compute_target_price(t, cand_fund)
+                        dividend_yield = (
+                            cand_fund.get("dividend_yield")
+                            or cand_fund.get("dividendYield")
+                            or cand_fund.get("yield")
+                        )
+                        if dividend_yield is not None and not cand_val.get("insufficient_data"):
+                            cand_val["dividend_yield"] = dividend_yield
+                        valuation_data[t] = cand_val
                     except Exception:
                         pass
     
@@ -850,25 +853,10 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
             from src.advisor.memory import record_recommendation
             from src.advisor.conviction_manager import build_evidence_items
             from src.shared.schemas import compute_evidence_quality_score
-            # Validate tickers before recording recommendations.
-            # The conviction manager only adds candidates from the discovery universe,
-            # but this guard catches any malformed ticker that slips through.
-            valid_tickers = set(all_tickers) | {c.get("ticker") for c in discovery_candidates if c.get("ticker")}
             for added_entry in conviction_result.get("added", []):
                 t = added_entry.get("ticker", "")
                 if not t:
                     continue
-                try:
-                    clean = sanitize_ticker(t)
-                except ValueError as exc:
-                    log.warning("Skipping invalid ticker from conviction add: %s (%s)", t, exc)
-                    continue
-                if clean not in valid_tickers:
-                    log.warning(
-                        "Quarantining conviction recommendation: %s not in candidate universe", clean
-                    )
-                    continue
-                t = clean  # use sanitized ticker from here on
                 # Build evidence items for this ticker
                 si_data = superinvestor_data.get(t)
                 earn_data = earnings_data.get("per_ticker", {}).get(t) if isinstance(earnings_data, dict) else None
@@ -887,12 +875,13 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
                 # Fetch actual thesis text from memory for skeptic review
                 thesis_text = ""
                 try:
-                    for ce in memory.get("conviction_list", []):
+                    conv_entries = memory.get_conviction_list(active_only=True)
+                    for ce in conv_entries:
                         if ce.get("ticker") == t:
                             thesis_text = ce.get("thesis", "")
                             break
                 except Exception:
-                    log.debug("conviction thesis lookup failed for %s", t, exc_info=True)
+                    pass
     
                 # Run skeptic challenge on new conviction additions
                 rec_dict = {
@@ -939,18 +928,11 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
                 prediction_data=prediction_data,
                 earnings_data=earnings_data if isinstance(earnings_data, dict) else {},
                 valuation_data=valuation_data,
-                portfolio_safety_score=portfolio_safety_score,
             )
         except Exception:
             log.exception("Failed to update moonshot list")
             moonshot_result = {"current_list": memory["moonshot_list"], "added": [], "removed": []}
     
-        try:
-            from src.advisor.memory import increment_moonshot_months
-            increment_moonshot_months(run_id=run_profile.run_id)
-        except Exception:
-            log.exception("Failed to increment moonshot months")
-
         # Generate novel ideas (weekly, runs on Monday or if never run)
         try:
             from src.advisor.idea_generator import should_run_ideas, generate_novel_ideas
@@ -1005,7 +987,6 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
             t = h.get("ticker", "")
             if not t:
                 continue
-            chg = h.get("change_pct") or 0
             thesis = h.get("thesis", "")
             thesis_status = h.get("thesis_status", "intact")
             # Determine predicted direction from strategy actions
@@ -1059,7 +1040,20 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
     # Build context strings for the committee editor
     _macro_ctx_parts = []
     for t in updated_theses:
-        _macro_ctx_parts.append(f"- {t.get('title')}: {t.get('status', 'intact')}")
+        status = t.get("status") or t.get("current_status", "intact")
+        line = f"- {t.get('title')}: {status}"
+        prediction_context = t.get("prediction_context", [])
+        if prediction_context:
+            prediction_bits = []
+            for market in prediction_context[:2]:
+                title = market.get("title", "prediction market")
+                probability = market.get("probability")
+                if isinstance(probability, (int, float)):
+                    prediction_bits.append(f"{title} {probability * 100:.0f}%")
+                else:
+                    prediction_bits.append(title)
+            line += " | prediction markets: " + "; ".join(prediction_bits)
+        _macro_ctx_parts.append(line)
     _macro_ctx_str = "\n".join(_macro_ctx_parts) if _macro_ctx_parts else "No macro theses."
 
     _holdings_ctx_str = "\n".join(
@@ -1094,6 +1088,7 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
         "holdings_reports": holdings_reports,
         "valuation_data": valuation_data,
         "macro_data": macro_data,
+        "prediction_markets": prediction_data,
         "strategy": strategy,
         "news_articles": news_desk_result.get("top_articles", []),
         "signals": agent_bus_signals,
@@ -1129,7 +1124,7 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
         _reddit_parts.append(f"Top themes: {'; '.join(_reddit_themes[:5])}")
     _reddit_ticker_lines: list[str] = []
     for sig in agent_bus_signals:
-        if sig.get("source_agent") == "street_ear":
+        if sig.get("agent_name") == "street_ear":
             payload = sig.get("payload", {})
             t = payload.get("ticker") or sig.get("ticker", "")
             sentiment = payload.get("sentiment_score", payload.get("sentiment", ""))
@@ -1151,7 +1146,7 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
     # Substack: expert newsletter signals from agent bus + formatted output
     _substack_lines: list[str] = []
     for sig in agent_bus_signals:
-        if sig.get("source_agent") == "substack_ear":
+        if sig.get("agent_name") == "substack_ear":
             payload = sig.get("payload", {})
             title = payload.get("title") or payload.get("narrative_title", "")
             summary = payload.get("summary") or payload.get("thesis_summary", "")
@@ -1195,15 +1190,6 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
                 if ct and ct not in _deep_tickers:
                     _deep_tickers.append(ct)
     
-            # Build exposure context for committee
-            _exposure_ctx_str = ""
-            if exposure_result:
-                try:
-                    from src.advisor.exposure_analyzer import format_exposure_for_prompt
-                    _exposure_ctx_str = format_exposure_for_prompt(exposure_result)
-                except Exception:
-                    pass
-
             committee_result = await run_analyst_committee(
                 tickers=all_tickers[:12],
                 data_context=_data_context,
@@ -1224,7 +1210,7 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
                 deep_research_tickers=_deep_tickers,
                 config=config,
                 mandate_breach_ctx=_mandate_breach_ctx,
-                exposure_context=_exposure_ctx_str,
+                run_type=run_profile.run_type,
             )
     
             brief_text = committee_result.get("formatted_brief", "")
@@ -1293,34 +1279,6 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
             if committee_result is not None:
                 synthesis["committee_result"] = committee_result
 
-    # ── Step 7b: Coherence audit ──────────────────────────────────────
-    coherence_result: dict[str, Any] = {}
-    if synthesis.get("formatted_brief") and portfolio_safety_score is not None:
-        try:
-            from src.advisor.coherence_auditor import audit_coherence, format_coherence_warnings
-            thesis_status_map = {
-                h.get("ticker", ""): h.get("thesis_status", "intact")
-                for h in holdings_reports
-            }
-            coherence_result = audit_coherence(
-                brief_text=synthesis["formatted_brief"],
-                safety_score=portfolio_safety_score,
-                exposure_gaps=exposure_result.get("gaps", []),
-                strategy_actions=strategy.get("actions", []),
-                thesis_statuses=thesis_status_map,
-                macro_theses=updated_theses,
-            )
-            coherence_warnings = format_coherence_warnings(coherence_result)
-            if coherence_warnings:
-                synthesis["formatted_brief"] = coherence_warnings + "\n\n" + synthesis["formatted_brief"]
-                log.info(
-                    "Coherence audit: score=%s, %d contradictions prepended",
-                    coherence_result.get("coherence_score"),
-                    len(coherence_result.get("contradictions", [])),
-                )
-        except Exception:
-            log.exception("Coherence audit failed — proceeding without it")
-
     # ── Step 8: Save memory state ──────────────────────────────────────
     if run_profile.run_type == "morning_full":
         try:
@@ -1346,7 +1304,6 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
         format_thesis_exposure_section,
         format_conviction_section,
         format_moonshot_section,
-        format_exposure_gaps_section,
     )
 
     daily_cost = get_daily_cost()
@@ -1401,11 +1358,6 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
             # Catalysts
             if catalyst_formatted:
                 sections.extend(["", SEPARATOR, "", catalyst_formatted])
-
-            # Exposure gap analysis (safety score + sector gaps)
-            exposure_gaps_section = format_exposure_gaps_section(exposure_result)
-            if exposure_gaps_section:
-                sections.extend(["", SEPARATOR, "", exposure_gaps_section])
 
             # Thesis exposure
             if thesis_exposure_section:
@@ -1508,16 +1460,24 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
             except Exception:
                 log.debug("Could not fetch scorecard for verbose report")
     
-            # Build sector scanner signals: use current run signals only
-            # (previously merged with stale bus signals, causing duplicate/stale data)
+            # Build sector scanner signals: current run + earlier signals from bus
             _all_sector_signals: list[dict] = list(sector_scanner_result.get("signals", []))
+            _seen_sector_ids = {s.get("id") for s in _all_sector_signals}
+            for _bus_sig in agent_bus_signals:
+                if _bus_sig.get("source_agent") == "sector_scanner" and _bus_sig.get("id") not in _seen_sector_ids:
+                    _payload = _bus_sig.get("payload", {})
+                    _all_sector_signals.append({
+                        "id": _bus_sig.get("id"),
+                        "type": _bus_sig.get("signal_type", ""),
+                        **_payload,
+                    })
 
             # Build structured signal lists from agent bus for Signal Intelligence section
             _reddit_sigs: list[dict] = []
             _substack_sigs: list[dict] = []
             _youtube_sigs: list[dict] = []
             for _bus_sig in agent_bus_signals:
-                _agent = _bus_sig.get("source_agent", "")
+                _agent = _bus_sig.get("agent_name", "")
                 _payload = _bus_sig.get("payload", {})
                 if _agent == "street_ear":
                     _t = _payload.get("ticker") or _bus_sig.get("ticker", "")
@@ -1629,16 +1589,6 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
     except Exception:
         log.exception("Failed to persist run snapshot")
 
-    # ── Cleanup: mark signals consumed + clear stale signals ─────────
-    if run_profile.run_type == "morning_full":
-        try:
-            from src.shared.agent_bus import clear_old_signals
-            cleared = clear_old_signals(days=1)
-            if cleared:
-                log.info("Cleaned %d stale signals (>1 day old)", cleared)
-        except Exception:
-            log.debug("Signal cleanup failed", exc_info=True)
-
     log.info("Advisor pipeline completed in %.1fs", total_time)
 
     return {
@@ -1670,8 +1620,6 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
             "delta_report": delta_report.to_dict() if delta_report else None,
             "catalysts": catalyst_data,
             "committee": synthesis.get("committee_result"),
-            "exposure": exposure_result,
-            "coherence": coherence_result,
         },
     }
 
@@ -1860,7 +1808,7 @@ Conviction changes: {len(yesterday.get('conviction_changes', []))}
 INVESTOR PROFILE:
 - Holds positions for 1+ years. Low churn. Not a trader.
 - Current portfolio heavily concentrated in semiconductors and hyperscalers.
-- Only recommend changes when thesis is invalidated or opportunity passes the 25% CAGR gate.
+- Only recommend changes when thesis is invalidated or an opportunity passes its role-dependent valuation gate.
 - Weight company guidance and smart money over analyst opinions.
 - Cares about: thesis integrity, concentration risk, macro tailwinds/headwinds to their specific holdings.
 
@@ -1947,7 +1895,7 @@ Respond with ONLY the two sections."""
         if not response.content:
             return {"macro_summary": "Synthesis unavailable — empty response."}
         usage = response.usage
-        record_usage(AGENT_NAME, usage.input_tokens, usage.output_tokens, model=MODEL, response=response)
+        record_usage(AGENT_NAME, usage.input_tokens, usage.output_tokens, model=response.model)
         full_text = response.content[0].text
 
         log.info("Synthesis complete: %d in, %d out", usage.input_tokens, usage.output_tokens)

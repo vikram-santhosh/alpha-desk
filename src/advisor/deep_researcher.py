@@ -14,7 +14,8 @@ import uuid
 import requests
 
 from src.shared import gemini_compat as anthropic
-from src.shared.agent_decorator import extract_json_payload, select_model, track_agent
+from src.shared import web_search
+from src.shared.agent_decorator import select_model, track_agent
 from src.shared.citations import CitationRegistry
 from src.shared.context_manager import ContextBudget
 from src.shared.prompt_loader import load_prompt, load_skill
@@ -47,8 +48,16 @@ TASK_TYPE_TO_SKILL: dict[str, str] = {
 class MultiStepDeepResearcher:
     """Runs sequential research steps per ticker and parallelises across tickers."""
 
-    def __init__(self, *, max_full: int = 3):
+    def __init__(
+        self,
+        *,
+        max_full: int = 3,
+        web_search_enabled: bool = True,
+        web_search_max_results: int = 5,
+    ):
         self.max_full = max_full
+        self.web_search_enabled = web_search_enabled
+        self.web_search_max_results = max(0, web_search_max_results)
         self.client = anthropic.Anthropic()
 
     async def run(
@@ -212,6 +221,10 @@ class MultiStepDeepResearcher:
             gather_coros.append(self._gather_superinvestor(task.ticker, data_context))
             gather_labels.append("superinvestor")
 
+        if "web_search" in data_needs and self.web_search_enabled and self.web_search_max_results > 0:
+            gather_coros.append(self._gather_web_search(task.ticker, data_context, registry))
+            gather_labels.append("web_search")
+
         results = await asyncio.gather(*gather_coros, return_exceptions=True)
 
         observations: list[str] = []
@@ -330,6 +343,52 @@ class MultiStepDeepResearcher:
                 observations.append(f"Superinvestor data for {ticker}: {ticker_data}")
         return {"observations": observations}
 
+    async def _gather_web_search(
+        self,
+        ticker: str,
+        data_context: dict[str, Any],
+        registry: CitationRegistry,
+    ) -> dict[str, Any]:
+        query = self._build_web_search_query(ticker, data_context)
+        try:
+            results = await asyncio.to_thread(
+                web_search.search,
+                query,
+                max_results=self.web_search_max_results,
+            )
+        except Exception:
+            log.warning("Web search gather failed for %s", ticker, exc_info=True)
+            return {"observations": []}
+
+        observations: list[str] = []
+        for result in results:
+            url = result.get("url", "")
+            title = result.get("title", "Untitled web result")
+            citation_id = registry.register(
+                url,
+                title,
+                "web_search",
+                result.get("published", ""),
+            )
+            snippet = re.sub(r"\s+", " ", result.get("snippet", "")).strip()
+            if snippet:
+                observations.append(f"[{citation_id}] Web search: {title} — {snippet}")
+            else:
+                observations.append(f"[{citation_id}] Web search: {title}")
+        return {"observations": observations}
+
+    def _build_web_search_query(self, ticker: str, data_context: dict[str, Any]) -> str:
+        holdings_map = {item.get("ticker"): item for item in data_context.get("holdings_reports", [])}
+        holding = holdings_map.get(ticker, {})
+        thesis = holding.get("thesis") or holding.get("thesis_summary") or ""
+        company = holding.get("company") or holding.get("company_name") or holding.get("name") or ""
+        move = holding.get("change_pct")
+        move_text = f" stock move {move:+.1f}%" if isinstance(move, (int, float)) else ""
+        month_year = date.today().strftime("%B %Y")
+        thesis_text = f" thesis {str(thesis)[:120]}" if thesis else ""
+        company_text = f" {company}" if company else ""
+        return f"{ticker}{company_text} earnings guidance catalysts{move_text} {month_year}{thesis_text}"
+
     @track_agent("deep_research_analysis")
     async def _analyze(self, task: ResearchTask, observations: list[str]) -> dict[str, Any]:
         analysis_model = select_model(PRO_MODEL)
@@ -411,7 +470,7 @@ class MultiStepDeepResearcher:
             max_tokens=2500 if tier == "full" else 1000,
             messages=[{"role": "user", "content": prompt}],
         )
-        return {"raw_text": response.content[0].text.strip(), "usage": response.usage, "model": PRO_MODEL}
+        return {"raw_text": response.content[0].text.strip(), "usage": response.usage, "model": response.model}
 
     def _select_articles(self, ticker: str, data_context: dict[str, Any]) -> list[dict[str, Any]]:
         matches = []

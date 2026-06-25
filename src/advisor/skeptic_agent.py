@@ -133,7 +133,7 @@ RULES:
                 messages=[{"role": "user", "content": prompt}],
             )
             usage = response.usage
-            record_usage(AGENT_NAME, usage.input_tokens, usage.output_tokens, model=MODEL, response=response)
+            record_usage(AGENT_NAME, usage.input_tokens, usage.output_tokens, model=response.model)
             log.info("Skeptic challenge for %s: %d in, %d out", ticker, usage.input_tokens, usage.output_tokens)
 
             text = response.content[0].text.strip()
@@ -190,7 +190,7 @@ confidence_modifier: 0.5 = "definitely do NOT trim", 1.0 = "trim is probably rig
                 messages=[{"role": "user", "content": prompt}],
             )
             usage = response.usage
-            record_usage(AGENT_NAME, usage.input_tokens, usage.output_tokens, model=MODEL, response=response)
+            record_usage(AGENT_NAME, usage.input_tokens, usage.output_tokens, model=response.model)
 
             text = response.content[0].text.strip()
             if "```json" in text:

@@ -147,7 +147,7 @@ def should_add(
 
     Criteria:
         - On conviction list >= conviction_promotion_weeks (default 3)
-        - Passes 25% CAGR gate
+        - Passes the role-appropriate valuation gate
         - Has >= min_evidence_sources (default 3)
 
     Args:
@@ -163,10 +163,12 @@ def should_add(
     min_cagr = strategy.get("min_cagr_pct", 25)
     min_mos = strategy.get("min_margin_of_safety_pct", 15)
     min_evidence = strategy.get("min_evidence_sources", 3)
+    gate_by_role = strategy.get("gate_by_role", {})
 
     ticker = conviction_entry.get("ticker", "")
     weeks_on_list = conviction_entry.get("weeks_on_list", 0)
     conviction = conviction_entry.get("conviction", "low")
+    role = conviction_entry.get("role") or conviction_entry.get("category") or "growth"
 
     # Time check
     if weeks_on_list < promotion_weeks:
@@ -177,7 +179,11 @@ def should_add(
 
     # CAGR gate check
     passes_gate, gate_reason = passes_investment_gate(
-        valuation, min_cagr=min_cagr, min_mos=min_mos,
+        valuation,
+        min_cagr=min_cagr,
+        min_mos=min_mos,
+        role=role,
+        gate_by_role=gate_by_role,
     )
     if not passes_gate:
         return False, f"{ticker}: {gate_reason}"
@@ -198,7 +204,8 @@ def should_add(
     mos = valuation.get("margin_of_safety", 0)
     return True, (
         f"{ticker}: {weeks_on_list} weeks on list, conviction={conviction}, "
-        f"CAGR={cagr:.1f}%, MoS={mos:.1f}%, evidence={evidence_count}/5"
+        f"{gate_reason}, CAGR={cagr:.1f}%, MoS={mos:.1f}%, "
+        f"evidence={evidence_count}/5"
     )
 
 
@@ -338,6 +345,35 @@ def generate_strategy(
                     })
                     existing_flag_keys.add(flag_key)
 
+    # --- Position sizing and concentration trims ---
+    sizing_result = {"allocations": [], "concentration_flags": [], "trim_suggestions": []}
+    try:
+        from src.advisor.position_sizer import size_recommendations
+
+        moonshot_list = memory.get_moonshot_list(active_only=True)
+        sizing_result = size_recommendations(
+            conviction_list=conviction_list,
+            moonshot_list=moonshot_list,
+            holdings=holdings_reports,
+            valuation_data=valuation_data,
+            config=config,
+        )
+        for trim in sizing_result.get("trim_suggestions", []):
+            ticker = trim.get("ticker", "")
+            if not ticker:
+                continue
+            if any(a.get("ticker") == ticker and a.get("action") == "trim" for a in actions):
+                continue
+            actions.append({
+                "ticker": ticker,
+                "action": "trim",
+                "reason": trim.get("reason", "Concentration trim suggested."),
+                "urgency": "medium",
+                "sizing": {"recommended_weight_pct": -trim.get("trim_pct", 0)},
+            })
+    except Exception:
+        log.exception("Position sizing failed — continuing without sizing output")
+
     # --- Thesis exposure analysis ---
     thesis_exposure = _compute_thesis_exposure(holdings_reports, macro_theses)
 
@@ -360,6 +396,9 @@ def generate_strategy(
         "existing_flags": existing_flags,
         "summary": summary,
         "thesis_exposure": thesis_exposure,
+        "sizing": sizing_result.get("allocations", []),
+        "cash_weight_pct": sizing_result.get("cash_weight_pct", 0.0),
+        "concentration_flags": sizing_result.get("concentration_flags", []),
     }
 
     log.info(

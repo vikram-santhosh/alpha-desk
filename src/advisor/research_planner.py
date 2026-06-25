@@ -7,7 +7,7 @@ from typing import Any
 
 from src.shared import gemini_compat as anthropic
 from src.shared.agent_decorator import extract_json_payload, track_agent
-from src.shared.cost_tracker import check_budget, record_usage
+from src.shared.cost_tracker import check_budget
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -17,6 +17,7 @@ FLASH_MODEL = "claude-haiku-4-5"
 VALID_DATA_NEEDS = frozenset({
     "full_article_text", "earnings_context", "sec_filing",
     "competitor_comparison", "cross_validation", "superinvestor_check",
+    "web_search",
 })
 
 
@@ -163,9 +164,9 @@ class ResearchPlanner:
             "For each ticker, respond with JSON: a list of objects with fields:\n"
             "  ticker, research_question (specific and actionable), task_type, "
             "data_needs (list from: full_article_text, earnings_context, sec_filing, "
-            "competitor_comparison, cross_validation, superinvestor_check).\n\n"
-            f"Candidates:\n" + "\n".join(candidates) + "\n\n"
-            f"Today's signals:\n" + ("\n".join(signal_lines) if signal_lines else "(none)") + "\n\n"
+            "competitor_comparison, cross_validation, superinvestor_check, web_search).\n\n"
+            "Candidates:\n" + "\n".join(candidates) + "\n\n"
+            "Today's signals:\n" + ("\n".join(signal_lines) if signal_lines else "(none)") + "\n\n"
             "Return ONLY a JSON list. No explanation."
         )
 
@@ -299,4 +300,6 @@ class ResearchPlanner:
             needs.append("competitor_comparison")
         if not needs:
             needs.append("sec_filing")
+        if "web_search" not in needs:
+            needs.append("web_search")
         return needs

@@ -171,9 +171,8 @@ Response:"""
             AGENT_NAME,
             usage.input_tokens,
             usage.output_tokens,
-            model=MODEL,
-            response=response,
-)
+            model=response.model,
+        )
 
         raw = response.content[0].text.strip()
 
