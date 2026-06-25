@@ -7,6 +7,7 @@ never re-runs LLM transcript analysis.
 from __future__ import annotations
 
 import asyncio
+import math
 from datetime import date
 
 from src.score_engine.signals import Direction, TickerSignal
@@ -35,31 +36,64 @@ class EarningsSensor:
         return history[0]
 
     def _to_signal(self, ticker: str, data: dict) -> TickerSignal:
-        guidance = (data.get("guidance_sentiment") or "neutral").lower()
-        tone = (data.get("management_tone") or "neutral").lower()
+        raw_guidance = data.get("guidance_sentiment")
+        raw_tone     = data.get("management_tone")
+        guidance = (raw_guidance or "").lower()
+        tone     = (raw_tone or "").lower()
+        has_guidance = guidance in ("raised", "lowered", "maintained", "positive", "negative", "withdrawn")
 
-        # Compute rough surprise_pct from eps actual vs estimate
+        # EPS surprise from actual vs estimate (the hard quantitative driver).
         eps_actual   = data.get("eps_actual")
         eps_estimate = data.get("eps_estimate")
-        if eps_actual is not None and eps_estimate and eps_estimate != 0:
-            surprise_pct = ((eps_actual - eps_estimate) / abs(eps_estimate)) * 100
-        else:
-            surprise_pct = 0.0
+        has_surprise = eps_actual is not None and eps_estimate not in (None, 0)
+        surprise_pct = (
+            ((eps_actual - eps_estimate) / abs(eps_estimate)) * 100 if has_surprise else 0.0
+        )
 
-        if guidance in ("raised", "positive") or surprise_pct > 3:
+        # Direction: guidance language and EPS surprise both vote; combine.
+        bull = guidance in ("raised", "positive") or surprise_pct > 3
+        bear = guidance in ("lowered", "negative", "withdrawn") or surprise_pct < -3
+        if bull and not bear:
             direction = Direction.BULL
-        elif guidance in ("lowered", "negative", "withdrawn") or surprise_pct < -3:
+        elif bear and not bull:
             direction = Direction.BEAR
         else:
             direction = Direction.NEUTRAL
 
-        strength = min(abs(surprise_pct) / 10.0, 1.0) if surprise_pct else 0.5
+        # Strength: smooth (tanh) on |surprise| so a 40% beat outranks a 17% beat
+        # instead of both saturating at 1.0. Falls back to guidance-only magnitude.
+        if has_surprise and abs(surprise_pct) >= 1.0:
+            strength = math.tanh(abs(surprise_pct) / 20.0)
+        elif has_guidance:
+            strength = 0.5
+        else:
+            strength = 0.3
 
-        ambiguous = guidance in ("maintained", "mixed", "neutral", "not_discussed") or tone == "cautious"
-        confidence = 0.6 if ambiguous else 0.85
+        # Confidence: a real EPS number is solid data; guidance prose that
+        # agrees adds confidence; soft-only signals are weaker.
+        if has_surprise and has_guidance:
+            confidence = 0.85
+        elif has_surprise:
+            confidence = 0.75            # hard number, no narrative
+        elif has_guidance:
+            confidence = 0.6
+        else:
+            confidence = 0.45
 
-        summary = data.get("transcript_summary") or f"guidance={guidance}, tone={tone}"
-        evidence = summary[:120]
+        # Evidence: name the ACTUAL driver, not just guidance prose.
+        summary = data.get("transcript_summary")
+        if summary:
+            evidence = str(summary)[:120]
+        else:
+            parts = []
+            if has_surprise:
+                verb = "beat" if surprise_pct >= 0 else "miss"
+                parts.append(f"EPS {verb} {surprise_pct:+.1f}% ({eps_actual} vs {eps_estimate:.2f} est)")
+            if has_guidance:
+                parts.append(f"guidance={guidance}")
+            if tone:
+                parts.append(f"tone={tone}")
+            evidence = ", ".join(parts) if parts else "no earnings signal"
 
         as_of = data.get("call_date") or date.today().isoformat()
 
@@ -69,6 +103,6 @@ class EarningsSensor:
             direction=direction,
             strength=round(strength, 3),
             confidence=confidence,
-            evidence=evidence,
+            evidence=evidence[:120],
             as_of=as_of,
         )

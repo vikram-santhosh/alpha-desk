@@ -28,6 +28,7 @@ async def run_scoring(req: RunRequest) -> RunResult:
     se_cfg  = load_score_engine_config()
     weights = load_weights()
 
+    ran_sensor_names: set[str] | None = None
     if req.snapshot_id:
         # Re-score an existing frozen snapshot
         snap = load_snapshot(req.snapshot_id)
@@ -48,6 +49,7 @@ async def run_scoring(req: RunRequest) -> RunResult:
         ctx = {"depth": req.depth}
         signals, failed = await gather_all_votes(sensors, tickers, ctx)
         missing = list(failed.keys())
+        ran_sensor_names = {s.name for s in sensors}
 
         snapshot_id = new_snapshot_id()
         save_snapshot(snapshot_id, tickers, signals, WEIGHTS_VERSION)
@@ -64,16 +66,25 @@ async def run_scoring(req: RunRequest) -> RunResult:
     top    = ranked[:top_n]
 
     elapsed = round(time.monotonic() - started, 2)
-    ok_sensors = [s.name for s in REGISTRY.all() if s.name not in missing]
+
+    # Honest degradation: distinguish sensors that produced signals (ok) from
+    # those that ran without error but emitted nothing (empty) and those that
+    # raised (failed). A dead platform must never hide behind "ok".
+    reporting = sorted({sig.sensor for sig in signals})
+    if ran_sensor_names is not None:
+        empty = sorted(ran_sensor_names - set(reporting) - set(missing))
+    else:
+        empty = []   # rescore path: original sensor set is unknown
 
     return RunResult(
         top=top,
         snapshot_id=snapshot_id,
         weights_version=WEIGHTS_VERSION,
         diagnostics={
-            "elapsed_s":        elapsed,
+            "elapsed_s":         elapsed,
             "signals_collected": len(signals),
-            "sensors_ok":        ok_sensors,
+            "sensors_ok":        reporting,
+            "sensors_empty":     empty,
             "sensors_failed":    missing,
             "tickers_scored":    len(scores),
         },

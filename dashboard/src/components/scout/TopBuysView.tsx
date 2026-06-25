@@ -170,8 +170,11 @@ export default function TopBuysView() {
                   {result.diagnostics.sensors_ok.map(s => (
                     <StatusBadge key={s} variant="success">{s}</StatusBadge>
                   ))}
+                  {(result.diagnostics.sensors_empty ?? []).map(s => (
+                    <StatusBadge key={s} variant="warning">{s}: no data</StatusBadge>
+                  ))}
                   {result.diagnostics.sensors_failed.map(s => (
-                    <StatusBadge key={s} variant="critical">{s}</StatusBadge>
+                    <StatusBadge key={s} variant="critical">{s}: failed</StatusBadge>
                   ))}
                 </div>
                 {isMock && (

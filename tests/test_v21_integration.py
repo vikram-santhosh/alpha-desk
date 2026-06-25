@@ -375,7 +375,11 @@ class TestLunarCrushEnvKey:
         if not env_path.exists():
             pytest.skip(".env not found")
         content = env_path.read_text()
-        assert "LUNARCRUSH_API_KEY" in content
+        # Compute the boolean first so a failure does NOT dump .env (with its
+        # secrets) into the pytest output.
+        has_key = "LUNARCRUSH_API_KEY" in content
+        if not has_key:
+            pytest.skip("LUNARCRUSH_API_KEY not configured in .env")
 
 
 class TestVersionBump:

@@ -18,9 +18,10 @@ def _print_result(result) -> None:
     print(f"\n{'='*62}")
     print(f"  AlphaDesk Top Buys  (snapshot: {result.snapshot_id})")
     print(f"  weights: {result.weights_version}  |  {result.diagnostics['elapsed_s']}s")
-    ok  = ", ".join(result.diagnostics["sensors_ok"])  or "none"
-    bad = ", ".join(result.diagnostics["sensors_failed"]) or "none"
-    print(f"  platforms: {ok}  |  failed: {bad}")
+    ok    = ", ".join(result.diagnostics["sensors_ok"]) or "none"
+    empty = ", ".join(result.diagnostics.get("sensors_empty", [])) or "none"
+    bad   = ", ".join(result.diagnostics["sensors_failed"]) or "none"
+    print(f"  reporting: {ok}  |  no data: {empty}  |  failed: {bad}")
     print(f"{'='*62}")
     for i, ts in enumerate(result.top, 1):
         bar = "█" * int(ts.score) + "░" * (10 - int(ts.score))
@@ -68,6 +69,7 @@ def _run_dry(top_n: int) -> None:
             "elapsed_s":         round(time.monotonic() - started, 3),
             "signals_collected": len(signals),
             "sensors_ok":        ["earnings", "reddit"],
+            "sensors_empty":     [],
             "sensors_failed":    [],
             "tickers_scored":    len(scores),
         },

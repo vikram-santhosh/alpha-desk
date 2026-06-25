@@ -99,7 +99,8 @@ async def get_top_buys():
         diagnostics={
             "elapsed_s":         0.0,
             "signals_collected": len(snap["signals"]),
-            "sensors_ok":        list({sig.sensor for sig in snap["signals"]}),
+            "sensors_ok":        sorted({sig.sensor for sig in snap["signals"]}),
+            "sensors_empty":     [],
             "sensors_failed":    [],
             "tickers_scored":    len(scores),
         },

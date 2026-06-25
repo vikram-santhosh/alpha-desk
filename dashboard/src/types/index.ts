@@ -300,6 +300,7 @@ export interface ScoreRunDiagnostics {
   elapsed_s: number;
   signals_collected: number;
   sensors_ok: string[];
+  sensors_empty?: string[];
   sensors_failed: string[];
   tickers_scored: number;
 }
