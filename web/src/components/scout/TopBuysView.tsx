@@ -1,0 +1,126 @@
+import { useCallback, useEffect, useState } from "react";
+import { motion } from "motion/react";
+import { ArrowUpRight, RefreshCw } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import type { BackendTopIdea, IdeaScoutResult } from "@/types";
+import { fetchIdeaScout, fetchLatestIdeaScout } from "@/lib/api";
+import { GlassCard } from "@/components/ui/GlassCard";
+import { GlassButton } from "@/components/ui/GlassButton";
+import { Skeleton } from "@/components/ui/Skeleton";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { useReducedMotion } from "@/lib/useReducedMotion";
+
+function scoreColor(score: number): string {
+  if (score >= 80) return "text-(--color-accent-emerald)";
+  if (score >= 65) return "text-(--color-accent-cyan)";
+  if (score >= 50) return "text-(--color-accent-amber)";
+  return "text-(--color-text-secondary)";
+}
+
+export default function TopBuysView() {
+  const [ideas, setIdeas] = useState<BackendTopIdea[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [hydrating, setHydrating] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const navigate = useNavigate();
+  const reducedMotion = useReducedMotion();
+
+  const apply = useCallback((data: IdeaScoutResult) => {
+    setIdeas([...data.ideas].sort((a, b) => a.rank - b.rank));
+  }, []);
+
+  // Show the last saved run immediately — no clicking required to see something.
+  useEffect(() => {
+    let active = true;
+    fetchLatestIdeaScout("top_buys")
+      .then((data) => { if (active && data) apply(data); })
+      .catch(() => { /* first-run: nothing saved yet, that's fine */ })
+      .finally(() => { if (active) setHydrating(false); });
+    return () => { active = false; };
+  }, [apply]);
+
+  const run = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      apply(await fetchIdeaScout("top_buys", 10));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load top buys");
+    } finally {
+      setLoading(false);
+    }
+  }, [apply]);
+
+  const showSkeleton = (hydrating || loading) && ideas.length === 0;
+
+  return (
+    <section className="mx-auto max-w-3xl space-y-6">
+      <motion.header
+        className="flex items-center justify-between gap-4"
+        initial={reducedMotion ? false : { opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4 }}
+      >
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight text-(--color-text-primary)">Top Buys</h1>
+          <p className="mt-1 text-sm text-(--color-text-secondary)">Highest-conviction names right now.</p>
+        </div>
+        <GlassButton
+          variant="solid"
+          leftIcon={<RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />}
+          onClick={() => void run()}
+          disabled={loading}
+        >
+          {loading ? "Finding…" : "Get top buys"}
+        </GlassButton>
+      </motion.header>
+
+      {showSkeleton ? (
+        <div className="space-y-2">
+          {Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} className="h-16" />)}
+        </div>
+      ) : error && ideas.length === 0 ? (
+        <GlassCard glow="rose" className="p-6">
+          <EmptyState title="Couldn’t load top buys" description={error}
+            action={{ label: "Try again", onClick: () => void run() }} />
+        </GlassCard>
+      ) : ideas.length === 0 ? (
+        <GlassCard className="p-8" hoverLift={false}>
+          <EmptyState title="No top buys yet" description="Press “Get top buys” to run the ranking."
+            action={{ label: "Get top buys", onClick: () => void run() }} />
+        </GlassCard>
+      ) : (
+        <div className="space-y-2">
+          {ideas.map((idea, i) => (
+            <motion.button
+              key={`${idea.ticker}-${idea.rank}`}
+              type="button"
+              onClick={() => navigate(`/council?ticker=${idea.ticker}&run=1&from=scout`)}
+              className="group block w-full text-left"
+              initial={reducedMotion ? false : { opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.3, delay: reducedMotion ? 0 : i * 0.03 }}
+            >
+              <GlassCard hoverLift className="flex items-center gap-4 p-4">
+                <span className="w-6 shrink-0 text-center font-mono text-sm text-(--color-text-tertiary)">
+                  {idea.rank}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-baseline gap-2">
+                    <span className="font-mono text-base font-semibold text-(--color-text-primary)">{idea.ticker}</span>
+                    <span className="truncate text-xs text-(--color-text-tertiary)">{idea.company || idea.theme}</span>
+                  </div>
+                  <p className="mt-0.5 line-clamp-1 text-sm text-(--color-text-secondary)">{idea.thesis}</p>
+                </div>
+                <span className={`shrink-0 font-mono text-lg font-bold tabular-nums ${scoreColor(idea.score * 100)}`}>
+                  {Math.round(idea.score * 100)}
+                </span>
+                <ArrowUpRight className="h-4 w-4 shrink-0 text-(--color-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100" />
+              </GlassCard>
+            </motion.button>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}

@@ -14,7 +14,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 const BackendCockpitView = lazy(() => import("@/components/backend/BackendCockpitView"));
 const CouncilView = lazy(() => import("@/components/council/CouncilView"));
 const MacroView = lazy(() => import("@/components/macro/MacroView"));
-const MoonshotsView = lazy(() => import("@/components/moonshots/MoonshotsView"));
+const TopBuysView = lazy(() => import("@/components/scout/TopBuysView"));
 const PortfolioView = lazy(() => import("@/components/portfolio/BackendPortfolioView"));
 
 const routeToNavId: Record<string, string> = {
@@ -70,7 +70,7 @@ function AppRouter() {
           <Suspense fallback={<PageLoader />}>
             <Routes location={location}>
               <Route path="/" element={<BackendCockpitView />} />
-              <Route path="/scout" element={<MoonshotsView />} />
+              <Route path="/scout" element={<TopBuysView />} />
               <Route path="/council" element={<CouncilView />} />
               <Route path="/portfolio" element={<PortfolioView />} />
               <Route path="/macro" element={<MacroView />} />
