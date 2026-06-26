@@ -17,6 +17,18 @@ function scoreColor(score: number): string {
   return "text-(--color-text-secondary)";
 }
 
+// Secondary label next to the ticker: company name, or the theme — but never
+// the ticker itself (the backend falls company back to the ticker, which would
+// render "AFRM AFRM").
+function subLabel(idea: BackendTopIdea): string {
+  const ticker = idea.ticker?.toUpperCase();
+  const company = idea.company?.trim();
+  if (company && company.toUpperCase() !== ticker) return company;
+  const theme = idea.theme?.trim();
+  if (theme && theme.toUpperCase() !== ticker) return theme;
+  return "";
+}
+
 export default function TopBuysView() {
   const [ideas, setIdeas] = useState<BackendTopIdea[]>([]);
   const [loading, setLoading] = useState(false);
@@ -101,21 +113,25 @@ export default function TopBuysView() {
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.3, delay: reducedMotion ? 0 : i * 0.03 }}
             >
-              <GlassCard hoverLift className="flex items-center gap-4 p-4">
-                <span className="w-6 shrink-0 text-center font-mono text-sm text-(--color-text-tertiary)">
-                  {idea.rank}
-                </span>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-baseline gap-2">
-                    <span className="font-mono text-base font-semibold text-(--color-text-primary)">{idea.ticker}</span>
-                    <span className="truncate text-xs text-(--color-text-tertiary)">{idea.company || idea.theme}</span>
+              <GlassCard hoverLift className="p-4">
+                <div className="flex items-center gap-4">
+                  <span className="w-6 shrink-0 text-center font-mono text-sm text-(--color-text-tertiary)">
+                    {idea.rank}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-baseline gap-2">
+                      <span className="font-mono text-base font-semibold text-(--color-text-primary)">{idea.ticker}</span>
+                      {subLabel(idea) && (
+                        <span className="truncate text-xs text-(--color-text-tertiary)">{subLabel(idea)}</span>
+                      )}
+                    </div>
+                    <p className="mt-0.5 line-clamp-1 text-sm text-(--color-text-secondary)">{idea.thesis}</p>
                   </div>
-                  <p className="mt-0.5 line-clamp-1 text-sm text-(--color-text-secondary)">{idea.thesis}</p>
+                  <span className={`shrink-0 font-mono text-lg font-bold tabular-nums ${scoreColor(idea.score * 100)}`}>
+                    {Math.round(idea.score * 100)}
+                  </span>
+                  <ArrowUpRight className="h-4 w-4 shrink-0 text-(--color-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100" />
                 </div>
-                <span className={`shrink-0 font-mono text-lg font-bold tabular-nums ${scoreColor(idea.score * 100)}`}>
-                  {Math.round(idea.score * 100)}
-                </span>
-                <ArrowUpRight className="h-4 w-4 shrink-0 text-(--color-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100" />
               </GlassCard>
             </motion.button>
           ))}

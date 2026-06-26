@@ -988,6 +988,12 @@ def _resolve_council_context(
         context = _resolve_score_council_context(ticker, score_snapshot_id)
         if context:
             return context
+    # Fallback: even with no explicit source, prefer grounding the council in
+    # whatever score evidence exists (a fresh snapshot may have just been built
+    # by _maybe_score_ticker_async) rather than letting it reason from priors.
+    context = _resolve_score_council_context(ticker, score_snapshot_id)
+    if context:
+        return context
     return {}
 
 
