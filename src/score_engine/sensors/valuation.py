@@ -13,9 +13,13 @@ from datetime import date
 
 from src.score_engine.signals import Direction, TickerSignal
 
-# Gate thresholds (mirror config/advisor.yaml strategy defaults).
-MIN_CAGR = 25.0
-MIN_MOS  = 15.0
+# Gate thresholds for score-engine "top buy" evidence. A moonshot-grade 25%+
+# CAGR is ideal, but a mega-cap with a moderate forward CAGR and a large margin
+# of safety should still count as bullish rather than neutral.
+HIGH_CAGR = 25.0
+MIN_ATTRACTIVE_CAGR = 12.0
+MIN_MOS = 15.0
+HIGH_MOS = 35.0
 
 
 class ValuationSensor:
@@ -51,7 +55,11 @@ class ValuationSensor:
             return None
 
         # Direction: attractive forward return + cushion = BULL; expensive = BEAR.
-        if cagr >= MIN_CAGR and mos >= MIN_MOS:
+        if (
+            cagr >= HIGH_CAGR and mos >= MIN_MOS
+        ) or (
+            cagr >= MIN_ATTRACTIVE_CAGR and mos >= HIGH_MOS
+        ):
             direction = Direction.BULL
         elif cagr < 10.0 or mos < 0.0:
             direction = Direction.BEAR
@@ -60,9 +68,11 @@ class ValuationSensor:
 
         # Strength from distance past (or below) the CAGR gate, capped.
         if direction == Direction.BULL:
-            strength = min((cagr - MIN_CAGR) / 25.0 + 0.4, 1.0)
+            cagr_strength = (cagr - HIGH_CAGR) / 25.0 + 0.4
+            mos_strength = (mos - HIGH_MOS) / 50.0 + 0.4
+            strength = min(max(cagr_strength, mos_strength, 0.4), 1.0)
         elif direction == Direction.BEAR:
-            strength = min((MIN_CAGR - cagr) / 25.0 + 0.3, 1.0)
+            strength = min((HIGH_CAGR - cagr) / 25.0 + 0.3, 1.0)
         else:
             strength = 0.4
 

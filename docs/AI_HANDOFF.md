@@ -1002,3 +1002,80 @@ This file is append-only. Add a new session entry at the top of the session log 
 ### Notes
 - No API keys were written to repo files, logs, diffs, or this handoff.
 - The unrelated untracked duplicate `* 2` files remain untouched.
+## Session 2026-06-24 22:41 PDT - Codex
+
+### Goal
+- Read through the project to gain working context only; no implementation change was requested.
+
+### Result
+- Read `AGENTS.md`, `docs/PROJECT_OVERVIEW.md`, `docs/AI_CONTEXT.md`, the latest `docs/AI_HANDOFF.md` entry, and key backend/frontend/config/test files.
+- Confirmed the canonical cockpit backend is `src/api/app.py` launched by `run_api.py`; `server.py` appears to be a legacy compatibility/stub surface despite older docs referencing it.
+- Mapped the two frontend surfaces: `web/` is the current cockpit, while `dashboard/` still contains the deterministic score-engine Top Buys view not yet ported into `web/`.
+- Confirmed score-engine APIs exist in `src/api/app.py`, while the score engine itself lives under `src/score_engine/` and currently defaults its ticker universe from `config/advisor.yaml` metadata holdings.
+- Noted documentation/code drift around OpenRouter model invariants, score run-type support, and `portfolio.yaml` versus `advisor.yaml` holdings.
+
+### Verification
+- Context pass only; no tests were run.
+- `git status --short` was clean before this handoff note.
+
+### Notes
+- No secrets or local database contents were read.
+- No context pack was generated because this was not a handoff to another model.
+## Session 2026-06-24 22:51 PDT - Codex
+
+### Goal
+- Fix the Top Buys/Alpha Scout mismatch where AMZN scored as Weak/Hold while the council thesis was bullish, and remove Gemini 3.5 Flash from the council roster for now.
+
+### Result
+- Changed score normalization in `src/score_engine/aggregator.py` so weak directional evidence no longer counts as a full-strength denominator vote.
+- Updated the valuation sensor so moderate forward CAGR plus a high margin of safety is bullish instead of neutral.
+- Added regression coverage for the AMZN-shaped signal mix; the representative score is now 7.20, in the Buy/Strong band.
+- Removed Gemini 3.5 Flash from default council rosters in backend, `web/`, and `dashboard/`.
+- Routed legacy Gemini council ids to GLM 5.2 and normalized stale Kimi K2.7 ids to Kimi K2.6 so old UI chips/env values do not call broken models.
+- Changed the OpenRouter haiku/bulk default in `src/shared/gemini_compat.py` from Gemini 3.5 Flash to GLM 5.2.
+- Updated `docs/PROJECT_OVERVIEW.md` to describe the current three-model OpenRouter allowlist.
+
+### Verification
+- AMZN-shaped scoring snippet returned `TickerScore(... score=7.2 ...)`.
+- `/tmp/alphadesk-api-test-venv/bin/python -m pytest tests/test_breadth_gate.py tests/test_valuation_sensor.py tests/test_score_repeatability.py tests/test_api_council.py -q` -> 43 passed, 1 third-party Starlette/httpx deprecation warning.
+- `/tmp/alphadesk-api-test-venv/bin/python -m ruff check src/api/app.py src/score_engine/aggregator.py src/score_engine/sensors/valuation.py src/shared/gemini_compat.py tests/test_breadth_gate.py tests/test_valuation_sensor.py tests/test_api_council.py` -> passed.
+- `cd web && npm ci` -> installed lockfile deps, 0 vulnerabilities.
+- `cd web && npm run typecheck` -> passed.
+- `cd web && npm test -- --run` -> 1 passed.
+- `cd web && npm run build` -> passed.
+- `cd dashboard && npm run typecheck` -> passed.
+- `cd dashboard && npm run build` -> passed.
+
+### Notes
+- No secrets or local database contents were read.
+- Existing saved score snapshots may still show old scores until the score engine is rerun.
+## Session 2026-06-24 23:13 PDT - Codex
+
+### Goal
+- Rewire Scout/Top Buys and Model Council so the council audits upstream buy theses instead of starting from a ticker-only prompt.
+
+### Result
+- Confirmed the previous flow only passed `/council?ticker=...&run=1`, so model seats did not see the Scout or score-engine thesis.
+- Added optional council context fields: `source`, `idea_run_id`, and `score_snapshot_id`.
+- Added `run_store.get_idea_scout_run()` and backend context resolution for saved Alpha Scout runs and score-engine snapshots.
+- Injected compact upstream context into first-pass council prompts and cross-exam prompts.
+- Added a context-aware synthesis tie-breaker: a high-conviction Scout/score prior can prevent final synthesis from mechanically collapsing to Hold when there is at least one bullish/overweight seat and no bearish seat.
+- Wired `web/` Alpha Scout cards to pass `source=scout&idea_run_id=<run>`.
+- Wired `dashboard/` score-engine Top Buys cards to pass `source=score_engine&score_snapshot_id=<snapshot>`.
+- Added a visible Council page context line, e.g. `Using Alpha Scout context from run #4.`
+- Updated `docs/PROJECT_OVERVIEW.md` with the new context-aware council contract.
+
+### Verification
+- `/tmp/alphadesk-api-test-venv/bin/python -m pytest tests/test_api_council.py tests/test_breadth_gate.py tests/test_valuation_sensor.py -q` -> 39 passed, 1 third-party Starlette/httpx deprecation warning.
+- `/tmp/alphadesk-api-test-venv/bin/python -m ruff check src/api/app.py src/api/run_store.py tests/test_api_council.py` -> passed.
+- `/tmp/alphadesk-api-test-venv/bin/python -m py_compile src/api/app.py src/api/run_store.py` -> passed.
+- `cd web && npm run typecheck` -> passed.
+- `cd web && npm test -- --run` -> 1 passed.
+- `cd web && npm run build` -> passed.
+- `cd dashboard && npm run typecheck` -> passed.
+- `cd dashboard && npm run build` -> passed.
+- Browser MCP loaded `http://localhost:5173/council?ticker=AFRM&source=scout&idea_run_id=4`, rendered the context label, and reported no console errors.
+
+### Notes
+- The first Scout run still does not automatically run a paid council for every candidate. The implemented contract makes follow-up council runs source-aware; automatic council validation for top-N candidates should be a separate explicit policy/toggle because it has latency and cost implications.
+- Backend was restarted live with `OPENROUTER_MOCK=0` and `ALPHA_SCOUT_MOCK=0`; frontend remained live on `127.0.0.1:5173`.

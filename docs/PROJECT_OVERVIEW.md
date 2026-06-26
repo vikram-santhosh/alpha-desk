@@ -21,8 +21,8 @@ them into **two products**:
    newer "score engine").
 
 A **FastAPI backend** (`src/api/app.py`) serves both to a **React dashboard**.
-All LLM inference goes through **OpenRouter** and is **restricted to four models**:
-**GLM 5.2, Kimi K2.6, Gemini 3.5 Flash, DeepSeek V4**.
+All LLM inference goes through **OpenRouter** and is currently restricted to
+three reliable models: **GLM 5.2, Kimi K2.6, and DeepSeek V4**.
 
 It is **not** a SaaS product, **not** an allocator/position-sizer for live money,
 **not** a brokerage integration, and **not** financial advice. It is a research
@@ -45,7 +45,7 @@ AlphaDesk existed as **two diverging git forks** that shared a common ancestor
 
 They were **merged** (3-way git merge, commit `0481c06`) into this repo, which
 is now **home**. After the merge the backend was unified (`9ee2aac`) and all
-inference was restricted to the four models (`e9ee401`).
+inference was restricted to an allowlisted model set (`e9ee401`).
 
 **Consequence you must know:** the merge left **two frontends** in the tree
 (`web/` and `dashboard/`). Only **one backend** is canonical (`src/api/app.py`).
@@ -117,10 +117,11 @@ daily pipeline **and** the score engine. Signal types include `breaking_news`,
 
 ---
 
-## 4. The LLM layer — OpenRouter, four models only
+## 4. The LLM layer — OpenRouter allowlist
 
-**All inference is routed through OpenRouter (one API key) and restricted to
-four models. Nothing else can be called.** This is enforced in two places:
+**All inference is routed through OpenRouter (one API key) and restricted to an
+allowlist. Nothing else can be called by default.** This is enforced in two
+places:
 
 ### `src/shared/gemini_compat.py` (the agent choke point)
 Exposes an Anthropic-SDK-shaped client: `Anthropic().messages.create(model=…)`.
@@ -132,21 +133,20 @@ Exposes an Anthropic-SDK-shaped client: `Anthropic().messages.create(model=…)`
 |---|---|
 | `claude-opus-*` (heavy/synthesis role) | `moonshotai/kimi-k2.6` |
 | `claude-sonnet-*` / anything unmatched | `z-ai/glm-5.2` |
-| `claude-haiku-*` (bulk/extraction role) | `google/gemini-3.5-flash` |
+| `claude-haiku-*` (bulk/extraction role) | `z-ai/glm-5.2` |
 | a raw slug already in the allowed set | itself |
 | **any other slug or bare name** | `z-ai/glm-5.2` (safe collapse) |
 
-`ALLOWED_OPENROUTER_MODELS = {kimi-k2.6, glm-5.2, gemini-3.5-flash, deepseek-v4-pro}`.
+`ALLOWED_OPENROUTER_MODELS = {kimi-k2.6, glm-5.2, deepseek-v4-pro}`.
 Role slugs are overridable via env (`OPENROUTER_OPUS/_SONNET/_HAIKU/_DEEPSEEK`).
 
 ### `src/api/app.py` (the council/ideas choke point)
-`DEFAULT_OPENROUTER_ANALYSIS_MODELS` = the four. `OPENROUTER_MODEL_ALIASES`
-remaps any legacy GCP/Claude/Grok id onto the four. `_non_opus_openrouter_model`
-forces the fusion judge to GLM 5.2.
+`DEFAULT_OPENROUTER_ANALYSIS_MODELS` = the reliable council roster.
+`OPENROUTER_MODEL_ALIASES` remaps legacy GCP/Claude/Grok/Gemini ids onto the
+allowlist. `_non_opus_openrouter_model` forces the fusion judge to GLM 5.2.
 
 ### Model → role mapping (current)
 - **GLM 5.2** (`z-ai/glm-5.2`) — standard analysis (most agents) + fusion judge + council seat
-- **Gemini 3.5 Flash** (`google/gemini-3.5-flash`) — bulk extraction (news/reddit) + council seat
 - **Kimi K2.6** (`moonshotai/kimi-k2.6`) — heavy synthesis + council seat
 - **DeepSeek V4** (`deepseek/deepseek-v4-pro`) — council seat
 
@@ -191,9 +191,9 @@ mutate the environment (tests rely on this). CORS allows any localhost origin.
 |---|---|
 | `GET /api/score/top-buys` | latest score snapshot (fast, no LLM) |
 | `POST /api/score/run` | run the score engine now (gathers sensors, ~20s) |
-| `GET /api/council/models` | the four OpenRouter council seats |
-| `POST /api/council/run` | run the multi-model council (non-streaming) |
-| `GET /api/council/stream` | **SSE** stream of council panel→judge→verdict |
+| `GET /api/council/models` | the current OpenRouter council roster |
+| `POST /api/council/run` | run the multi-model council (non-streaming); accepts optional Scout/score context fields |
+| `GET /api/council/stream` | **SSE** stream of council panel→judge→verdict; accepts optional `source`, `idea_run_id`, `score_snapshot_id` |
 | `GET /api/council/runs`, `/runs/latest` | persisted council runs |
 | `GET /api/ideas/today` | Alpha Scout idea generation (discovery / top-buys) |
 | `GET /api/ideas/runs`, `/runs/latest` | persisted idea-scout runs |
@@ -201,8 +201,13 @@ mutate the environment (tests rely on this). CORS allows any localhost origin.
 | `GET /api/macro`, `/macro/regime`, `/macro/themes` | macro dashboard |
 
 The council, when `OPENROUTER_API_KEY` is set, runs via the **OpenRouter
-streaming path** (`_stream_openrouter_council_events`) — four seats in parallel,
-graceful per-seat degradation, then a fusion **judge** (GLM 5.2) and a verdict.
+streaming path** (`_stream_openrouter_council_events`) — the allowlisted seats
+stream independently with graceful per-seat degradation, then the backend
+synthesizes a judge/verdict. When launched from Scout or Top Buys, the frontend
+passes `source=scout&idea_run_id=...` or `source=score_engine&score_snapshot_id=...`.
+The backend injects that upstream thesis/score/source context into each council
+seat and requires any downgrade from a high-conviction prior to name the
+disconfirming evidence.
 
 ---
 
@@ -383,8 +388,8 @@ Motion, dark glassmorphism theme). They talk to the backend through a swappable
    surface names you don't already own.
 4. **Concentration awareness** — flag when top names are one correlated bet.
 5. **Push** `main` to origin (currently ~40 commits ahead, nothing pushed).
-6. **Gemini 3.5 Flash** occasionally returns incomplete structured output in the
-   council (degrades gracefully to Hold); tighten its JSON prompt if it bugs you.
+6. **Gemini 3.5 Flash is removed from the default roster for now** because it
+   has returned incomplete structured output in live council runs.
 
 **Explicit non-goals (do not build without re-deciding the charter):**
 - Multi-tenant SaaS (`plans/saas-multi-tenant-roadmap.md` is **shelved**).
@@ -403,7 +408,7 @@ Motion, dark glassmorphism theme). They talk to the backend through a swappable
   + `sentiment`; the bus-backed sensors pick it up.
 - **Add/replace a council model:** edit `DEFAULT_OPENROUTER_ANALYSIS_MODELS` in
   `src/api/app.py` and the allowlist/role slugs in `gemini_compat.py`. Keep the
-  "four models only" invariant unless the user changes it.
+  allowlist invariant unless the user changes it.
 - **Change scoring behavior:** only in `aggregator.py` (keep it pure) + add a
   test. Never put an LLM in the scoring path.
 
@@ -415,13 +420,12 @@ Motion, dark glassmorphism theme). They talk to the backend through a swappable
 - **Breadth gate** — the rule that high scores require multiple independent
   platforms agreeing.
 - **Snapshot** — a frozen set of `TickerSignal`s; re-scoring one is reproducible.
-- **Council** — a multi-model panel (the four models) that debates a ticker and a
+- **Council** — a multi-model panel from the allowlisted roster that debates a ticker and a
   judge synthesizes a verdict; streamed over SSE.
 - **Agent bus** — SQLite pub/sub connecting ingestion agents to consumers.
 - **Conviction list / moonshots** — the advisor pipeline's persistent
   recommendation sets (being consolidated toward the score engine).
-- **The four models** — GLM 5.2, Kimi K2.6, Gemini 3.5 Flash, DeepSeek V4 — the
-  *only* models any inference may use.
+- **The OpenRouter allowlist** — GLM 5.2, Kimi K2.6, and DeepSeek V4 by default.
 
 ---
 

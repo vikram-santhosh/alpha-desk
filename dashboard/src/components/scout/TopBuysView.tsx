@@ -199,7 +199,7 @@ export default function TopBuysView() {
           ) : (
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {result.top.map((entry, i) => (
-                <ScoreCard key={entry.ticker} entry={entry} rank={i + 1} index={i} />
+                <ScoreCard key={entry.ticker} entry={entry} rank={i + 1} index={i} snapshotId={result.snapshot_id} />
               ))}
             </div>
           )}

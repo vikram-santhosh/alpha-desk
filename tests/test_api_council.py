@@ -194,7 +194,7 @@ def test_council_stream_times_out_without_silent_failure(monkeypatch):
     api_app = importlib.reload(importlib.import_module("src.api.app"))
     monkeypatch.setenv("COUNCIL_STREAM_TIMEOUT_S", "0.01")
 
-    async def slow_run_council(ticker, models):
+    async def slow_run_council(ticker, models, context=None):
         await api_app.asyncio.sleep(1)
         return _sample_result(ticker)
 
@@ -218,7 +218,7 @@ def test_openrouter_stream_emits_panel_results_before_synthesis(monkeypatch):
 
     response = client.get(
         "/api/council/stream"
-        "?ticker=NVDA&models=z-ai/glm-5.2,moonshotai/kimi-k2.7-code"
+        "?ticker=NVDA&models=z-ai/glm-5.2,moonshotai/kimi-k2.6"
     )
 
     assert response.status_code == 200
@@ -239,8 +239,8 @@ def test_openrouter_stream_keeps_partial_panel_when_one_model_times_out(monkeypa
     monkeypatch.delenv("OPENROUTER_MOCK", raising=False)
     monkeypatch.setenv("COUNCIL_MODEL_TIMEOUT_S", "0.01")
 
-    async def fake_panel(ticker, model_id):
-        if model_id == "slow-model":
+    async def fake_panel(ticker, model_id, context=None):
+        if model_id == "deepseek/deepseek-v4-pro":
             await api_app.asyncio.sleep(0.05)
         return (
             api_app.PanelVerdict(
@@ -257,14 +257,16 @@ def test_openrouter_stream_keeps_partial_panel_when_one_model_times_out(monkeypa
             0.02,
         )
 
-    async def fake_cross_exam(ticker, model_id, own_verdict, panel):
+    async def fake_cross_exam(ticker, model_id, own_verdict, panel, context=None):
         return own_verdict, 0.01
 
     monkeypatch.setattr(api_app, "_run_openrouter_panel_model_async", fake_panel)
     monkeypatch.setattr(api_app, "_run_openrouter_cross_exam_async", fake_cross_exam)
     client = TestClient(api_app.app)
 
-    response = client.get("/api/council/stream?ticker=AFRM&models=fast-model,slow-model")
+    response = client.get(
+        "/api/council/stream?ticker=AFRM&models=z-ai/glm-5.2,deepseek/deepseek-v4-pro"
+    )
 
     assert response.status_code == 200
     events = _parse_sse(response.text)
@@ -273,11 +275,14 @@ def test_openrouter_stream_keeps_partial_panel_when_one_model_times_out(monkeypa
     assert events[-1][0] == "done"
     assert done["council_mode"] == "openrouter_live"
     assert isinstance(done["run_id"], int)
-    assert any(item["model_id"] == "fast-model" and item["confidence"] == 0.8 for item in panel_events)
-    slow = next(item for item in panel_events if item["model_id"] == "slow-model")
+    assert any(item["model_id"] == "z-ai/glm-5.2" and item["confidence"] == 0.8 for item in panel_events)
+    slow = next(item for item in panel_events if item["model_id"] == "deepseek/deepseek-v4-pro")
     assert slow["confidence"] == 0.0
     assert "did not return a reliable thesis" in slow["thesis"]
-    assert any("Slow Model failed" in reason for reason in done["degraded_reasons"])
+    assert any(
+        "deepseek" in reason.lower() and "failed" in reason.lower()
+        for reason in done["degraded_reasons"]
+    )
     assert "timeout" not in done["council_mode"]
 
 
@@ -560,7 +565,7 @@ def test_openrouter_mock_council_is_reported_as_deterministic(monkeypatch):
 
     response = client.post(
         "/api/council/run",
-        json={"ticker": "meta", "models": ["google/gemini-3.5-flash"]},
+        json={"ticker": "meta", "models": ["z-ai/glm-5.2"]},
     )
 
     assert response.status_code == 200
@@ -621,7 +626,6 @@ def test_council_models_return_openrouter_roster_when_fusion_is_configured(monke
         "z-ai/glm-5.2",
         "moonshotai/kimi-k2.6",
         "deepseek/deepseek-v4-pro",
-        "google/gemini-3.5-flash",
     ]
 
 
@@ -639,10 +643,10 @@ def test_council_models_allow_openrouter_roster_override(monkeypatch):
     assert response.status_code == 200
     payload = response.json()
     assert [model["model_id"] for model in payload] == [
-        "google/gemini-3.1-flash-lite",
-        "x-ai/grok-4.20",
+        "moonshotai/kimi-k2.6",
+        "z-ai/glm-5.2",
     ]
-    assert payload[0]["label"] == "Gemini 3 1 Flash Lite"
+    assert payload[0]["label"] == "Kimi K2.6"
 
 
 def test_openrouter_direct_council_calls_selected_models(monkeypatch):
@@ -654,8 +658,8 @@ def test_openrouter_direct_council_calls_selected_models(monkeypatch):
         result = {
             "model_id": request_body["model"],
             "label": request_body["model"],
-            "rating": "Overweight" if "gemini" in request_body["model"] else "Hold",
-            "confidence": 0.7 if "gemini" in request_body["model"] else 0.55,
+            "rating": "Buy" if "kimi" in request_body["model"] else "Overweight",
+            "confidence": 0.7 if "kimi" in request_body["model"] else 0.65,
             "thesis": f"{request_body['model']} sees balanced upside with valuation risk.",
             "dissent": False,
         }
@@ -670,20 +674,116 @@ def test_openrouter_direct_council_calls_selected_models(monkeypatch):
     result = api_app.asyncio.run(
         api_app._run_openrouter_council(
             "NVDA",
-            ["google/gemini-3.5-flash", "moonshotai/kimi-k2.7-code"],
+            ["z-ai/glm-5.2", "moonshotai/kimi-k2.6"],
         )
     )
 
     assert Counter(captured_models) == Counter(
         {
-            "google/gemini-3.5-flash": 2,
-            "moonshotai/kimi-k2.7-code": 2,
+            "z-ai/glm-5.2": 2,
+            "moonshotai/kimi-k2.6": 2,
         }
     )
     assert result.cost_usd == 0.04
     assert result.verdict.ticker == "NVDA"
     assert result.verdict.rating == "Overweight"
     assert result.panel[1].dissent is True
+
+
+def test_scout_context_is_injected_and_adjusts_hold_modal(monkeypatch, tmp_path):
+    monkeypatch.setenv("ALPHADESK_DATA_DIR", str(tmp_path))
+    store = importlib.reload(importlib.import_module("src.api.run_store"))
+    api_app = importlib.reload(importlib.import_module("src.api.app"))
+
+    run_id, _ = store.save_idea_scout_run(
+        "top_buys",
+        {
+            "as_of": "2026-06-24",
+            "universe": "test",
+            "scout_mode": "top_buys",
+            "ideas": [
+                {
+                    "rank": 1,
+                    "ticker": "AFRM",
+                    "company": "Affirm",
+                    "theme": "BNPL operating leverage",
+                    "score": 0.91,
+                    "horizon": "6-18 months",
+                    "thesis": "Affirm is a Buy because merchant distribution and credit normalization improve unit economics.",
+                    "catalysts": ["Amazon and Shopify distribution expands GMV."],
+                    "risks": ["Funding costs remain elevated."],
+                    "source": "alpha_scout/llm_synthesis",
+                }
+            ],
+            "data_source_checks": [
+                {
+                    "source": "Alpha Scout pipeline",
+                    "status": "validated",
+                    "detail": "pipeline completed",
+                    "checked_at": "2026-06-24",
+                }
+            ],
+            "audit": {
+                "raw_candidates": 100,
+                "capped_candidates": 50,
+                "tracked_ticker_checks": {"AFRM": {"recommended_as": "portfolio", "composite": 91.0}},
+            },
+            "cost_usd": 0.01,
+            "degraded_reasons": [],
+            "disclaimer": "research only",
+        },
+    )
+
+    context = api_app._resolve_council_context(
+        "AFRM",
+        source="scout",
+        idea_run_id=run_id,
+        score_snapshot_id=None,
+    )
+    prompt = api_app._panel_model_json_prompt("AFRM", "z-ai/glm-5.2", context)
+
+    assert context["source"] == "alpha_scout"
+    assert context["score"] == 0.91
+    assert "Affirm is a Buy" in prompt
+    assert "UPSTREAM CONTEXT TO AUDIT" in prompt
+
+    panel = [
+        api_app.PanelVerdict(
+            model_id="z-ai/glm-5.2",
+            label="GLM",
+            rating="Hold",
+            confidence=0.55,
+            thesis="Credit costs are a risk.",
+            dissent=False,
+            rejected_claims=["Funding costs remain elevated."],
+            challenges=["Watch delinquencies."],
+        ),
+        api_app.PanelVerdict(
+            model_id="moonshotai/kimi-k2.6",
+            label="Kimi",
+            rating="Overweight",
+            confidence=0.72,
+            thesis="Distribution and unit economics support upside.",
+            dissent=False,
+            accepted_claims=["Amazon and Shopify distribution expands GMV."],
+            challenges=[],
+        ),
+        api_app.PanelVerdict(
+            model_id="deepseek/deepseek-v4-pro",
+            label="DeepSeek",
+            rating="Hold",
+            confidence=0.60,
+            thesis="Upside exists but needs confirmation.",
+            dissent=False,
+            challenges=["Confirm credit normalization."],
+        ),
+    ]
+
+    result = api_app._synthesize_openrouter_council("AFRM", panel, 0.03, [], context)
+
+    assert result.verdict.rating == "Overweight"
+    assert result.verdict.conviction_label == "alpha_scout context-aware synthesis"
+    assert "Amazon and Shopify distribution expands GMV." in result.verdict.catalysts
 
 
 def test_degraded_cross_exam_does_not_overwrite_initial_panel(monkeypatch):
@@ -723,8 +823,8 @@ def test_truncated_panel_json_is_not_rendered_as_thesis():
 
     parsed = api_app._plain_panel_from_text(
         "NVDA",
-        "google/gemini-3.5-flash",
-        '{"model_id":"google/gemini-3.5-flash","label":"NVIDIA Corporation (NVDA',
+        "z-ai/glm-5.2",
+        '{"model_id":"z-ai/glm-5.2","label":"NVIDIA Corporation (NVDA',
     )
 
     assert not parsed["thesis"].startswith("{")
@@ -746,10 +846,9 @@ def test_openrouter_mock_council_finishes_without_network(monkeypatch):
         api_app._run_openrouter_council(
             "NVDA",
             [
-                "google/gemini-3.5-flash",
-                "moonshotai/kimi-k2.7-code",
-                "deepseek/deepseek-v4-pro",
                 "z-ai/glm-5.2",
+                "moonshotai/kimi-k2.6",
+                "deepseek/deepseek-v4-pro",
             ],
         )
     )
@@ -757,10 +856,9 @@ def test_openrouter_mock_council_finishes_without_network(monkeypatch):
     assert result.verdict.ticker == "NVDA"
     assert result.cost_usd == 0.0
     assert [item.model_id for item in result.panel] == [
-        "google/gemini-3.5-flash",
-        "moonshotai/kimi-k2.7-code",
-        "deepseek/deepseek-v4-pro",
         "z-ai/glm-5.2",
+        "moonshotai/kimi-k2.6",
+        "deepseek/deepseek-v4-pro",
     ]
     assert any(item.dissent for item in result.panel)
 
@@ -805,7 +903,8 @@ def test_openrouter_fusion_adapter_uses_selected_models(monkeypatch):
     assert captured["extra_body"]["tool_choice"] == "required"
     assert captured["extra_body"]["plugins"] == [{"id": "response-healing"}]
     assert captured["extra_body"]["tools"][0]["parameters"]["analysis_models"] == [
-        "x-ai/grok-4.3",
+        "moonshotai/kimi-k2.6",
+        "z-ai/glm-5.2",
     ]
 
 
@@ -874,10 +973,9 @@ def test_openrouter_fusion_maps_gcp_model_ids(monkeypatch):
         ["claude-opus-4-8", "gemini-3.1-pro-preview", "xai/grok-4.20-reasoning", "openrouter/fusion"],
     )
 
-    # Legacy / GCP model ids all collapse onto the four allowed OpenRouter models.
+    # Legacy / GCP model ids all collapse onto the reliable OpenRouter roster.
     assert captured["extra_body"]["tools"][0]["parameters"]["analysis_models"] == [
         "moonshotai/kimi-k2.6",
-        "google/gemini-3.5-flash",
         "z-ai/glm-5.2",
     ]
 
@@ -1072,7 +1170,8 @@ def test_openrouter_fusion_maps_investment_council_envelope(monkeypatch):
     assert result.verdict.rating == "Overweight"
     assert result.verdict.conviction == 0.74
     assert result.verdict.scenarios[1].ret_pct == 23.6
-    assert result.panel[0].model_id == "google/gemini-3.1-flash-lite"
+    assert result.panel[0].model_id == "moonshotai/kimi-k2.6"
+    assert result.panel[1].model_id == "z-ai/glm-5.2"
     assert result.panel[0].label == "Secular Growth Bull"
     assert result.panel[2].dissent is True
     assert result.judge.crowded_narrative_flag is not None

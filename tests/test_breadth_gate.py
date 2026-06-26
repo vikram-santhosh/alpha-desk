@@ -79,6 +79,21 @@ def test_bear_signal_lowers_score():
     )
 
 
+def test_weak_bear_does_not_veto_two_positive_platforms():
+    """AMZN-like evidence should land in the buy band, not collapse to Weak."""
+    signals = [
+        TickerSignal("AMZN", "earnings", Direction.BULL, 0.69, 0.75, "EPS beat", "2026-06-23"),
+        TickerSignal("AMZN", "valuation", Direction.BULL, 0.40, 0.70, "margin of safety", "2026-06-23"),
+        TickerSignal("AMZN", "news", Direction.BEAR, 0.16, 0.90, "policy concern", "2026-06-23"),
+    ]
+    weights = {"earnings": 1.8, "valuation": 1.4, "news": 1.0}
+
+    result = score_tickers(signals, weights, [])
+    amzn = _find(result, "AMZN")
+
+    assert 7.0 <= amzn.score < 8.0
+
+
 def test_neutral_signal_does_not_count_toward_breadth():
     """A NEUTRAL signal does not count as a bull platform for the breadth gate."""
     signals = [

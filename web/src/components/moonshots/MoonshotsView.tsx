@@ -16,13 +16,17 @@ import { rise } from "@/lib/motion";
 const ALL_SECTORS = "All";
 type ScoutMode = "new_discoveries" | "top_buys";
 
-function ideaToMoonshot(idea: IdeaScoutResult["ideas"][number], scoutMode: string, degradedReasons: string[]): Moonshot {
+function ideaToMoonshot(
+  idea: IdeaScoutResult["ideas"][number],
+  result: IdeaScoutResult
+): Moonshot {
   const conviction = Math.max(0, Math.min(100, Math.round(idea.score * 100)));
   const downside = Math.max(10, Math.min(55, Math.round(60 - conviction / 2)));
   const upside = Math.max(40, Math.min(220, Math.round(55 + conviction * 1.5)));
   const sector = idea.theme.split("·").at(-1)?.trim() || idea.theme || "Recommendation";
+  const degradedReasons = result.degraded_reasons ?? [];
   return {
-    id: `backend-${idea.ticker.toLowerCase()}-${idea.rank}-${scoutMode}`,
+    id: `backend-${idea.ticker.toLowerCase()}-${idea.rank}-${result.scout_mode}`,
     ticker: idea.ticker,
     name: idea.company || idea.ticker,
     sector,
@@ -33,8 +37,10 @@ function ideaToMoonshot(idea: IdeaScoutResult["ideas"][number], scoutMode: strin
     source: "backend",
     sourceDetail:
       degradedReasons.length > 0
-        ? `Alpha Scout ${scoutMode} with degradation: ${degradedReasons[0]}`
-        : `Alpha Scout ${scoutMode} via FastAPI.`,
+        ? `Alpha Scout ${result.scout_mode} with degradation: ${degradedReasons[0]}`
+        : `Alpha Scout ${result.scout_mode} via FastAPI.`,
+    scoutRunId: result.run_id,
+    scoutMode: result.scout_mode,
   };
 }
 
@@ -68,7 +74,7 @@ export default function MoonshotsView() {
     const nextMode = data.scout_mode === "top_buys" ? "top_buys" : "new_discoveries";
     setResult(data);
     setMode(nextMode);
-    setMoonshots(data.ideas.map((idea) => ideaToMoonshot(idea, data.scout_mode, data.degraded_reasons ?? [])));
+    setMoonshots(data.ideas.map((idea) => ideaToMoonshot(idea, data)));
   }, []);
 
   useEffect(() => {

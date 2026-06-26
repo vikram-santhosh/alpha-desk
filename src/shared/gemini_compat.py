@@ -1,8 +1,9 @@
 """LLM shim for AlphaDesk.
 
 Backend selection logic:
-  - On GCP (detected via GOOGLE_CLOUD_PROJECT or K_SERVICE env vars): always Gemini
-  - Locally: ANTHROPIC_API_KEY → Anthropic, else GEMINI_API_KEY → Gemini
+  - OPENROUTER_API_KEY → OpenRouter allowlisted models
+  - Else ANTHROPIC_API_KEY → Anthropic
+  - Else GEMINI_API_KEY → Gemini
 
 Exposes the same interface so every call-site can keep using:
 
@@ -21,6 +22,11 @@ Model mapping (Gemini):
   claude-haiku-*  → gemini-3.1-flash-lite-preview
   claude-sonnet-* → gemini-3.1-pro-preview
   claude-opus-*   → gemini-3.1-pro-preview
+
+Model mapping (OpenRouter):
+  claude-haiku-*  → z-ai/glm-5.2
+  claude-sonnet-* → z-ai/glm-5.2
+  claude-opus-*   → moonshotai/kimi-k2.6
 """
 from __future__ import annotations
 
@@ -53,12 +59,12 @@ def _resolve_anthropic_model(model: str) -> str:
 # Slugs can be overridden via env (OPENROUTER_OPUS / _SONNET / _HAIKU) since
 # OpenRouter occasionally revises them.
 
-# Inference is restricted to exactly these four models (override via env).
-# Roles map by cost/capability: heavy → Kimi K2.6 · standard → GLM 5.2 ·
-# bulk → Gemini 3.5 Flash · plus DeepSeek V4. Nothing else can be called.
+# Inference is restricted to the currently reliable OpenRouter models (override
+# via env). Roles map by cost/capability: heavy → Kimi K2.6 · standard/bulk →
+# GLM 5.2 · plus DeepSeek V4. Nothing else can be called.
 OPENROUTER_OPUS     = os.getenv("OPENROUTER_OPUS",     "moonshotai/kimi-k2.6")
 OPENROUTER_SONNET   = os.getenv("OPENROUTER_SONNET",   "z-ai/glm-5.2")
-OPENROUTER_HAIKU    = os.getenv("OPENROUTER_HAIKU",    "google/gemini-3.5-flash")
+OPENROUTER_HAIKU    = os.getenv("OPENROUTER_HAIKU",    "z-ai/glm-5.2")
 OPENROUTER_DEEPSEEK = os.getenv("OPENROUTER_DEEPSEEK", "deepseek/deepseek-v4-pro")
 
 ALLOWED_OPENROUTER_MODELS = {
@@ -67,7 +73,7 @@ ALLOWED_OPENROUTER_MODELS = {
 
 
 def _resolve_openrouter_model(model: str) -> str:
-    """Resolve any model name to one of the four allowed OpenRouter models.
+    """Resolve any model name to one of the allowed OpenRouter models.
 
     Claude shorthands map by role; a raw slug passes through only if it is in
     the allowed set, otherwise it collapses to GLM 5.2. Any other bare name

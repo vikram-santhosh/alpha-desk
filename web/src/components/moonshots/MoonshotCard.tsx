@@ -26,7 +26,8 @@ export function MoonshotCard({ moonshot, index }: MoonshotCardProps) {
   const total = moonshot.asymmetry.downside + moonshot.asymmetry.upside;
   const upsidePct = total > 0 ? (moonshot.asymmetry.upside / total) * 100 : 50;
   const openCouncilDeepDive = () => {
-    const params = new URLSearchParams({ ticker: moonshot.ticker, run: "1", from: "scout" });
+    const params = new URLSearchParams({ ticker: moonshot.ticker, run: "1", from: "scout", source: "scout" });
+    if (moonshot.scoutRunId) params.set("idea_run_id", String(moonshot.scoutRunId));
     navigate(`/council?${params.toString()}`);
   };
 

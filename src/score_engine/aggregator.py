@@ -6,8 +6,8 @@ No I/O, no globals, no randomness.
 Scoring algorithm:
   1. Deduplicate (ticker, sensor) pairs — keep highest-confidence signal.
   2. raw_score(ticker) = Σ weight[sensor] × direction × strength × confidence
-  3. Normalize to 0–10:  score = clamp(raw / MAX_RAW * 10, 0, 10)
-     where MAX_RAW = Σ weight[sensor] (all sensors at full bull).
+  3. Normalize to 0–10 against evidence-scaled directional conviction.
+     Weak bear/bull signals should count as weak evidence, not full votes.
   4. Breadth gate:
        bull_platforms < BREADTH_MIN  → cap at 6.9
        bull_platforms in [BREADTH_MIN, TOP_TIER_MIN)  → cap at 7.9
@@ -22,6 +22,7 @@ BREADTH_MIN   = 2    # platforms required to cross 7.0
 TOP_TIER_MIN  = 3    # platforms required for 8–10 band
 SCORE_SCALE   = 10.0
 SCORE_PRECISION = 2
+DENOM_STRENGTH_FLOOR = 0.35
 
 # When no weights entry exists for a sensor, use this fallback.
 DEFAULT_SENSOR_WEIGHT = 1.0
@@ -90,15 +91,16 @@ def score_tickers(
             elif sig.direction == Direction.BEAR:
                 bear_platforms.append(sig.sensor)
 
-        # Conviction-weighted normalization. Divide by the confidence-weighted
-        # weight of only the platforms that took a DIRECTIONAL stance. Neutral
-        # "no view" votes add 0 to the numerator and are excluded from the
-        # denominator so they don't dilute genuine consensus. The result is the
-        # average conviction (0..1) among platforms that have a view, scaled to
-        # 0..10; the breadth gate below caps how high a thinly-corroborated name
-        # may climb. Adding sensors can no longer lower a score.
+        # Conviction-weighted normalization. Divide by evidence-scaled weight
+        # for only platforms that took a DIRECTIONAL stance. Neutral "no view"
+        # votes add 0 to the numerator and are excluded from the denominator.
+        # The strength floor keeps tiny bullish signals from becoming perfect
+        # scores, while preventing a weak bearish item from acting like a
+        # full-strength veto.
         denom = sum(
-            weights.get(s.sensor, DEFAULT_SENSOR_WEIGHT) * s.confidence
+            weights.get(s.sensor, DEFAULT_SENSOR_WEIGHT)
+            * s.confidence
+            * max(s.strength, DENOM_STRENGTH_FLOOR)
             for s in ticker_signals if s.direction != Direction.NEUTRAL
         )
         if denom <= 0:

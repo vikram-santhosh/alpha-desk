@@ -15,9 +15,8 @@ import { StatusBadge } from "@/components/ui/StatusBadge";
 
 const fallbackRoster: ModelOption[] = [
   { model_id: "z-ai/glm-5.2", label: "GLM 5.2", provider: "z-ai", enabled: true },
-  { model_id: "moonshotai/kimi-k2.7-code", label: "Kimi K2.7 Code", provider: "moonshotai", enabled: true },
+  { model_id: "moonshotai/kimi-k2.6", label: "Kimi K2.6", provider: "moonshotai", enabled: true },
   { model_id: "deepseek/deepseek-v4-pro", label: "DeepSeek V4 Pro", provider: "deepseek", enabled: true },
-  { model_id: "google/gemini-3.5-flash", label: "Gemini 3.5 Flash", provider: "google", enabled: true },
 ];
 
 const ratingVariant: Record<Rating, "info" | "success" | "warning" | "critical" | "neutral"> = {
@@ -50,6 +49,17 @@ function formatElapsed(seconds: number) {
   const minutes = Math.floor(seconds / 60);
   const remaining = seconds % 60;
   return minutes > 0 ? `${minutes}m ${remaining.toString().padStart(2, "0")}s` : `${remaining}s`;
+}
+
+function councilContextFromParams(searchParams: URLSearchParams) {
+  const source = searchParams.get("source") || searchParams.get("from") || undefined;
+  const ideaRunId = Number(searchParams.get("idea_run_id") || "");
+  const scoreSnapshotId = searchParams.get("score_snapshot_id") || undefined;
+  return {
+    source,
+    idea_run_id: Number.isFinite(ideaRunId) && ideaRunId > 0 ? ideaRunId : undefined,
+    score_snapshot_id: scoreSnapshotId,
+  };
 }
 
 function RunningCouncilBanner({
@@ -275,6 +285,16 @@ export default function CouncilView() {
   );
   const displayedModels = state.models.length ? state.models : selectedModels;
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const councilContext = useMemo(() => councilContextFromParams(searchParams), [searchParams]);
+  const contextLabel = useMemo(() => {
+    if (councilContext.source === "scout") {
+      return `Using Alpha Scout context${councilContext.idea_run_id ? ` from run #${councilContext.idea_run_id}` : ""}.`;
+    }
+    if (councilContext.source === "score_engine") {
+      return `Using score-engine context${councilContext.score_snapshot_id ? ` from ${councilContext.score_snapshot_id}` : ""}.`;
+    }
+    return "";
+  }, [councilContext]);
 
   useEffect(() => {
     const queryTicker = searchParams.get("ticker")?.trim().toUpperCase();
@@ -285,11 +305,11 @@ export default function CouncilView() {
     const queryTicker = searchParams.get("ticker")?.trim().toUpperCase();
     const shouldRun = searchParams.get("run") === "1" || searchParams.get("autorun") === "1";
     if (!queryTicker || !shouldRun || selectedModels.length === 0 || stream.status === "loading") return;
-    const runKey = queryTicker;
+    const runKey = JSON.stringify([queryTicker, councilContext]);
     if (autoRunKeyRef.current === runKey) return;
     autoRunKeyRef.current = runKey;
-    stream.runCouncil({ ticker: queryTicker, models: selectedModels });
-  }, [searchParams, selectedModels, stream]);
+    stream.runCouncil({ ticker: queryTicker, models: selectedModels, ...councilContext });
+  }, [councilContext, searchParams, selectedModels, stream]);
 
   useEffect(() => {
     if (stream.status !== "loading") {
@@ -307,7 +327,7 @@ export default function CouncilView() {
   const run = () => {
     const cleaned = ticker.trim().toUpperCase();
     if (!cleaned || selectedModels.length === 0) return;
-    stream.runCouncil({ ticker: cleaned, models: selectedModels });
+    stream.runCouncil({ ticker: cleaned, models: selectedModels, ...councilContext });
   };
 
   return (
@@ -324,8 +344,13 @@ export default function CouncilView() {
             <h1 className="text-2xl font-semibold tracking-tight text-(--color-text-primary)">Model Council</h1>
           </div>
           <p className="mt-1 text-sm text-(--color-text-secondary)">
-            Streams `/api/council/stream` from the FastAPI backend.
+            Streams `/api/council/stream` from the FastAPI backend with Scout or score context when available.
           </p>
+          {contextLabel && (
+            <p className="mt-1 font-mono text-xs text-(--color-accent-cyan)">
+              {contextLabel}
+            </p>
+          )}
         </div>
         <StatusBadge variant={stream.status === "loading" ? "info" : stream.status === "error" ? "critical" : "success"}>
           {stream.status === "idle" ? "Ready" : stream.status}

@@ -73,6 +73,9 @@ export function councilStreamUrl(request: CouncilRunRequest) {
   if (request.models.length > 0) {
     params.set("models", request.models.join(","));
   }
+  if (request.source) params.set("source", request.source);
+  if (request.idea_run_id) params.set("idea_run_id", String(request.idea_run_id));
+  if (request.score_snapshot_id) params.set("score_snapshot_id", request.score_snapshot_id);
   return apiUrl(`/api/council/stream?${params.toString()}`);
 }
 

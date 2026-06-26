@@ -11,6 +11,7 @@ interface ScoreCardProps {
   entry: TopBuyScore;
   rank: number;
   index: number;
+  snapshotId?: string;
 }
 
 // Tiers mirror the calibration rubric in docs/ALPHADESK.md.
@@ -36,7 +37,7 @@ function DirectionIcon({ direction }: { direction: string }) {
   return <Minus className="h-3.5 w-3.5 text-(--color-text-tertiary) shrink-0" />;
 }
 
-export function ScoreCard({ entry, rank, index }: ScoreCardProps) {
+export function ScoreCard({ entry, rank, index, snapshotId }: ScoreCardProps) {
   const reducedMotion = useReducedMotion();
   const navigate = useNavigate();
   const tier = getTier(entry.score);
@@ -46,7 +47,8 @@ export function ScoreCard({ entry, rank, index }: ScoreCardProps) {
   const neutralBreakdown = entry.breakdown.filter(b => b.direction === "NEUTRAL");
 
   const openCouncil = () => {
-    const params = new URLSearchParams({ ticker: entry.ticker, run: "1", from: "scout" });
+    const params = new URLSearchParams({ ticker: entry.ticker, run: "1", from: "score_engine", source: "score_engine" });
+    if (snapshotId) params.set("score_snapshot_id", snapshotId);
     navigate(`/council?${params.toString()}`);
   };
 

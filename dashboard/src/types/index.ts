@@ -104,6 +104,8 @@ export interface Moonshot {
   whyNow: string;
   source?: "backend" | "mock";
   sourceDetail?: string;
+  scoutRunId?: number;
+  scoutMode?: string;
 }
 
 export interface PredictionMarket {
@@ -207,6 +209,9 @@ export interface PortfolioSnapshot {
 export interface CouncilRunRequest {
   ticker: string;
   models: string[];
+  source?: string;
+  idea_run_id?: number;
+  score_snapshot_id?: string;
 }
 
 export interface PanelVerdict {

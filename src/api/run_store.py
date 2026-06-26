@@ -111,6 +111,26 @@ def latest_idea_scout_run(mode: Optional[str] = None) -> Optional[dict[str, Any]
     return payload
 
 
+def get_idea_scout_run(run_id: int) -> Optional[dict[str, Any]]:
+    conn = _get_db()
+    row = conn.execute(
+        """
+        SELECT id, created_at, payload
+        FROM idea_scout_runs
+        WHERE id = ?
+        LIMIT 1
+        """,
+        (int(run_id),),
+    ).fetchone()
+    conn.close()
+    if row is None:
+        return None
+    payload = json.loads(row[2])
+    payload.setdefault("run_id", int(row[0]))
+    payload.setdefault("saved_at", row[1])
+    return payload
+
+
 def list_idea_scout_runs(limit: int = 20, mode: Optional[str] = None) -> list[dict[str, Any]]:
     limit = max(1, min(100, int(limit)))
     conn = _get_db()
