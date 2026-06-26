@@ -43,6 +43,7 @@ class RunRequest:
     sensors:         list[str] | str = "auto"   # list of sensor names OR "auto"
     snapshot_id:     Optional[str] = None        # re-score an existing snapshot
     weights_version: Optional[str] = None        # pin a weights version
+    tickers:         Optional[list[str]] = None  # override the default ticker universe
 
 
 @dataclass

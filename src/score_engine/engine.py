@@ -5,6 +5,7 @@ import time
 
 from src.score_engine.aggregator import score_tickers
 from src.score_engine.sensors.base import REGISTRY, gather_all_votes
+from src.score_engine.sensors.cognition import CognitionSensor
 from src.score_engine.sensors.earnings import EarningsSensor
 from src.score_engine.sensors.news import NewsSensor
 from src.score_engine.sensors.prediction import PredictionSensor
@@ -17,8 +18,7 @@ from src.score_engine.signals import RunRequest, RunResult, TickerSignal
 from src.score_engine.snapshot import load_snapshot, new_snapshot_id, save_snapshot
 from src.score_engine.weights import WEIGHTS_VERSION, load_score_engine_config, load_weights
 
-# Register built-in sensors (M1: earnings + reddit; M2 adds the rest)
-# Built-in sensors (M2: full multi-platform corroboration).
+# Built-in sensors (M2: full multi-platform corroboration + M3: cognition).
 REGISTRY.register(EarningsSensor())
 REGISTRY.register(RedditSensor())
 REGISTRY.register(SuperinvestorSensor())
@@ -27,6 +27,7 @@ REGISTRY.register(NewsSensor())
 REGISTRY.register(PredictionSensor())
 REGISTRY.register(YouTubeSensor())
 REGISTRY.register(SubstackSensor())
+REGISTRY.register(CognitionSensor())
 
 
 def _get_tickers() -> list[str]:
@@ -52,7 +53,7 @@ async def run_scoring(req: RunRequest) -> RunResult:
         missing:      list[str]          = []
         snapshot_id:  str                = req.snapshot_id
     else:
-        tickers = _get_tickers()
+        tickers = req.tickers or _get_tickers()
 
         if req.sensors == "auto":
             sensors = REGISTRY.all()

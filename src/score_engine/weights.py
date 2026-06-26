@@ -13,6 +13,7 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "youtube":       0.7,
     "substack":      1.0,
     "x":             0.6,
+    "cognition":     1.0,
 }
 
 WEIGHTS_VERSION = "v1-config"

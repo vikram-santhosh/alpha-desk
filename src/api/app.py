@@ -88,6 +88,9 @@ class CouncilResult(BaseModel):
 class RunRequest(BaseModel):
     ticker: str = Field(min_length=1)
     models: list[str] = Field(default_factory=list)
+    source: Optional[str] = None
+    idea_run_id: Optional[int] = None
+    score_snapshot_id: Optional[str] = None
 
 
 class DoneEvent(BaseModel):
@@ -230,26 +233,33 @@ DEFAULT_OPENROUTER_ANALYSIS_MODELS = [
         provider="deepseek",
         enabled=True,
     ),
-    ModelOption(
-        model_id="google/gemini-3.5-flash",
-        label="Gemini 3.5 Flash",
-        provider="google",
-        enabled=True,
-    ),
 ]
 
-# Inference is restricted to four OpenRouter models: GLM 5.2, Kimi K2.6,
-# Gemini 3.5 Flash, DeepSeek V4. Legacy names alias onto that set (heavy →
-# Kimi, pro/flash → Gemini 3.5 Flash, anything else → GLM 5.2).
+# Council inference is restricted to the currently reliable OpenRouter models:
+# GLM 5.2, Kimi K2.6, and DeepSeek V4. Legacy or unavailable names alias onto
+# that set so stale UI chips/env vars cannot call a broken model.
+OPENROUTER_ALLOWED_ANALYSIS_MODEL_IDS = {
+    model.model_id for model in DEFAULT_OPENROUTER_ANALYSIS_MODELS
+}
+
 OPENROUTER_MODEL_ALIASES = {
     "claude-opus-4-8": "moonshotai/kimi-k2.6",
-    "gemini-flash-3.5": "google/gemini-3.5-flash",
-    "gemini-3.5-flash": "google/gemini-3.5-flash",
-    "gemini-3.1-pro-preview": "google/gemini-3.5-flash",
+    "anthropic/claude-opus-4.8": "moonshotai/kimi-k2.6",
+    "anthropic/claude-opus-4.8-fast": "moonshotai/kimi-k2.6",
+    "gemini-flash-3.5": "z-ai/glm-5.2",
+    "gemini-3.5-flash": "z-ai/glm-5.2",
+    "google/gemini-3.5-flash": "z-ai/glm-5.2",
+    "gemini-3.1-pro-preview": "z-ai/glm-5.2",
+    "google/gemini-3.1-flash-lite": "z-ai/glm-5.2",
     "kimi-k2.6": "moonshotai/kimi-k2.6",
     "moonshotai/kimi-k2.6": "moonshotai/kimi-k2.6",
+    "moonshotai/kimi-k2.7-code": "moonshotai/kimi-k2.6",
     "deepseek-v4-pro": "deepseek/deepseek-v4-pro",
+    "deepseek/deepseek-v4-pro": "deepseek/deepseek-v4-pro",
     "glm-5.2": "z-ai/glm-5.2",
+    "z-ai/glm-5.2": "z-ai/glm-5.2",
+    "x-ai/grok-4.20": "z-ai/glm-5.2",
+    "x-ai/grok-4.3": "z-ai/glm-5.2",
     "xai/grok-4.20-reasoning": "z-ai/glm-5.2",
 }
 
@@ -290,7 +300,14 @@ async def run_council(request: RunRequest) -> CouncilResult:
     if not ticker:
         raise HTTPException(status_code=400, detail="ticker is required")
     models = request.models or [model.model_id for model in get_council_models() if model.enabled]
-    result = await _run_council(ticker, models)
+    await _maybe_score_ticker_async(ticker)
+    context = _resolve_council_context(
+        ticker,
+        source=request.source,
+        idea_run_id=request.idea_run_id,
+        score_snapshot_id=request.score_snapshot_id,
+    )
+    result = await _run_council(ticker, models, context)
     result = _apply_cost_guardrail(result)
     return _save_council_result(result, ticker, models)
 
@@ -299,6 +316,9 @@ async def run_council(request: RunRequest) -> CouncilResult:
 async def stream_council(
     ticker: str = Query(..., min_length=1),
     models: str = Query(default=""),
+    source: Optional[str] = Query(default=None),
+    idea_run_id: Optional[int] = Query(default=None, ge=1),
+    score_snapshot_id: Optional[str] = Query(default=None),
 ) -> StreamingResponse:
     """Stream a council deliberation using server-sent events."""
     ticker_value = _clean_ticker(ticker)
@@ -307,6 +327,13 @@ async def stream_council(
     model_ids = _parse_models(models)
     if not model_ids:
         model_ids = [model.model_id for model in get_council_models() if model.enabled]
+    await _maybe_score_ticker_async(ticker_value)
+    context = _resolve_council_context(
+        ticker_value,
+        source=source,
+        idea_run_id=idea_run_id,
+        score_snapshot_id=score_snapshot_id,
+    )
 
     async def event_generator() -> AsyncGenerator[str, None]:
         yield _sse("panel_started", {"ticker": ticker_value, "models": model_ids})
@@ -323,13 +350,14 @@ async def stream_council(
                 async for event_name, event_data in _stream_openrouter_council_events(
                     ticker_value,
                     model_ids,
+                    context,
                 ):
                     yield _sse(event_name, event_data)
                 return
 
             result = _apply_cost_guardrail(
                 await asyncio.wait_for(
-                    _run_council(ticker_value, model_ids),
+                    _run_council(ticker_value, model_ids, context),
                     timeout=_stream_timeout_s(),
                 )
             )
@@ -918,27 +946,239 @@ def _macro_indicator_count(macro_data: dict[str, Any]) -> int:
     )
 
 
-async def _run_council(ticker: str, models: list[str]) -> CouncilResult:
+async def _maybe_score_ticker_async(ticker: str) -> None:
+    """Ensure `ticker` appears in a score snapshot so council can cite evidence.
+
+    If the ticker is already in the most-recent snapshot this is a no-op.
+    Otherwise we run a targeted quick-score for just that ticker using the full
+    sensor suite (including cognition/web-search) so the council has grounded
+    evidence to reason over rather than falling back on training priors.
+    Errors are swallowed — missing context degrades gracefully.
+    """
+    try:
+        from src.score_engine.engine import run_scoring
+        from src.score_engine.signals import RunRequest
+        from src.score_engine.snapshot import list_snapshots, load_snapshot
+
+        rows = list_snapshots(limit=1)
+        if rows:
+            snap = load_snapshot(rows[0]["snapshot_id"])
+            if snap and any(s.ticker.upper() == ticker for s in (snap.get("scores") or [])):
+                return  # already scored
+
+        req = RunRequest(tickers=[ticker], depth="quick", top_n=1)
+        await run_scoring(req)
+    except Exception:
+        log.exception("_maybe_score_ticker_async failed for %s — council will proceed without score context", ticker)
+
+
+def _resolve_council_context(
+    ticker: str,
+    *,
+    source: Optional[str],
+    idea_run_id: Optional[int],
+    score_snapshot_id: Optional[str],
+) -> dict[str, Any]:
+    source_key = (source or "").strip().lower()
+    if idea_run_id or source_key in {"scout", "alpha_scout", "ideas", "idea_scout"}:
+        context = _resolve_scout_council_context(ticker, idea_run_id)
+        if context:
+            return context
+    if score_snapshot_id or source_key in {"score", "score_engine", "top_buys"}:
+        context = _resolve_score_council_context(ticker, score_snapshot_id)
+        if context:
+            return context
+    return {}
+
+
+def _resolve_scout_council_context(ticker: str, idea_run_id: Optional[int]) -> dict[str, Any]:
+    try:
+        payload = (
+            run_store.get_idea_scout_run(idea_run_id)
+            if idea_run_id
+            else run_store.latest_idea_scout_run("top_buys") or run_store.latest_idea_scout_run()
+        )
+    except Exception:
+        log.exception("Failed to load Alpha Scout context for %s", ticker)
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+
+    idea = _find_idea_in_payload(payload, ticker)
+    if not idea:
+        return {}
+    checks = payload.get("data_source_checks") if isinstance(payload.get("data_source_checks"), list) else []
+    validated_sources = [
+        str(item.get("source"))
+        for item in checks
+        if isinstance(item, dict) and item.get("status") == "validated" and item.get("source")
+    ]
+    configured_sources = [
+        str(item.get("source"))
+        for item in checks
+        if isinstance(item, dict) and item.get("status") == "configured" and item.get("source")
+    ]
+    audit = payload.get("audit") if isinstance(payload.get("audit"), dict) else {}
+    tracked = (audit.get("tracked_ticker_checks") or {}).get(ticker) if isinstance(audit.get("tracked_ticker_checks"), dict) else None
+    return {
+        "source": "alpha_scout",
+        "run_id": payload.get("run_id"),
+        "saved_at": payload.get("saved_at"),
+        "scout_mode": payload.get("scout_mode"),
+        "as_of": payload.get("as_of"),
+        "universe": payload.get("universe"),
+        "rank": idea.get("rank"),
+        "score": idea.get("score"),
+        "company": idea.get("company"),
+        "theme": idea.get("theme"),
+        "horizon": idea.get("horizon"),
+        "thesis": idea.get("thesis"),
+        "catalysts": _as_string_list(idea.get("catalysts"))[:4],
+        "risks": _as_string_list(idea.get("risks"))[:4],
+        "idea_source": idea.get("source"),
+        "validated_sources": validated_sources[:10],
+        "configured_sources": configured_sources[:10],
+        "degraded_reasons": _as_string_list(payload.get("degraded_reasons"))[:4],
+        "audit": {
+            "raw_candidates": audit.get("raw_candidates"),
+            "capped_candidates": audit.get("capped_candidates"),
+            "tracked_ticker": tracked,
+        },
+    }
+
+
+def _find_idea_in_payload(payload: dict[str, Any], ticker: str) -> Optional[dict[str, Any]]:
+    ideas = payload.get("ideas") if isinstance(payload.get("ideas"), list) else []
+    for item in ideas:
+        if isinstance(item, dict) and str(item.get("ticker") or "").upper() == ticker:
+            return item
+    return None
+
+
+def _resolve_score_council_context(ticker: str, snapshot_id: Optional[str]) -> dict[str, Any]:
+    try:
+        from src.score_engine.aggregator import score_tickers
+        from src.score_engine.signals import Direction
+        from src.score_engine.snapshot import list_snapshots, load_snapshot
+        from src.score_engine.weights import load_weights
+
+        selected_snapshot_id = snapshot_id
+        if not selected_snapshot_id:
+            rows = list_snapshots(limit=1)
+            selected_snapshot_id = rows[0]["snapshot_id"] if rows else None
+        if not selected_snapshot_id:
+            return {}
+        snap = load_snapshot(selected_snapshot_id)
+        if snap is None:
+            return {}
+        scores = snap["scores"] or score_tickers(snap["signals"], load_weights(), [])
+        score = next((item for item in scores if item.ticker.upper() == ticker), None)
+        if score is None:
+            return {}
+        breakdown = []
+        for item in score.breakdown:
+            row = dict(item)
+            if isinstance(row.get("direction"), Direction):
+                row["direction"] = row["direction"].name
+            breakdown.append(row)
+        return {
+            "source": "score_engine",
+            "snapshot_id": selected_snapshot_id,
+            "weights_version": snap.get("weights_version"),
+            "score": score.score,
+            "platforms_reporting": score.platforms_reporting,
+            "platforms_failed": score.platforms_failed,
+            "breakdown": breakdown[:8],
+        }
+    except Exception:
+        log.exception("Failed to load score-engine context for %s", ticker)
+        return {}
+
+
+def _format_council_context(context: dict[str, Any]) -> str:
+    if not context:
+        return (
+            "No upstream Scout or score-engine context was provided. "
+            "Run this as a standalone council."
+        )
+    payload = json.dumps(context, ensure_ascii=True, separators=(",", ":"))
+    return (
+        "UPSTREAM CONTEXT TO AUDIT, NOT BLINDLY ACCEPT:\n"
+        f"{payload[:6000]}\n"
+        "Treat a high upstream score as a prior. Confirm it, downgrade it, or reject it, "
+        "but if you downgrade a Buy/Strong prior to Hold or worse, explicitly name the "
+        "disconfirming evidence in rejected_claims or challenges."
+    )
+
+
+def _context_prior_rating(context: dict[str, Any]) -> Optional[Rating]:
+    if not context:
+        return None
+    value = context.get("score")
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return None
+    if context.get("source") == "score_engine":
+        if score >= 8.5:
+            return "Buy"
+        if score >= 7.0:
+            return "Overweight"
+        return None
+    if score >= 0.85:
+        return "Buy"
+    if score >= 0.70:
+        return "Overweight"
+    return None
+
+
+def _context_adjusted_rating(
+    rating: Rating,
+    panel: list[PanelVerdict],
+    context: dict[str, Any],
+) -> Rating:
+    prior = _context_prior_rating(context)
+    if prior not in {"Buy", "Overweight"} or rating != "Hold":
+        return rating
+    positive = sum(1 for item in panel if item.rating in {"Buy", "Overweight"})
+    bearish = sum(1 for item in panel if item.rating in {"Underweight", "Sell"})
+    if bearish > 0 or positive == 0:
+        return rating
+    if prior == "Buy" and positive >= 2:
+        return "Buy"
+    return "Overweight"
+
+
+async def _run_council(
+    ticker: str,
+    models: list[str],
+    context: Optional[dict[str, Any]] = None,
+) -> CouncilResult:
     """Run the underlying council and normalize it into the Phase-F contract."""
     if os.getenv("OPENROUTER_API_KEY"):
-        return await _run_openrouter_council(ticker, models)
-    prompt = _council_prompt(ticker)
+        return await _run_openrouter_council(ticker, models, context or {})
+    prompt = _council_prompt(ticker, context or {})
     raw_result = await council.deliberate(prompt=prompt, max_tokens=1400)
     return _normalize_council_result(ticker, raw_result, models)
 
 
-async def _run_openrouter_council(ticker: str, models: list[str]) -> CouncilResult:
+async def _run_openrouter_council(
+    ticker: str,
+    models: list[str],
+    context: Optional[dict[str, Any]] = None,
+) -> CouncilResult:
     """Run a direct OpenRouter model council with an adversarial review round."""
+    council_context = context or {}
     selected_models = _openrouter_analysis_models(models)
     execution_mode = "openrouter_mock" if _mock_openrouter_enabled() else "openrouter_live"
     if _mock_openrouter_enabled():
-        tasks = [_run_openrouter_panel_model_async(ticker, model_id) for model_id in selected_models]
+        tasks = [_run_openrouter_panel_model_async(ticker, model_id, council_context) for model_id in selected_models]
         results = await asyncio.gather(*tasks, return_exceptions=True)
     else:
         results = []
         for model_id in selected_models:
             try:
-                results.append(await _run_openrouter_panel_model_async(ticker, model_id))
+                results.append(await _run_openrouter_panel_model_async(ticker, model_id, council_context))
             except Exception as exc:
                 results.append(exc)
 
@@ -978,6 +1218,7 @@ async def _run_openrouter_council(ticker: str, models: list[str]) -> CouncilResu
                     item.model_id,
                     item,
                     panel,
+                    council_context,
                 )
             except Exception as exc:
                 degraded_reasons.append(f"{item.label} cross-examination failed: {exc}")
@@ -988,7 +1229,7 @@ async def _run_openrouter_council(ticker: str, models: list[str]) -> CouncilResu
         if critiqued_by_id:
             panel = [critiqued_by_id.get(item.model_id, item) for item in panel]
 
-    return _synthesize_openrouter_council(ticker, panel, cost_usd, degraded_reasons).model_copy(
+    return _synthesize_openrouter_council(ticker, panel, cost_usd, degraded_reasons, council_context).model_copy(
         update={"execution_mode": execution_mode}
     )
 
@@ -996,8 +1237,10 @@ async def _run_openrouter_council(ticker: str, models: list[str]) -> CouncilResu
 async def _stream_openrouter_council_events(
     ticker: str,
     models: list[str],
+    context: Optional[dict[str, Any]] = None,
 ) -> AsyncGenerator[tuple[str, Any], None]:
     """Yield OpenRouter council SSE payloads as each seat completes."""
+    council_context = context or {}
     selected_models = _openrouter_analysis_models(models)
     execution_mode = "openrouter_mock" if _mock_openrouter_enabled() else "openrouter_live"
     panel: list[PanelVerdict] = []
@@ -1013,7 +1256,7 @@ async def _stream_openrouter_council_events(
         "completed": 0,
         "total": total,
     }
-    async for model_id, result in _openrouter_panel_results_as_completed(ticker, selected_models):
+    async for model_id, result in _openrouter_panel_results_as_completed(ticker, selected_models, council_context):
         if isinstance(result, Exception):
             verdict = _failed_panel_verdict(ticker, model_id, result)
             degraded_reasons.append(f"{_label_from_model_id(model_id)} failed: {result}")
@@ -1048,7 +1291,7 @@ async def _stream_openrouter_council_events(
                 "total": len(usable_panel),
             }
         completed_cross_exam = 0
-        async for item, result in _openrouter_cross_exam_results_as_completed(ticker, usable_panel, panel):
+        async for item, result in _openrouter_cross_exam_results_as_completed(ticker, usable_panel, panel, council_context):
             completed_cross_exam += 1
             if isinstance(result, Exception):
                 degraded_reasons.append(f"{item.label} cross-examination failed: {result}")
@@ -1073,7 +1316,7 @@ async def _stream_openrouter_council_events(
                 "total": len(usable_panel),
             }
 
-    result = _synthesize_openrouter_council(ticker, panel, cost_usd, degraded_reasons).model_copy(
+    result = _synthesize_openrouter_council(ticker, panel, cost_usd, degraded_reasons, council_context).model_copy(
         update={"execution_mode": execution_mode}
     )
     result = _apply_cost_guardrail(result)
@@ -1092,11 +1335,12 @@ async def _stream_openrouter_council_events(
 async def _openrouter_panel_results_as_completed(
     ticker: str,
     selected_models: list[str],
+    context: dict[str, Any],
 ) -> AsyncGenerator[tuple[str, tuple[PanelVerdict, float] | Exception], None]:
     async def run_one(model_id: str) -> tuple[str, tuple[PanelVerdict, float] | Exception]:
         try:
             result = await asyncio.wait_for(
-                _run_openrouter_panel_model_async(ticker, model_id),
+                _run_openrouter_panel_model_async(ticker, model_id, context),
                 timeout=_model_timeout_s(),
             )
             return model_id, result
@@ -1112,11 +1356,12 @@ async def _openrouter_cross_exam_results_as_completed(
     ticker: str,
     usable_panel: list[PanelVerdict],
     full_panel: list[PanelVerdict],
+    context: dict[str, Any],
 ) -> AsyncGenerator[tuple[PanelVerdict, tuple[PanelVerdict, float] | Exception], None]:
     async def run_one(item: PanelVerdict) -> tuple[PanelVerdict, tuple[PanelVerdict, float] | Exception]:
         try:
             result = await asyncio.wait_for(
-                _run_openrouter_cross_exam_async(ticker, item.model_id, item, full_panel),
+                _run_openrouter_cross_exam_async(ticker, item.model_id, item, full_panel, context),
                 timeout=_model_timeout_s(),
             )
             return item, result
@@ -1128,8 +1373,12 @@ async def _openrouter_cross_exam_results_as_completed(
         yield await task
 
 
-async def _run_openrouter_panel_model_async(ticker: str, model_id: str) -> tuple[PanelVerdict, float]:
-    return await asyncio.to_thread(_run_openrouter_panel_model_sync, ticker, model_id)
+async def _run_openrouter_panel_model_async(
+    ticker: str,
+    model_id: str,
+    context: Optional[dict[str, Any]] = None,
+) -> tuple[PanelVerdict, float]:
+    return await asyncio.to_thread(_run_openrouter_panel_model_sync, ticker, model_id, context or {})
 
 
 async def _run_openrouter_cross_exam_async(
@@ -1137,6 +1386,7 @@ async def _run_openrouter_cross_exam_async(
     model_id: str,
     own_verdict: PanelVerdict,
     panel: list[PanelVerdict],
+    context: Optional[dict[str, Any]] = None,
 ) -> tuple[PanelVerdict, float]:
     return await asyncio.to_thread(
         _run_openrouter_cross_exam_sync,
@@ -1144,6 +1394,7 @@ async def _run_openrouter_cross_exam_async(
         model_id,
         own_verdict,
         panel,
+        context or {},
     )
 
 
@@ -1164,14 +1415,18 @@ def _failed_panel_verdict(ticker: str, model_id: str, exc: Exception) -> PanelVe
     )
 
 
-def _run_openrouter_panel_model_sync(ticker: str, model_id: str) -> tuple[PanelVerdict, float]:
+def _run_openrouter_panel_model_sync(
+    ticker: str,
+    model_id: str,
+    context: Optional[dict[str, Any]] = None,
+) -> tuple[PanelVerdict, float]:
     if _mock_openrouter_enabled():
         return _mock_openrouter_panel_model(ticker, model_id), 0.0
 
     return _run_openrouter_panel_prompt_sync(
         ticker=ticker,
         model_id=model_id,
-        prompt=_panel_model_json_prompt(ticker, model_id),
+        prompt=_panel_model_json_prompt(ticker, model_id, context or {}),
         system=(
             "You are one AlphaDesk investment council seat. "
             "Return only valid JSON and keep the thesis concise."
@@ -1184,11 +1439,12 @@ def _run_openrouter_cross_exam_sync(
     model_id: str,
     own_verdict: PanelVerdict,
     panel: list[PanelVerdict],
+    context: Optional[dict[str, Any]] = None,
 ) -> tuple[PanelVerdict, float]:
     return _run_openrouter_panel_prompt_sync(
         ticker=ticker,
         model_id=model_id,
-        prompt=_panel_cross_exam_json_prompt(ticker, model_id, own_verdict, panel),
+        prompt=_panel_cross_exam_json_prompt(ticker, model_id, own_verdict, panel, context or {}),
         system=(
             "You are an adversarial AlphaDesk investment council seat. "
             "Critically accept or reject claims from other models. Return only valid JSON."
@@ -1444,7 +1700,7 @@ def _string_array_fragment(name: str, text: str) -> list[str]:
 
 def _mock_openrouter_panel_model(ticker: str, model_id: str) -> PanelVerdict:
     rating_by_model: dict[str, Rating] = {
-        "google/gemini-3.5-flash": "Overweight",
+        "moonshotai/kimi-k2.6": "Buy",
         "moonshotai/kimi-k2.7-code": "Buy",
         "deepseek/deepseek-v4-pro": "Hold",
         "z-ai/glm-5.2": "Overweight",
@@ -2148,18 +2404,25 @@ def _synthesize_openrouter_council(
     panel: list[PanelVerdict],
     cost_usd: float,
     degraded_reasons: list[str],
+    context: Optional[dict[str, Any]] = None,
 ) -> CouncilResult:
     if not panel:
         raise RuntimeError("OpenRouter council returned no panel results.")
 
+    council_context = context or {}
     marked_panel = _mark_dissent(panel)
-    rating = _modal_rating(marked_panel)
+    modal_rating = _modal_rating(marked_panel)
+    rating = _context_adjusted_rating(modal_rating, marked_panel, council_context)
     conviction = round(sum(item.confidence for item in marked_panel) / len(marked_panel), 2)
     contradictions = [
         f"{item.label} ({item.rating}) diverges from the modal rating."
         for item in marked_panel
-        if item.rating != rating
+        if item.rating != modal_rating
     ]
+    if rating != modal_rating:
+        contradictions.append(
+            f"Upstream {council_context.get('source')} context adjusted final rating from {modal_rating} to {rating}."
+        )
     if not contradictions:
         contradictions = ["The direct model council returned no rating-level dissent."]
     claim_rejections = [
@@ -2177,6 +2440,14 @@ def _synthesize_openrouter_council(
         for item in marked_panel
         for claim in item.accepted_claims[:2]
     ]
+    context_catalysts = _as_string_list(council_context.get("catalysts"))[:3]
+    context_risks = _as_string_list(council_context.get("risks"))[:3]
+    context_consensus = []
+    if council_context:
+        context_consensus = [
+            f"Upstream source: {council_context.get('source')}",
+            f"Upstream score: {council_context.get('score')}",
+        ]
 
     bullish = _panel_bullets(marked_panel, {"Buy", "Overweight"})
     bearish = _panel_bullets(marked_panel, {"Underweight", "Sell"})
@@ -2194,8 +2465,9 @@ def _synthesize_openrouter_council(
         consensus=[
             f"Modal rating: {rating}",
             f"Average conviction: {conviction:.2f}",
+            *context_consensus,
             *(claim_acceptances[:2] or []),
-        ],
+        ][:4],
         contradictions=(claim_rejections or contradictions)[:4],
         blind_spots=(
             claim_challenges
@@ -2209,15 +2481,19 @@ def _synthesize_openrouter_council(
         ticker=ticker,
         rating=rating,
         conviction=conviction,
-        conviction_label="Direct OpenRouter council synthesis",
+        conviction_label=(
+            f"{council_context.get('source')} context-aware synthesis"
+            if council_context else "Direct OpenRouter council synthesis"
+        ),
         scenarios=_scenarios_from_targets(None, None, None, conviction),
-        catalysts=(claim_acceptances or bullish or [item.thesis for item in marked_panel])[:4],
+        catalysts=(context_catalysts + (claim_acceptances or bullish or [item.thesis for item in marked_panel]))[:4],
         risks=(
-            claim_rejections
+            context_risks
+            + (claim_rejections
             or claim_challenges
             or bearish
             or cautious
-            or ["No explicit risk thesis returned by the direct council."]
+            or ["No explicit risk thesis returned by the direct council."])
         )[:4],
     )
     return CouncilResult(
@@ -2906,10 +3182,8 @@ def _openrouter_analysis_models(models: list[str]) -> list[str]:
     selected = models or [model.model_id for model in _openrouter_model_options() if model.enabled]
     analysis_models: list[str] = []
     for model in selected:
-        normalized = OPENROUTER_MODEL_ALIASES.get(model, model)
-        if normalized == os.getenv("OPENROUTER_FUSION_MODEL", "openrouter/fusion"):
-            continue
-        if _is_opus_openrouter_model(normalized):
+        normalized = _normalize_openrouter_analysis_model(model)
+        if not normalized:
             continue
         if normalized not in analysis_models:
             analysis_models.append(normalized)
@@ -2923,17 +3197,34 @@ def _openrouter_model_options() -> list[ModelOption]:
 
     options: list[ModelOption] = []
     for model_id in [item.strip() for item in configured.split(",") if item.strip()]:
-        if _is_opus_openrouter_model(model_id):
+        normalized = _normalize_openrouter_analysis_model(model_id)
+        if not normalized or any(option.model_id == normalized for option in options):
             continue
+        default_option = next(
+            (option for option in DEFAULT_OPENROUTER_ANALYSIS_MODELS if option.model_id == normalized),
+            None,
+        )
         options.append(
             ModelOption(
-                model_id=model_id,
-                label=_label_from_model_id(model_id),
-                provider=model_id.split("/", 1)[0] if "/" in model_id else "openrouter",
+                model_id=normalized,
+                label=default_option.label if default_option else _label_from_model_id(normalized),
+                provider=default_option.provider if default_option else normalized.split("/", 1)[0],
                 enabled=True,
             )
         )
     return options or DEFAULT_OPENROUTER_ANALYSIS_MODELS
+
+
+def _normalize_openrouter_analysis_model(model_id: str) -> str | None:
+    raw = model_id.strip()
+    normalized = OPENROUTER_MODEL_ALIASES.get(raw.lower(), raw)
+    if normalized == os.getenv("OPENROUTER_FUSION_MODEL", "openrouter/fusion"):
+        return None
+    if _is_opus_openrouter_model(normalized):
+        return None
+    if normalized not in OPENROUTER_ALLOWED_ANALYSIS_MODEL_IDS:
+        return None
+    return normalized
 
 
 def _is_opus_openrouter_model(model_id: str) -> bool:
@@ -3255,11 +3546,12 @@ def _portfolio_threshold() -> float:
         return 15.0
 
 
-def _council_prompt(ticker: str) -> str:
+def _council_prompt(ticker: str, context: Optional[dict[str, Any]] = None) -> str:
     return (
         "Run an AlphaDesk investment council on this ticker or idea. "
         "Return the rating, confidence, thesis, contradictions, blind spots, "
-        f"scenario returns, catalysts, and risks for: {ticker}"
+        f"scenario returns, catalysts, and risks for: {ticker}\n\n"
+        f"{_format_council_context(context or {})}"
     )
 
 
@@ -3276,9 +3568,14 @@ def _fusion_json_prompt(ticker: str) -> str:
     )
 
 
-def _panel_model_json_prompt(ticker: str, model_id: str) -> str:
+def _panel_model_json_prompt(
+    ticker: str,
+    model_id: str,
+    context: Optional[dict[str, Any]] = None,
+) -> str:
     return (
         f"Analyze {ticker} as council seat {model_id}. "
+        f"{_format_council_context(context or {})}\n"
         "Return JSON with model_id, label, rating, confidence, thesis, dissent, "
         "accepted_claims, rejected_claims, and challenges. "
         "rating must be Buy, Overweight, Hold, Underweight, or Sell. "
@@ -3295,6 +3592,7 @@ def _panel_cross_exam_json_prompt(
     model_id: str,
     own_verdict: PanelVerdict,
     panel: list[PanelVerdict],
+    context: Optional[dict[str, Any]] = None,
 ) -> str:
     claims = [
         {
@@ -3307,6 +3605,7 @@ def _panel_cross_exam_json_prompt(
     ]
     return (
         f"Reassess {ticker} as council seat {model_id} after reading the other model claims. "
+        f"{_format_council_context(context or {})}\n"
         f"Your first-pass view was {own_verdict.rating} at {own_verdict.confidence:.2f}: {own_verdict.thesis}\n"
         f"All council claims: {json.dumps(claims, separators=(',', ':'))}\n"
         "Return JSON with model_id, label, rating, confidence, thesis, dissent, accepted_claims, "
