@@ -4,17 +4,32 @@ import { ArrowUpRight, RefreshCw } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import type { BackendTopIdea, IdeaScoutResult } from "@/types";
 import { fetchIdeaScout, fetchLatestIdeaScout } from "@/lib/api";
-import { GlassCard } from "@/components/ui/GlassCard";
+import { GlassCard, type GlowColor } from "@/components/ui/GlassCard";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { useReducedMotion } from "@/lib/useReducedMotion";
 
-function scoreColor(score: number): string {
-  if (score >= 80) return "text-(--color-accent-emerald)";
-  if (score >= 65) return "text-(--color-accent-cyan)";
-  if (score >= 50) return "text-(--color-accent-amber)";
-  return "text-(--color-text-secondary)";
+// Conviction tiers — same calibration the dashboard ScoreCard uses, on a
+// 0–100 scale. Each tier carries a colour so the ranked list reads as
+// calibrated (not a flat wall of identical numbers).
+interface Tier {
+  label: string;
+  text: string;
+  accent: string;
+  glow: GlowColor;
+}
+
+function tierFor(score100: number): Tier {
+  if (score100 >= 90)
+    return { label: "Conviction", text: "text-(--color-accent-violet)", accent: "bg-(--color-accent-violet)", glow: "violet" };
+  if (score100 >= 70)
+    return { label: "Strong", text: "text-(--color-accent-cyan)", accent: "bg-(--color-accent-cyan)", glow: "cyan" };
+  if (score100 >= 50)
+    return { label: "Moderate", text: "text-(--color-accent-emerald)", accent: "bg-(--color-accent-emerald)", glow: "emerald" };
+  if (score100 >= 30)
+    return { label: "Weak", text: "text-(--color-accent-amber)", accent: "bg-(--color-accent-amber)", glow: "amber" };
+  return { label: "Avoid", text: "text-(--color-accent-rose)", accent: "bg-(--color-accent-rose)", glow: "rose" };
 }
 
 // Secondary label next to the ticker: company name, or the theme — but never
@@ -102,39 +117,58 @@ export default function TopBuysView() {
             action={{ label: "Get top buys", onClick: () => void run() }} />
         </GlassCard>
       ) : (
-        <div className="space-y-2">
-          {ideas.map((idea, i) => (
-            <motion.button
-              key={`${idea.ticker}-${idea.rank}`}
-              type="button"
-              onClick={() => navigate(`/council?ticker=${idea.ticker}&run=1&from=scout`)}
-              className="group block w-full text-left"
-              initial={reducedMotion ? false : { opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.3, delay: reducedMotion ? 0 : i * 0.03 }}
-            >
-              <GlassCard hoverLift className="p-4">
-                <div className="flex items-center gap-4">
-                  <span className="w-6 shrink-0 text-center font-mono text-sm text-(--color-text-tertiary)">
-                    {idea.rank}
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-baseline gap-2">
-                      <span className="font-mono text-base font-semibold text-(--color-text-primary)">{idea.ticker}</span>
-                      {subLabel(idea) && (
-                        <span className="truncate text-xs text-(--color-text-tertiary)">{subLabel(idea)}</span>
-                      )}
+        <div className="space-y-1.5">
+          {ideas.map((idea, i) => {
+            const score = Math.round(idea.score * 100);
+            const tier = tierFor(score);
+            const sub = subLabel(idea);
+            return (
+              <motion.button
+                key={`${idea.ticker}-${idea.rank}`}
+                type="button"
+                onClick={() => navigate(`/council?ticker=${idea.ticker}&run=1&from=scout`)}
+                className="group block w-full text-left"
+                initial={reducedMotion ? false : { opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.3, delay: reducedMotion ? 0 : i * 0.03 }}
+              >
+                <GlassCard hoverLift glow={i === 0 ? tier.glow : false} className="relative overflow-hidden p-0">
+                  {/* tier-coloured rail — gives the ranked list colour rhythm */}
+                  <span className={`absolute inset-y-0 left-0 w-[3px] ${tier.accent}`} aria-hidden />
+                  <div className="flex items-center gap-4 py-3 pl-5 pr-4">
+                    <span className="w-5 shrink-0 text-center font-mono text-sm tabular-nums text-(--color-text-tertiary)">
+                      {idea.rank}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-baseline gap-2">
+                        <span className="font-mono text-[15px] font-semibold tracking-tight text-(--color-text-primary)">
+                          {idea.ticker}
+                        </span>
+                        {sub && <span className="truncate text-xs text-(--color-text-tertiary)">{sub}</span>}
+                      </div>
+                      <p className="mt-1 line-clamp-1 text-[13px] leading-snug text-(--color-text-secondary)">
+                        {idea.thesis}
+                      </p>
                     </div>
-                    <p className="mt-0.5 line-clamp-1 text-sm text-(--color-text-secondary)">{idea.thesis}</p>
+                    <div className="flex shrink-0 flex-col items-end leading-none">
+                      <span className={`font-mono text-xl font-bold tabular-nums ${tier.text}`}>{score}</span>
+                      <span className={`mt-1 text-[10px] font-medium uppercase tracking-[0.08em] ${tier.text} opacity-70`}>
+                        {tier.label}
+                      </span>
+                    </div>
+                    <ArrowUpRight className="h-4 w-4 shrink-0 text-(--color-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100" />
                   </div>
-                  <span className={`shrink-0 font-mono text-lg font-bold tabular-nums ${scoreColor(idea.score * 100)}`}>
-                    {Math.round(idea.score * 100)}
-                  </span>
-                  <ArrowUpRight className="h-4 w-4 shrink-0 text-(--color-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100" />
-                </div>
-              </GlassCard>
-            </motion.button>
-          ))}
+                  {/* subtle score meter — clustered high scores read as calibrated */}
+                  <span className="absolute inset-x-0 bottom-0 h-px bg-(--color-border-subtle)" aria-hidden />
+                  <span
+                    className={`absolute bottom-0 left-0 h-px ${tier.accent} opacity-60`}
+                    style={{ width: `${Math.max(0, Math.min(100, score))}%` }}
+                    aria-hidden
+                  />
+                </GlassCard>
+              </motion.button>
+            );
+          })}
         </div>
       )}
     </section>
