@@ -29,6 +29,105 @@ This file is append-only. Add a new session entry at the top of the session log 
 - The most useful next action.
 ```
 
+## Session 2026-06-29 21:00 UTC - Claude
+
+### Goal
+- Restart backend to load fixes (user authorized "restart it"); AFRM reappeared at 90 after restart — find why and fix.
+
+### Root cause
+- The live backend had been running since Jun 24 (pre-all-fixes). After restart with new code, the main pipeline correctly drops AFRM (screener 74) — but `/api/ideas/today`'s **fallback path** (`_run_openrouter_idea_scout_sync`, used when the full pipeline times out at 180s or returns an empty buy bucket) is a legacy free-form LLM idea scout that bypasses the quantitative screen and re-invented AFRM at composite 90 with boilerplate catalysts. That fallback produced run 63.
+
+### Files Changed
+- `src/api/app.py` `scout_today_ideas` — fallback no longer calls the free-form LLM scout. Live runs now fall back to the **deterministic score engine** (`_fast_score_result` + `_idea_scout_from_score_result`); mock mode still returns `_mock_today_ideas`. Verified by forcing `ALPHA_SCOUT_TIMEOUT_S=1`: fallback returns `[ARM]`, AFRM absent, cost $0.
+
+### Test/Lint Results
+- 451 passed, 2 skipped. ruff clean. (Fixed 2 api_council tests that asserted the old mock-fallback behavior.)
+
+### Current State
+- Backend restarted on :8000 with all fixes live (`/api/ideas/progress` → 200). Both the main pipeline and the fallback are now AFRM-free.
+
+### Note / next
+- The deterministic fallback is thin when the score snapshot is stale (returned only ARM). Main pipeline is the normal path; consider refreshing the score snapshot or broadening the fallback universe. The score engine (`src/score_engine/`) is a separate scorer from the alpha_scout screener and does NOT yet have the fundamental-quality fix.
+
+## Session 2026-06-29 20:20 UTC - Claude
+
+### Goal
+- User: "Affirm consistently comes up in Alpha Scout" — fix it in a continuous self-improvement loop.
+
+### Findings (ground truth from live DB + screener)
+- AFRM is already fixed in code: real screener scores it 73.9 (gone from top buys). The card the user showed was **ARM (Arm Holdings, a watchlist name)**, not AFRM — and the live :8000 returns **404 on `/api/ideas/progress`**, proving the running backend is still on PRE-FIX code. That is why old 88-scores (and `NOISY*` test tickers) keep appearing. The fixes are correct but unloaded; restart was previously denied to the agent (user's process).
+- Genuine remaining gap found + fixed: SMCI scored fundamental 100 / composite 88 despite an 8% gross margin and negative FCF.
+
+### Files Changed
+- `src/alpha_scout/screener.py` — `score_fundamental` now penalises very low gross margin (<20% → −10) and negative free cash flow (−10); `explain_fundamental_factors` updated to match. SMCI 88.1 → 81.6; NVDA/GOOG/MU/META unaffected; ARM 74.4 / AFRM 73.9 unchanged.
+- Tests: `tests/test_alpha_scout_core.py` (low-quality-cheap case), `tests/test_idea_debug.py` (thin-margin/cash-burn factors).
+
+### Test/Lint Results
+- 451 passed, 2 skipped. ruff clean.
+
+### Blockers
+- Live backend MUST be restarted to load any of this (404 proves it's stale). Agent is sandbox-blocked from killing the user's :8000 process.
+
+### Recommended Next Step
+- Restart backend (`lsof -ti tcp:8000 | xargs kill` then `/tmp/alphadesk-api-test-venv/bin/python run_api.py`), then re-run Alpha Scout.
+
+## Session 2026-06-28 20:30 UTC - Claude
+
+### Goal
+- (1) Live visualization of Alpha Scout pipeline stages while running. (2) A UI "debug mode" showing *why* each idea scored/ranked as it did. (Same session also: LunarCrush social-feed integration; fundamental-quality scoring fix for the AFRM false-positive.)
+
+### Files Changed
+- `src/shared/scout_progress.py` (new) — thread-safe progress singleton (start/stage/finish/snapshot) with 6 ordered stages.
+- `src/alpha_scout/main.py` — `run()` now reports each stage via `scout_progress`; `_run_alpha_scout_pipeline` (app.py) finishes-with-error on crash.
+- `src/alpha_scout/screener.py` — `explain_fundamental_factors()` mirrors `score_fundamental`'s rubric as signed human-readable factors (the debug "why").
+- `src/alpha_scout/synthesizer.py` — fallback recs carry `corroboration_count`/`corroborating_sources`/`synthesis_source`.
+- `src/api/app.py` — `IdeaDebug`/`DimensionScore` models + `debug` on `TopIdea` (built by `_idea_debug_from_rec`); `ScoutProgress`/`ScoutStage` models + `GET /api/ideas/progress`.
+- Frontend: `web/src/types/index.ts` (IdeaDebug/DimensionScore/ScoutProgress/ScoutStage + `debug` on BackendTopIdea); `web/src/lib/api.ts` (`fetchScoutProgress`); new `ScoutPipeline.tsx` (live stepper) + `IdeaDebugPanel.tsx` (dimension bars + factors + provenance); `TopBuysView.tsx` (polls progress during a run, "Debug" toggle renders per-idea panels).
+- Tests: `tests/test_scout_progress.py`, `tests/test_idea_debug.py` (9 new).
+
+### Test/Lint/Build Results
+- Backend: 449 passed, 2 skipped. `ruff check src` clean. Frontend: typecheck + build clean.
+
+### Current State
+- Live stage view + debug mode are built and verified at the data layer (progress transitions, debug payload with AFRM's `-15 EV/EBITDA`, `-10 P/E 72`, `+25 revenue growth`). Debug populates richest in the score_fallback path (recs carry `scores`); LLM-synthesis recs may lack per-dimension scores → panel shows a graceful "no breakdown" note.
+
+### Blockers
+- Visual browser verification not done: the user's live :8000 is old code (restart was denied as their process) and pointing a preview Vite at a fresh backend would restart their :5173 (Vite watches .env). Needs a backend restart to see live.
+
+### Recommended Next Step
+- Restart backend, open Top Buys, hit Run (watch stages) and toggle Debug.
+
+## Session 2026-06-28 07:35 UTC - Claude
+
+### Goal
+- User questions: (1) "is Reddit working now?" (2) noted they fixed/bought a 1-day LunarCrush API key and want it working today, (3) "why is AFRM a Top Buy? it isn't one."
+
+### Files Changed
+- `src/shared/lunarcrush.py` — `_get_headers()` now accepts `LUNAR_CRUSH_API` as well as canonical `LUNARCRUSH_API_KEY`; `get_stock_social_metrics()` now reads metrics from the v4 nested `data` object instead of the response root (was returning all-`None`).
+- `src/alpha_scout/screener.py` — **`score_fundamental()` made quality-aware** (the primary AFRM fix): adds EV/EBITDA + analyst-implied-upside factors and a steeper high-P/E penalty, penalises losses (was: no penalty for negative margins), and stops treating "down from 52w high / near 52w low" as a standalone positive (value-trap reward). AFRM 100→70; NVDA/MSFT/GOOG/MU stay 98-100.
+- `src/alpha_scout/screener.py` — `score_evidence_quality()` also made corroboration-aware (secondary): top of range reserved for tracked names (+40) or multi-source discoveries; a lone single-source discovery caps ~60.
+- `src/alpha_scout/candidate_sourcer.py` — dedup now records corroboration breadth (`corroboration_count` / `corroborating_sources`) instead of silently discarding duplicate-source hits.
+- `tests/test_lunarcrush.py` (new), `tests/test_alpha_scout_core.py` (added score_fundamental quality test + AFRM-vs-tracked regression), `tests/test_screener_declustering.py` (robust spread assertion).
+
+### Commands Run
+- Live probes: LunarCrush `/coins/{sym}/v1` (HTTP 200, real data) and Reddit public `/r/stocks/hot.json` (HTTP 403).
+- `python -m pytest` (full), targeted alpha_scout/screener/lunarcrush suites, `ruff check src`.
+
+### Test/Lint/Build Results
+- Full suite: 433 passed, 2 skipped. `ruff check src`: all checks passed.
+
+### Current State
+- LunarCrush: key works live; the two-bug fix means it's actually consumed now (was silently ignored + mis-parsed).
+- Reddit: NOT working — all `REDDIT_*` keys absent from `.env`; public endpoint is 403-blocked, so it returns zero posts.
+- AFRM root cause (user clarified the real issue is *quality*, not watchlist membership): the fundamental scorer gave AFRM 100/100 because it rewarded 33% revenue growth + being down 20% off highs, while a 72× P/E cost only −5 and it ignored EV/EBITDA (53.7), thin margins (10%), and near-zero analyst upside (5.5%). Now AFRM scores 70 fundamentally vs 98-100 for the quality names. (The earlier evidence_quality/corroboration change is a secondary guard against thin single-source discoveries.)
+
+### Blockers
+- Reddit needs the user's OAuth creds (`REDDIT_CLIENT_ID/SECRET/USERNAME/PASSWORD/USER_AGENT`).
+- AFRM still shows in the *cached* scout run (id 43) until a fresh Alpha Scout run is triggered on the new code (requires backend restart).
+
+### Recommended Next Step
+- Restart the backend and re-run Alpha Scout to refresh Top Buys; add Reddit keys to `.env` if live social data is wanted.
+
 ## Session 2026-06-19 04:19 UTC - Codex
 
 ### Goal
@@ -1079,3 +1178,37 @@ This file is append-only. Add a new session entry at the top of the session log 
 ### Notes
 - The first Scout run still does not automatically run a paid council for every candidate. The implemented contract makes follow-up council runs source-aware; automatic council validation for top-N candidates should be a separate explicit policy/toggle because it has latency and cost implications.
 - Backend was restarted live with `OPENROUTER_MOCK=0` and `ALPHA_SCOUT_MOCK=0`; frontend remained live on `127.0.0.1:5173`.
+## Session 2026-06-27 16:31 PDT - Codex
+
+### Goal
+- Execute the attached sequencing brief through the web/API consolidation milestones without introducing live-cost side effects.
+
+### Result
+- Completed the foundation/OpenRouter/delivery/web-entry portions of the plan:
+  - `security.py` now requires only `OPENROUTER_API_KEY` and no longer exposes Telegram chat authorization.
+  - `gemini_compat.py`, `model_registry.py`, and `advisor/council.py` are OpenRouter-only, with the three-model GLM/Kimi/DeepSeek roster and no direct Anthropic/Gemini/GCP SDK usage.
+  - Advisor committee council calls now use `CouncilClient`; GCP-specific tests were replaced with OpenRouter council tests.
+  - Gemini grounded web search was removed; web search is HTTP-provider only.
+  - Telegram/email delivery files and stale secondary entry points were deleted (`telegram_bot.py`, email reporter/template, `server.py`, `run_daily.py`, `score.py`, `run_deployment_plan.py`, `src/report/__main__.py`).
+  - Docker now starts the FastAPI cockpit and compose includes a MySQL 8 service with `ALPHADESK_DB_*` env wiring.
+  - Added shared MySQL helpers (`src/shared/db.py`) and broad schema bootstrap (`src/shared/schema.py`) including `daily_brief_runs`.
+  - Added `src/api/brief_store.py`, `POST /api/brief/run`, and `GET /api/brief/runs/latest`; persistence failures degrade the run response instead of failing a completed brief.
+  - Replaced the `/` frontend backend-status hub with a Daily Brief view that can run the blocking brief endpoint and display the latest saved/unsaved result.
+- Started local dev servers:
+  - Backend: `http://127.0.0.1:8001` because port 8000 was already occupied.
+  - Frontend: `http://127.0.0.1:5173` with `VITE_API_BASE_URL=http://127.0.0.1:8001`.
+
+### Verification
+- `python -m py_compile src/shared/db.py src/shared/schema.py src/api/brief_store.py src/api/app.py src/advisor/council.py src/shared/gemini_compat.py src/shared/model_registry.py src/advisor/analyst_committee.py src/advisor/main.py src/advisor/run_profile.py` -> passed.
+- `python -m ruff check src/api/app.py src/api/brief_store.py src/shared/db.py src/shared/schema.py src/shared/gemini_compat.py src/shared/model_registry.py src/advisor/council.py src/advisor/analyst_committee.py src/advisor/main.py src/advisor/run_profile.py src/shared/security.py src/shared/web_search.py tests/test_api_brief.py tests/test_openrouter_council.py tests/test_api_council.py tests/test_council_brief_integration.py tests/test_cost_attribution.py tests/test_cost_tracker_resolved_model.py tests/test_v21_integration.py` -> passed.
+- `git ls-files 'tests/*.py' | while IFS= read -r f; do [ -e "$f" ] && printf '%s\n' "$f"; done | xargs python -m pytest -q` -> 386 passed, 2 skipped, 1 third-party Starlette/httpx deprecation warning.
+- `cd web && npm test -- --run && npm run build` -> passed.
+- `curl http://127.0.0.1:8001/api/council/models` -> returned GLM 5.2, Kimi K2.6, DeepSeek V4 Pro.
+- `curl -i http://127.0.0.1:8001/api/brief/runs/latest` -> 404 `No saved brief run found.` when local MySQL/PyMySQL are unavailable.
+- `curl -I http://127.0.0.1:5173/` -> 200.
+
+### Caveats
+- The deeper M4 per-module SQLite-to-MySQL dialect migration was not performed; existing modules such as `memory.py`, `agent_bus.py`, `cost_tracker.py`, `run_store.py`, and the ear trackers still use their current SQLite stores.
+- The M7 advisor pipeline reorder (`StructuredDecision`, `MarketDataStore`, S0-S10 reorder, single MySQL transaction, coherence gate) was not performed. Attempting that halfway would be riskier than leaving it for a dedicated follow-up.
+- Local backend startup currently warns that PyMySQL is not installed in the active shell. `requirements.txt` has `PyMySQL` and `DBUtils`; install requirements or use Docker Compose for MySQL-backed persistence.
+- No context pack was generated because this was not a handoff to another model.
