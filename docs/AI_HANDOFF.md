@@ -29,6 +29,41 @@ This file is append-only. Add a new session entry at the top of the session log 
 - The most useful next action.
 ```
 
+## Session 2026-07-16 UTC - Claude
+
+### Goal
+- Full codebase reliability audit, then implement the resulting plan (user: "work on the implementation").
+
+### Root cause / context
+- 135 modified + 32 untracked files (multiple prior sessions' work, including the entire MySQL/SQLite persistence layer, Alpha Scout quality-scoring fixes, LunarCrush, deployment planner, and the debug UI) had never been committed — the single biggest risk found in the audit. No CI existed. `requirements.txt` was unpinned and mixed `pytest` into runtime deps while `ruff`/`openai`/`lxml`/`PyMySQL`/`DBUtils` weren't actually installed in the working venv (masked by mock-mode tests). The OpenRouter client (`gemini_compat.py`) had no retry logic — one transient 5xx killed a whole council seat or pipeline stage. No endpoint guarded against a double-fired request re-spending the LLM budget. The score engine (`src/score_engine/`, powers `/api/ideas/fast` and the deterministic `/api/ideas/today` fallback) had its own valuation logic with no opinion on valuation multiples/margin quality — the same class of gap that let AFRM resurface earlier this week could still slip through the fallback path even after the Alpha Scout screener was fixed.
+
+### Files Changed
+- Committed the full pre-existing working tree in 9 thematic commits (legacy-delivery removal, persistence layer, OpenRouter routing consolidation, Alpha Scout quality/debug work, deployment+LunarCrush, remaining cockpit views, misc ear/backtest cleanup, CLAUDE.md+handoff).
+- `pyproject.toml` (new) — exact-pinned runtime deps, dev group (pytest/ruff), ruff config. `requirements.txt` trimmed to runtime-only, dropped dead `markdown`/`schedule`.
+- `.github/workflows/ci.yml` (new) — backend (ruff + pytest, `OPENROUTER_MOCK=1`/sqlite) and frontend (tsc, vitest, build) jobs on push/PR to main.
+- `src/api/app.py` — `GET /health` (git SHA, process start time, DB backend, model allowlist); `_run_singleflight` coalescing guard wired into `POST /api/brief/run`, `POST /api/deployment/plan`, `GET /api/ideas/today`.
+- `src/shared/gemini_compat.py` — `_post_with_retry`: exponential backoff + jitter (default 3 retries) on 408/429/5xx/timeout/connection errors; 4xx-other-than-429 still fails fast.
+- `src/shared/fundamental_quality.py` (new) — extracted `score_fundamental_quality`/`explain_fundamental_quality` from the Alpha Scout screener as the single shared rubric.
+- `src/alpha_scout/screener.py` — `score_fundamental`/`explain_fundamental_factors` now delegate to the shared module (behavior-identical, verified by test).
+- `src/score_engine/sensors/valuation.py` — `ValuationSensor` now threads `fundamentals` through to `_to_signal` and applies the shared quality rubric: BULL strength scaled continuously by quality/100 (floor 0.3×), forced BEAR below quality 35 regardless of the DCF's implied CAGR/MOS.
+- New tests: `test_health_endpoint.py`, `test_gemini_compat_retry.py` (5), `test_singleflight.py` (4), `test_fundamental_quality_shared.py` (3, golden-fixture drift guard), `test_valuation_quality_gate.py` (5).
+
+### Commands Run
+- `python -m pytest -q` (469 passed, 2 skipped throughout), `ruff check src` (clean), `npm run typecheck && npm test && npm run build` (clean).
+- `pip install openai lxml PyMySQL DBUtils ruff` — these were declared in requirements.txt but not actually installed in `.venv`; installed and re-verified full suite green with the real (non-mocked-away) dependency set.
+
+### Test/Lint/Build Results
+- Backend: 469 passed, 2 skipped, ruff clean. Frontend: tsc clean, 5 vitest passing, production build succeeds.
+
+### Current State
+- Working tree fully committed (15 commits this session), nothing pushed to `origin` yet (needs explicit user go-ahead — pushing is a shared-state action). CI will run on the next push. `/health` answers the "is this the code I think it is" question that cost real time twice last session.
+
+### Blockers
+- None. Not pushed pending user confirmation.
+
+### Recommended Next Step
+- Push to `origin/main` once the user confirms, then watch the first CI run. Remaining plan items not yet done (lower priority / larger scope): split `src/api/app.py` (4.8k lines) into routers; consolidate model-alias enforcement (still duplicated across `gemini_compat.py`/`app.py`/`model_registry.py`); restore a scheduled/batch entrypoint (the GCP Cloud Run jobs reference the now-deleted `run_daily.py`); README/AGENTS/AI_CONTEXT truth pass; Docker hardening (`.dockerignore`, non-root, healthcheck, serve built frontend).
+
 ## Session 2026-06-29 21:00 UTC - Claude
 
 ### Goal
