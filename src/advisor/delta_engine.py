@@ -8,10 +8,8 @@ Example: "VIX jumped from 14 to 18, largest move in 6 weeks" instead of "VIX is 
 
 from __future__ import annotations
 
-import json
-import logging
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date
 from typing import Any
 
 from src.utils.logger import get_logger

@@ -6,7 +6,7 @@ import json
 import os
 from typing import Any
 
-from src.advisor.council import CouncilRequest, CouncilResponse, GCPCouncilClient
+from src.advisor.council import CouncilClient, CouncilRequest, CouncilResponse
 from src.shared import cost_tracker
 from src.shared import gemini_compat as anthropic
 from src.shared.agent_decorator import select_model, track_agent
@@ -613,7 +613,7 @@ async def _maybe_run_brief_council(
     )
 
     try:
-        responses = await GCPCouncilClient().deliberate(request)
+        responses = await CouncilClient().deliberate(request)
     except Exception as exc:
         log.warning("Model council skipped: %s", exc)
         return {

@@ -6,9 +6,7 @@ proximity scores. Adds "why now" timing intelligence to recommendations.
 
 from __future__ import annotations
 
-import json
 from datetime import date, datetime, timedelta
-from typing import Any
 
 import yfinance as yf
 
@@ -184,7 +182,7 @@ def fetch_fomc_dates() -> list[CatalystEvent]:
                 catalysts.append(CatalystEvent(
                     event_type="fomc",
                     date=date_str,
-                    description=f"FOMC meeting — interest rate decision",
+                    description="FOMC meeting — interest rate decision",
                     days_away=days_away,
                     impact_estimate="high",
                 ))

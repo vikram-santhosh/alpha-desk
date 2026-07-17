@@ -7,7 +7,6 @@ Uses Gemini for high-quality contrarian analysis.
 from __future__ import annotations
 
 import json
-from typing import Any
 
 from src.shared import gemini_compat as anthropic
 
@@ -76,7 +75,7 @@ class SkepticAgent:
 
         # Build market context
         mc = market_context or {}
-        sp500_pe = mc.get("sp500_pe", "N/A")
+        mc.get("sp500_pe", "N/A")
         vix = mc.get("vix", "N/A")
         yield_10y = mc.get("treasury_10y", "N/A")
 

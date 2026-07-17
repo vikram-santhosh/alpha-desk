@@ -10,7 +10,6 @@ import json
 import math
 from collections import Counter
 from datetime import date, datetime
-from typing import Any
 
 from src.shared import gemini_compat as anthropic
 

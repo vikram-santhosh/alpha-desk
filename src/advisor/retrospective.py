@@ -7,11 +7,9 @@ performance. Closes the feedback loop.
 
 import json
 from datetime import date, datetime
-from typing import Any
 
 from src.shared import gemini_compat as anthropic
 
-from src.advisor.memory import get_recommendation_scorecard
 from src.advisor.outcome_scorer import score_all_outcomes, format_scorecard
 from src.shared.cost_tracker import check_budget, record_usage
 from src.utils.logger import get_logger
@@ -275,7 +273,7 @@ def format_retrospective(retro: dict) -> str:
 
     biases = analysis.get("systematic_biases", [])
     if biases and biases[0] != "Insufficient data to detect biases":
-        lines.append(f"\n<b>Biases Detected:</b>")
+        lines.append("\n<b>Biases Detected:</b>")
         for bias in biases[:3]:
             lines.append(f"  - {bias}")
 
@@ -287,7 +285,7 @@ def format_retrospective(retro: dict) -> str:
     increase = adjustments.get("increase_weight", [])
     decrease = adjustments.get("decrease_weight", [])
     if increase or decrease:
-        lines.append(f"\n<b>Weight Adjustments:</b>")
+        lines.append("\n<b>Weight Adjustments:</b>")
         if increase:
             lines.append(f"  Increase: {', '.join(increase)}")
         if decrease:

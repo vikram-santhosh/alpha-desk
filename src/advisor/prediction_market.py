@@ -6,7 +6,6 @@ stores data via memory layer, and detects significant probability shifts.
 """
 from __future__ import annotations
 
-import json
 import os
 import re
 import urllib3
@@ -15,15 +14,14 @@ from typing import Any
 
 import requests
 
-# Suppress only the specific InsecureRequestWarning from urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 from src.advisor.memory import (
     get_prediction_market_deltas,
-    get_prediction_markets,
     record_prediction_market,
 )
 from src.utils.logger import get_logger
+
+# Suppress only the specific InsecureRequestWarning from urllib3.
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 log = get_logger(__name__)
 

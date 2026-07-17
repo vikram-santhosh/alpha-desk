@@ -1,8 +1,4 @@
-"""Model roster for the AlphaDesk council.
-
-The council is GCP-first: Gemini, Claude, and Grok all run through Google
-Cloud's Agent Platform / Vertex AI managed APIs when enabled.
-"""
+"""OpenRouter model roster for the AlphaDesk council."""
 from __future__ import annotations
 
 import os
@@ -17,9 +13,7 @@ class CostTier(str, Enum):
 
 
 class CouncilProvider(str, Enum):
-    GCP_GEMINI = "gcp_gemini"
-    GCP_CLAUDE = "gcp_claude"
-    GCP_GROK = "gcp_grok"
+    OPENROUTER = "openrouter"
 
 
 @dataclass(frozen=True)
@@ -32,7 +26,7 @@ class ModelSpec:
 
     @property
     def uses_gcp(self) -> bool:
-        return self.provider.value.startswith("gcp_")
+        return False
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -42,29 +36,54 @@ def _env_flag(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-COUNCIL_ROSTER: list[ModelSpec] = [
+DEFAULT_OPENROUTER_ROSTER: list[ModelSpec] = [
     ModelSpec(
-        provider=CouncilProvider.GCP_GEMINI,
-        model_id=os.getenv("COUNCIL_GEMINI_MODEL", "gemini-3.1-pro-preview"),
-        label=os.getenv("COUNCIL_GEMINI_LABEL", "Gemini 3.1 Pro"),
+        provider=CouncilProvider.OPENROUTER,
+        model_id="z-ai/glm-5.2",
+        label="GLM 5.2",
         cost_tier=CostTier.FRONTIER,
-        enabled=_env_flag("COUNCIL_ENABLE_GEMINI", True),
     ),
     ModelSpec(
-        provider=CouncilProvider.GCP_CLAUDE,
-        model_id=os.getenv("COUNCIL_CLAUDE_MODEL", "claude-opus-4-8"),
-        label=os.getenv("COUNCIL_CLAUDE_LABEL", "Claude Opus 4.8"),
+        provider=CouncilProvider.OPENROUTER,
+        model_id="moonshotai/kimi-k2.6",
+        label="Kimi K2.6",
         cost_tier=CostTier.FRONTIER,
-        enabled=_env_flag("COUNCIL_ENABLE_CLAUDE", True),
     ),
     ModelSpec(
-        provider=CouncilProvider.GCP_GROK,
-        model_id=os.getenv("COUNCIL_GROK_MODEL", "xai/grok-4.20-reasoning"),
-        label=os.getenv("COUNCIL_GROK_LABEL", "Grok 4.20 Reasoning"),
+        provider=CouncilProvider.OPENROUTER,
+        model_id="deepseek/deepseek-v4-pro",
+        label="DeepSeek V4 Pro",
         cost_tier=CostTier.FRONTIER,
-        enabled=_env_flag("COUNCIL_ENABLE_GROK", True),
     ),
 ]
+
+
+def _label_from_model_id(model_id: str) -> str:
+    return model_id.split("/")[-1].replace("-", " ").replace(".", " ").title()
+
+
+def _configured_roster() -> list[ModelSpec]:
+    configured = os.getenv("OPENROUTER_ANALYSIS_MODELS", "").strip()
+    if not configured:
+        return DEFAULT_OPENROUTER_ROSTER
+    specs: list[ModelSpec] = []
+    for model_id in [item.strip() for item in configured.split(",") if item.strip()]:
+        if any(spec.model_id == model_id for spec in specs):
+            continue
+        default = next((spec for spec in DEFAULT_OPENROUTER_ROSTER if spec.model_id == model_id), None)
+        specs.append(
+            default
+            or ModelSpec(
+                provider=CouncilProvider.OPENROUTER,
+                model_id=model_id,
+                label=_label_from_model_id(model_id),
+                cost_tier=CostTier.FRONTIER,
+            )
+        )
+    return specs or DEFAULT_OPENROUTER_ROSTER
+
+
+COUNCIL_ROSTER: list[ModelSpec] = _configured_roster()
 
 
 def council_enabled() -> bool:
@@ -72,31 +91,11 @@ def council_enabled() -> bool:
     return _env_flag("COUNCIL_ENABLED", False)
 
 
-def gcp_project_configured() -> bool:
-    """Return whether the minimum GCP project env exists for Agent Platform."""
-    return bool(os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("GOOGLE_CLOUD_PROJECT_ID"))
-
-
-def gcp_project_id() -> str:
-    """Return the configured GCP project id or raise a clear setup error."""
-    project_id = os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("GOOGLE_CLOUD_PROJECT_ID")
-    if not project_id:
-        raise RuntimeError("Set GOOGLE_CLOUD_PROJECT for the GCP model council.")
-    return project_id
-
-
-def gcp_location() -> str:
-    """Return the Agent Platform location; global is preferred for council calls."""
-    return os.getenv("GOOGLE_CLOUD_LOCATION", "global")
-
-
-def enabled_roster(tier: Optional[CostTier] = None, require_gcp_project: bool = True) -> list[ModelSpec]:
-    """Return enabled model specs, optionally restricted by cost tier."""
-    specs = [spec for spec in COUNCIL_ROSTER if spec.enabled]
+def enabled_roster(tier: Optional[CostTier] = None) -> list[ModelSpec]:
+    """Return enabled OpenRouter model specs, optionally restricted by cost tier."""
+    specs = [spec for spec in _configured_roster() if spec.enabled]
     if tier is not None:
         specs = [spec for spec in specs if spec.cost_tier == tier]
-    if require_gcp_project and any(spec.uses_gcp for spec in specs) and not gcp_project_configured():
-        raise RuntimeError("Set GOOGLE_CLOUD_PROJECT before enabling the GCP model council.")
     if not specs:
-        raise RuntimeError("No enabled council models are configured.")
+        raise RuntimeError("No enabled OpenRouter council models are configured.")
     return specs

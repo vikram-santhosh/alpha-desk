@@ -1,11 +1,6 @@
-"""LLM shim for AlphaDesk.
+"""OpenRouter-only LLM compatibility shim for AlphaDesk.
 
-Backend selection logic:
-  - OPENROUTER_API_KEY → OpenRouter allowlisted models
-  - Else ANTHROPIC_API_KEY → Anthropic
-  - Else GEMINI_API_KEY → Gemini
-
-Exposes the same interface so every call-site can keep using:
+Call sites intentionally keep using an Anthropic-shaped interface:
 
     client = Anthropic()
     response = client.messages.create(model=..., max_tokens=..., messages=[...])
@@ -13,20 +8,9 @@ Exposes the same interface so every call-site can keep using:
     tokens_in = response.usage.input_tokens
     tokens_out = response.usage.output_tokens
 
-Model mapping (Anthropic):
-  claude-haiku-*  → claude-haiku-4-5-20251001
-  claude-sonnet-* → claude-sonnet-4-6
-  claude-opus-*   → claude-opus-4-6
-
-Model mapping (Gemini):
-  claude-haiku-*  → gemini-3.1-flash-lite-preview
-  claude-sonnet-* → gemini-3.1-pro-preview
-  claude-opus-*   → gemini-3.1-pro-preview
-
-Model mapping (OpenRouter):
-  claude-haiku-*  → z-ai/glm-5.2
-  claude-sonnet-* → z-ai/glm-5.2
-  claude-opus-*   → moonshotai/kimi-k2.6
+The implementation routes every request through OpenRouter and clamps model
+selection to the current allowlist. Legacy Claude/Gemini/Grok aliases resolve
+onto the same allowlist so stale prompts or env values cannot escape it.
 """
 from __future__ import annotations
 
@@ -34,82 +18,59 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-# ── Anthropic model mapping ──────────────────────────────────────────────────
 
-OPUS_MODEL = "claude-opus-4-6"
-SONNET_MODEL = "claude-sonnet-4-6"
-HAIKU_MODEL = "claude-haiku-4-5"
-
-
-def _resolve_anthropic_model(model: str) -> str:
-    """Map shorthand Claude model names to full Anthropic model IDs."""
-    if model.startswith("claude-haiku"):
-        return HAIKU_MODEL
-    if model.startswith("claude-opus"):
-        return OPUS_MODEL
-    if model.startswith("claude-sonnet"):
-        return SONNET_MODEL
-    if model.startswith("claude"):
-        return SONNET_MODEL
-    return model
-
-
-# ── OpenRouter model mapping ────────────────────────────────────────────────
-# OpenRouter is OpenAI-compatible and serves Claude directly with one key.
-# Slugs can be overridden via env (OPENROUTER_OPUS / _SONNET / _HAIKU) since
-# OpenRouter occasionally revises them.
-
-# Inference is restricted to the currently reliable OpenRouter models (override
-# via env). Roles map by cost/capability: heavy → Kimi K2.6 · standard/bulk →
-# GLM 5.2 · plus DeepSeek V4. Nothing else can be called.
-OPENROUTER_OPUS     = os.getenv("OPENROUTER_OPUS",     "moonshotai/kimi-k2.6")
-OPENROUTER_SONNET   = os.getenv("OPENROUTER_SONNET",   "z-ai/glm-5.2")
-OPENROUTER_HAIKU    = os.getenv("OPENROUTER_HAIKU",    "z-ai/glm-5.2")
+# Roles map by cost/capability: heavy -> Kimi K2.6, standard/bulk -> GLM 5.2,
+# plus DeepSeek V4 for model-council diversity.
+OPENROUTER_OPUS = os.getenv("OPENROUTER_OPUS", "moonshotai/kimi-k2.6")
+OPENROUTER_SONNET = os.getenv("OPENROUTER_SONNET", "z-ai/glm-5.2")
+OPENROUTER_HAIKU = os.getenv("OPENROUTER_HAIKU", "z-ai/glm-5.2")
 OPENROUTER_DEEPSEEK = os.getenv("OPENROUTER_DEEPSEEK", "deepseek/deepseek-v4-pro")
 
 ALLOWED_OPENROUTER_MODELS = {
-    OPENROUTER_OPUS, OPENROUTER_SONNET, OPENROUTER_HAIKU, OPENROUTER_DEEPSEEK,
+    OPENROUTER_OPUS,
+    OPENROUTER_SONNET,
+    OPENROUTER_HAIKU,
+    OPENROUTER_DEEPSEEK,
 }
 
 
 def _resolve_openrouter_model(model: str) -> str:
-    """Resolve any model name to one of the allowed OpenRouter models.
-
-    Claude shorthands map by role; a raw slug passes through only if it is in
-    the allowed set, otherwise it collapses to GLM 5.2. Any other bare name
-    (e.g. "gemini-2.5-flash") also collapses to GLM 5.2 — so no inference can
-    ever hit a model outside the chosen four.
-    """
-    if "/" in model:
-        return model if model in ALLOWED_OPENROUTER_MODELS else OPENROUTER_SONNET
-    if model.startswith("claude-haiku"):
-        return OPENROUTER_HAIKU
-    if model.startswith("claude-opus"):
+    """Resolve any requested model name to an allowed OpenRouter slug."""
+    raw = (model or "").strip()
+    lowered = raw.lower()
+    aliases = {
+        "claude-opus-4-8": OPENROUTER_OPUS,
+        "claude-opus-4-6": OPENROUTER_OPUS,
+        "anthropic/claude-opus-4.8": OPENROUTER_OPUS,
+        "anthropic/claude-opus-4.8-fast": OPENROUTER_OPUS,
+        "claude-sonnet-4-6": OPENROUTER_SONNET,
+        "claude-haiku-4-5": OPENROUTER_HAIKU,
+        "gemini-3.1-pro-preview": OPENROUTER_SONNET,
+        "gemini-3.1-flash-lite-preview": OPENROUTER_HAIKU,
+        "google/gemini-3.1-flash-lite": OPENROUTER_HAIKU,
+        "gemini-3.5-flash": OPENROUTER_HAIKU,
+        "google/gemini-3.5-flash": OPENROUTER_HAIKU,
+        "xai/grok-4.20-reasoning": OPENROUTER_SONNET,
+        "x-ai/grok-4.20": OPENROUTER_SONNET,
+        "x-ai/grok-4.3": OPENROUTER_SONNET,
+        "kimi-k2.6": OPENROUTER_OPUS,
+        "moonshotai/kimi-k2.6": OPENROUTER_OPUS,
+        "moonshotai/kimi-k2.7-code": OPENROUTER_OPUS,
+        "deepseek-v4-pro": OPENROUTER_DEEPSEEK,
+        "deepseek/deepseek-v4-pro": OPENROUTER_DEEPSEEK,
+        "glm-5.2": OPENROUTER_SONNET,
+        "z-ai/glm-5.2": OPENROUTER_SONNET,
+    }
+    if lowered in aliases:
+        return aliases[lowered]
+    if raw in ALLOWED_OPENROUTER_MODELS:
+        return raw
+    if lowered.startswith("claude-opus"):
         return OPENROUTER_OPUS
+    if lowered.startswith("claude-haiku"):
+        return OPENROUTER_HAIKU
     return OPENROUTER_SONNET
 
-
-# ── Gemini model mapping ────────────────────────────────────────────────────
-
-GEMINI_OPUS = "gemini-3.1-pro-preview"
-GEMINI_SONNET = "gemini-3.1-pro-preview"
-GEMINI_HAIKU = "gemini-3.1-flash-lite-preview"
-
-
-def _resolve_gemini_model(model: str) -> str:
-    """Map Claude model names to Gemini equivalents."""
-    if model.startswith("claude-haiku") or model.startswith("gemini-3.1-flash"):
-        return GEMINI_HAIKU
-    if model.startswith("claude-opus") or model.startswith("claude-sonnet") or model.startswith("gemini-3.1-pro"):
-        return GEMINI_OPUS
-    if model.startswith("claude"):
-        return GEMINI_SONNET
-    if model.startswith("gemini"):
-        return model  # pass through native Gemini model names
-    return GEMINI_SONNET
-
-
-# ── Response objects (mimic Anthropic SDK shapes) ───────────────────────────
 
 @dataclass
 class _ContentBlock:
@@ -130,14 +91,13 @@ class _Message:
     model: str = ""
 
 
-# ── Exception hierarchy ──────────────────────────────────────────────────────
-
 class APIError(Exception):
     """Base API error."""
 
 
 class APIStatusError(APIError):
     """Mirrors anthropic.APIStatusError (.message and .status_code)."""
+
     def __init__(self, message: str, status_code: int = 500):
         super().__init__(message)
         self.message = message
@@ -148,31 +108,10 @@ class APIConnectionError(APIError):
     """Mirrors anthropic.APIConnectionError."""
 
 
-# ── Backend detection ───────────────────────────────────────────────────────
-
-def _is_running_on_gcp() -> bool:
-    """Detect if running inside a GCP environment (Cloud Run, GCE, etc.)."""
-    # K_SERVICE is set by Cloud Run; GOOGLE_CLOUD_PROJECT by most GCP runtimes
-    return bool(os.getenv("K_SERVICE") or os.getenv("GOOGLE_CLOUD_PROJECT"))
-
-
 def _detect_backend(api_key: str | None = None) -> str:
-    """Return 'openrouter', 'anthropic', or 'gemini' based on environment.
+    """OpenRouter if OPENROUTER_API_KEY is set, else ``none``."""
+    return "openrouter" if os.getenv("OPENROUTER_API_KEY") else "none"
 
-    Preference order (everywhere): OpenRouter if OPENROUTER_API_KEY is set —
-    one key, OpenAI-compatible, serves Claude directly. Then a direct Anthropic
-    key, then Gemini as a last resort.
-    """
-    if os.getenv("OPENROUTER_API_KEY"):
-        return "openrouter"
-    if api_key or os.getenv("ANTHROPIC_API_KEY"):
-        return "anthropic"
-    if os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"):
-        return "gemini"
-    return "none"
-
-
-# ── Messages resource ────────────────────────────────────────────────────────
 
 class _Messages:
     def __init__(self, api_key: str | None, backend: str):
@@ -186,85 +125,17 @@ class _Messages:
         max_tokens: int,
         messages: list[dict[str, Any]],
         system: str | None = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> _Message:
         if self._backend == "openrouter":
             return self._create_openrouter(model, max_tokens, messages, system, kwargs)
-        elif self._backend == "anthropic":
-            return self._create_anthropic(model, max_tokens, messages, system, kwargs)
-        elif self._backend == "gemini":
-            return self._create_gemini(model, max_tokens, messages, system, kwargs)
-        else:
-            raise APIError(
-                "No API key found. Set OPENROUTER_API_KEY (preferred), "
-                "ANTHROPIC_API_KEY, or GEMINI_API_KEY / GOOGLE_API_KEY."
-            )
-
-    # ── Anthropic backend ───────────────────────────────────────────────────
-
-    def _create_anthropic(
-        self,
-        model: str,
-        max_tokens: int,
-        messages: list[dict],
-        system: str | None,
-        options: dict[str, Any] | None = None,
-    ) -> _Message:
-        import anthropic as _anthropic
-
-        resolved_model = _resolve_anthropic_model(model)
-        api_key = self._api_key or os.getenv("ANTHROPIC_API_KEY")
-
-        client = _anthropic.Anthropic(api_key=api_key)
-        create_kwargs: dict[str, Any] = {
-            "model": resolved_model,
-            "max_tokens": max_tokens,
-            "messages": messages,
-        }
-        if system:
-            create_kwargs["system"] = system
-        options = options or {}
-        for key in ("temperature", "top_p", "stop_sequences"):
-            if key in options:
-                create_kwargs[key] = options[key]
-
-        try:
-            response = client.messages.create(**create_kwargs)
-        except _anthropic.APIStatusError as exc:
-            raise APIStatusError(str(exc), status_code=exc.status_code) from exc
-        except _anthropic.APIConnectionError as exc:
-            raise APIConnectionError(str(exc)) from exc
-        except _anthropic.APIError as exc:
-            raise APIError(str(exc)) from exc
-        except Exception as exc:
-            exc_type = type(exc).__name__
-            if exc_type in ("RemoteProtocolError", "ConnectError", "ReadError",
-                            "WriteError", "TimeoutException", "NetworkError"):
-                raise APIConnectionError(str(exc)) from exc
-            raise APIError(str(exc)) from exc
-
-        text = ""
-        for block in response.content:
-            if hasattr(block, "text"):
-                text = block.text
-                break
-
-        return _Message(
-            content=[_ContentBlock(type="text", text=text)],
-            usage=_Usage(
-                input_tokens=response.usage.input_tokens,
-                output_tokens=response.usage.output_tokens,
-            ),
-            model=getattr(response, "model", resolved_model),
-        )
-
-    # ── OpenRouter backend (OpenAI-compatible, serves Claude) ────────────────
+        raise APIError("No API key found. Set OPENROUTER_API_KEY.")
 
     def _create_openrouter(
         self,
         model: str,
         max_tokens: int,
-        messages: list[dict],
+        messages: list[dict[str, Any]],
         system: str | None,
         options: dict[str, Any] | None = None,
     ) -> _Message:
@@ -272,14 +143,20 @@ class _Messages:
 
         resolved_model = _resolve_openrouter_model(model)
         api_key = self._api_key or os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            raise APIError("No API key found. Set OPENROUTER_API_KEY.")
 
-        # Anthropic-style (system separate) → OpenAI-style (system as a message).
-        oai_messages: list[dict] = []
+        oai_messages: list[dict[str, str]] = []
         if system:
             oai_messages.append({"role": "system", "content": system})
         for msg in messages:
-            content = msg["content"] if isinstance(msg["content"], str) else str(msg["content"])
-            oai_messages.append({"role": msg["role"], "content": content})
+            content = msg.get("content", "")
+            oai_messages.append(
+                {
+                    "role": str(msg.get("role", "user")),
+                    "content": content if isinstance(content, str) else str(content),
+                }
+            )
 
         payload: dict[str, Any] = {
             "model": resolved_model,
@@ -325,79 +202,16 @@ class _Messages:
             model=resolved_model,
         )
 
-    # ── Gemini backend ──────────────────────────────────────────────────────
-
-    def _create_gemini(
-        self,
-        model: str,
-        max_tokens: int,
-        messages: list[dict],
-        system: str | None,
-        options: dict[str, Any] | None = None,
-    ) -> _Message:
-        from google import genai
-        from google.genai import types
-
-        resolved_model = _resolve_gemini_model(model)
-        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-
-        client = genai.Client(api_key=api_key)
-
-        # Convert Anthropic-style messages to Gemini contents
-        contents = []
-        for msg in messages:
-            role = "model" if msg["role"] == "assistant" else "user"
-            text = msg["content"] if isinstance(msg["content"], str) else str(msg["content"])
-            contents.append(types.Content(role=role, parts=[types.Part(text=text)]))
-
-        options = options or {}
-        config_kwargs: dict[str, Any] = {"max_output_tokens": max_tokens}
-        for key in ("temperature", "top_p", "top_k"):
-            if key in options:
-                config_kwargs[key] = options[key]
-        response_mime_type = options.get("response_mime_type")
-        if response_mime_type:
-            config_kwargs["response_mime_type"] = response_mime_type
-        config = types.GenerateContentConfig(**config_kwargs)
-        if system:
-            config.system_instruction = system
-
-        try:
-            response = client.models.generate_content(
-                model=resolved_model,
-                contents=contents,
-                config=config,
-            )
-        except Exception as exc:
-            exc_type = type(exc).__name__
-            if "status" in str(exc).lower() or "http" in exc_type.lower():
-                raise APIStatusError(str(exc)) from exc
-            if any(k in exc_type for k in ("Connection", "Network", "Timeout")):
-                raise APIConnectionError(str(exc)) from exc
-            raise APIError(str(exc)) from exc
-
-        text = response.text or ""
-        input_tokens = getattr(response.usage_metadata, "prompt_token_count", 0) or 0
-        output_tokens = getattr(response.usage_metadata, "candidates_token_count", 0) or 0
-
-        return _Message(
-            content=[_ContentBlock(type="text", text=text)],
-            usage=_Usage(input_tokens=input_tokens, output_tokens=output_tokens),
-            model=resolved_model,
-        )
-
-
-# ── Public client ────────────────────────────────────────────────────────────
 
 class Anthropic:
-    """Drop-in LLM client. On GCP: Gemini. Locally: Anthropic if key present, else Gemini."""
+    """Drop-in LLM client backed only by OpenRouter."""
 
-    def __init__(self, api_key: str | None = None, **kwargs):
+    def __init__(self, api_key: str | None = None, **kwargs: Any):
         self._api_key = api_key
         self._backend = _detect_backend(api_key)
         self.messages = _Messages(api_key=api_key, backend=self._backend)
 
     @property
     def backend(self) -> str:
-        """Which backend is active: 'anthropic', 'gemini', or 'none'."""
+        """Which backend is active: ``openrouter`` or ``none``."""
         return self._backend

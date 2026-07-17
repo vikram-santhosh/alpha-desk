@@ -6,11 +6,11 @@ Also builds a human-readable summary for the Opus synthesis prompt.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 
 from src.advisor.memory import (
-    get_all_holdings,
+    get_all_holdings,  # noqa: F401  re-exported as a patch target for tests
     get_recent_snapshots,
     record_snapshot,
 )

@@ -387,7 +387,7 @@ def _generate_moonshot_thesis(
         log.warning("Budget exceeded — template moonshot for %s", ticker)
         return _moonshot_fallback(ticker, candidate, archetype)
 
-    scores = candidate.get("scores", {})
+    candidate.get("scores", {})
     fund = candidate.get("fundamentals_summary", {})
     signal_data = candidate.get("signal_data", {})
 
@@ -510,8 +510,8 @@ def _moonshot_fallback(
         return (
             f"{ticker} — Small-cap disruptor{sector_str} with {growth_str} revenue growth, "
             f"{fun_str}. Social buzz suggests the street is underweight.",
-            f"If growth sustains above 25%, the current multiple re-rates 2-3x as institutions discover the name",
-            f"Growth deceleration below 15% or competitive entry compresses the multiple 40-50%",
+            "If growth sustains above 25%, the current multiple re-rates 2-3x as institutions discover the name",
+            "Growth deceleration below 15% or competitive entry compresses the multiple 40-50%",
             "Next quarterly earnings — focus on revenue growth trajectory and customer count",
         )
     elif archetype == "catalyst_driven":
@@ -519,8 +519,8 @@ def _moonshot_fallback(
         return (
             f"{ticker} — Trading{pe_ctx} with {fun_str}. "
             f"A near-term catalyst event creates binary upside that the market is underpricing.",
-            f"Positive resolution re-rates the stock 30-50% as uncertainty premium collapses",
-            f"Negative outcome triggers 20-30% sell-off and likely multiple compression",
+            "Positive resolution re-rates the stock 30-50% as uncertainty premium collapses",
+            "Negative outcome triggers 20-30% sell-off and likely multiple compression",
             "Catalyst event resolution — watch for regulatory decision, contract award, or earnings beat",
         )
     elif archetype == "contrarian_turnaround":
@@ -528,8 +528,8 @@ def _moonshot_fallback(
         return (
             f"{ticker} — Down {drop_str} from highs but {fun_str}. "
             f"Fundamentals are stabilizing while the market still prices in deterioration.",
-            f"Mean reversion to 12-month average valuation delivers 40-80% upside",
-            f"Value trap — fundamentals continue deteriorating, another 20-30% downside before bottoming",
+            "Mean reversion to 12-month average valuation delivers 40-80% upside",
+            "Value trap — fundamentals continue deteriorating, another 20-30% downside before bottoming",
             "Two consecutive quarters of improving revenue growth or margin expansion",
         )
     elif archetype == "pre_ipo_proxy":
@@ -555,7 +555,7 @@ def _moonshot_fallback(
             f"{ticker} — Early mover in {theme.lower()} with {fun_str}. "
             f"Sector is in early innings; winners will be re-rated as adoption accelerates.",
             f"Sector inflects — early movers in {theme.lower()} see 2-5x re-rating as revenue ramps",
-            f"Sector hype fades without commercial traction — 40-60% drawdown as expectations reset",
+            "Sector hype fades without commercial traction — 40-60% drawdown as expectations reset",
             "First major commercial contract, revenue milestone, or sector catalyst announcement",
         )
     else:

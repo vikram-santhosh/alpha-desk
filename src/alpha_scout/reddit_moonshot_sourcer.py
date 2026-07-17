@@ -14,7 +14,6 @@ from typing import Any
 import requests
 
 from src.shared.config_loader import load_subreddits
-from src.shared.security import sanitize_ticker
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)

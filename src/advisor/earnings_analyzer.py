@@ -424,7 +424,7 @@ def _infer_relationship(source: str, mentioned: str, context: str) -> str:
 def _infer_mention_sentiment(context: str, mentioned_ticker: str) -> str:
     """Infer sentiment of a cross-mention (positive/neutral/negative)."""
     ctx_lower = context.lower()
-    ticker_lower = mentioned_ticker.lower()
+    mentioned_ticker.lower()
 
     negative_kw = ["concern", "risk", "challenge", "decline", "losing", "weakness",
                     "headwind", "replacing", "displacing"]

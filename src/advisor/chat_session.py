@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta
-from typing import Any
 
 from src.shared import gemini_compat as anthropic
 from src.shared.cost_tracker import check_budget, record_usage

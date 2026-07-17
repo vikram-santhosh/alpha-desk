@@ -46,12 +46,12 @@ RUN_STEP_MATRIX = {
         "holdings_monitor",
         "delta_engine",
         "delta_analyst",
-        "report_generation_telegram",
+        "report_generation_summary",
     },
     "weekend": {
         "load_memory",
         "thesis_review",
-        "report_generation_telegram",
+        "report_generation_summary",
     },
 }
 

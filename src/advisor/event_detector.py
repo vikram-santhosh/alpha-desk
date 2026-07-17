@@ -11,8 +11,7 @@ catalyst-proximity scorer and morning-brief formatter can pick them up.
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timedelta
-from typing import Any
+from datetime import date, datetime
 
 from src.shared import gemini_compat as anthropic
 from src.shared.cost_tracker import check_budget, record_usage
