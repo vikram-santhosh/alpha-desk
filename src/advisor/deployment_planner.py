@@ -39,7 +39,9 @@ log = get_logger(__name__)
 # reasoning stage that consumes the token budget and leaves `content` null — so
 # we explicitly disable reasoning for this straight long-form generation.
 SYNTHESIS_MODEL = os.getenv("OPENROUTER_DEPLOYMENT_MODEL", "z-ai/glm-5.2")
-SYNTHESIS_MAX_TOKENS = int(os.getenv("OPENROUTER_DEPLOYMENT_MAX_TOKENS", "9000"))
+# A full 10-section report with several underwriting cards runs long; 9k tokens
+# truncated mid-report before the mandatory self-critique. 16k leaves headroom.
+SYNTHESIS_MAX_TOKENS = int(os.getenv("OPENROUTER_DEPLOYMENT_MAX_TOKENS", "16000"))
 
 
 @dataclass
@@ -128,6 +130,56 @@ def _enrich_with_fundamentals(holdings: list[dict[str, Any]]) -> None:
         h["fifty_two_week_high"] = f.get("fifty_two_week_high")
         h["fifty_two_week_low"] = f.get("fifty_two_week_low")
         h["beta"] = f.get("beta")
+        h["avg_volume"] = f.get("avg_volume")
+        # Analyst + valuation grounding (fills §6's previously-"verify live" gaps).
+        h["target_mean_price"] = f.get("target_mean_price")
+        h["implied_upside_pct"] = f.get("implied_upside_pct")
+        h["num_analyst_opinions"] = f.get("num_analyst_opinions")
+        h["peg_ratio"] = f.get("peg_ratio")
+        h["ev_to_ebitda"] = f.get("ev_to_ebitda")
+        h["ev_to_fcf"] = f.get("ev_to_fcf")
+
+
+def _apply_market_value_weights(holdings: list[dict[str, Any]]) -> str:
+    """Recompute `position_pct` from live market value (shares × current price)
+    when every holding has both, so the concentration math (HHI/top-1/top-3)
+    reflects what the book is worth *today* rather than its cost basis.
+
+    Falls back to the existing cost-basis weights if any holding is missing a
+    price or share count (mixing the two bases would distort the totals).
+    Returns the basis actually used so the report can label it honestly.
+    """
+    market_values: list[float | None] = []
+    for h in holdings:
+        shares, price = h.get("shares"), h.get("price")
+        try:
+            mv = float(shares) * float(price) if shares is not None and price is not None else None
+        except (TypeError, ValueError):
+            mv = None
+        h["market_value"] = round(mv, 2) if mv else None
+        market_values.append(mv)
+
+    if market_values and all(mv and mv > 0 for mv in market_values):
+        total = sum(market_values)  # type: ignore[arg-type]
+        for h in holdings:
+            h["position_pct"] = round((h["market_value"] / total) * 100.0, 1)
+        return "market_value"
+    return "cost_basis"
+
+
+def _apply_liquidity(holdings: list[dict[str, Any]]) -> None:
+    """Attach average daily $ volume and an estimate of days-to-exit (position
+    market value ÷ ADV$) so the report can ground its liquidity checks instead
+    of guessing. Best-effort — missing volume just leaves the fields null."""
+    for h in holdings:
+        price, vol = h.get("price"), h.get("avg_volume")
+        try:
+            adv = float(price) * float(vol) if price is not None and vol is not None else None
+        except (TypeError, ValueError):
+            adv = None
+        h["adv_usd"] = round(adv) if adv else None
+        mv = h.get("market_value")
+        h["days_to_exit"] = round(mv / adv, 2) if adv and mv else None
 
 
 def _diagnosis(holdings: list[dict[str, Any]]) -> dict[str, Any]:
@@ -148,6 +200,49 @@ def _diagnosis(holdings: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+# ── Sentiment & crowding (score-engine signals) ──────────────────────────────
+
+# The social/narrative sensors are the ones that speak to crowding — where the
+# crowd is piled in (consensus) vs absent (contrarian).
+SENTIMENT_SENSORS = {"reddit", "youtube", "substack", "news"}
+
+
+def _direction_label(value: Any) -> str:
+    """Normalize a score-engine Direction (enum or string) to BULL/BEAR/NEUTRAL."""
+    return (getattr(value, "name", None) or str(value or "NEUTRAL")).upper()
+
+
+def _sentiment_from_score(score: Any) -> dict[str, Any]:
+    """Summarize a TickerScore's per-sensor breakdown into a compact sentiment /
+    crowding read the synthesis model can cite: net lean, bull/bear tallies, and
+    the social-sensor signals specifically (the crowding tell)."""
+    signals: list[dict[str, Any]] = []
+    bull = bear = 0
+    for b in (getattr(score, "breakdown", None) or []):
+        direction = _direction_label(b.get("direction"))
+        if direction == "BULL":
+            bull += 1
+        elif direction == "BEAR":
+            bear += 1
+        evidence = b.get("evidence")
+        signals.append(
+            {
+                "sensor": str(b.get("sensor", "")),
+                "direction": direction,
+                "evidence": (str(evidence)[:140] if evidence else None),
+            }
+        )
+    social = [s for s in signals if s["sensor"] in SENTIMENT_SENSORS]
+    lean = "bullish" if bull > bear else "bearish" if bear > bull else "mixed"
+    return {
+        "net_lean": lean,
+        "bull_signals": bull,
+        "bear_signals": bear,
+        "social_signals": social[:4],
+        "all_signals": signals[:6],
+    }
+
+
 # ── Candidate ideas (deterministic score engine) ─────────────────────────────
 
 async def _candidate_ideas(top_n: int = 12) -> dict[str, Any]:
@@ -165,6 +260,7 @@ async def _candidate_ideas(top_n: int = 12) -> dict[str, Any]:
                     "score": s.score,
                     "platforms_reporting": s.platforms_reporting,
                     "evidence": [b.get("evidence") for b in (s.breakdown or [])][:4],
+                    "sentiment": _sentiment_from_score(s),
                 }
             )
         return {
@@ -176,6 +272,34 @@ async def _candidate_ideas(top_n: int = 12) -> dict[str, Any]:
     except Exception:
         log.exception("deployment_planner: score engine unavailable")
         return {"ideas": [], "as_of": str(date.today()), "note": "score engine unavailable"}
+
+
+async def _holdings_sentiment(tickers: list[str]) -> dict[str, dict[str, Any]]:
+    """Score the *current holdings* through the same sensor suite so §2 (Sentiment
+    & Crowding) can speak to the existing book, not just new candidates. Keyed by
+    ticker; degrades to {} so a sensor outage never blocks the report."""
+    if not tickers:
+        return {}
+    try:
+        from src.score_engine.engine import run_scoring
+        from src.score_engine.signals import RunRequest
+
+        result = await run_scoring(
+            RunRequest(tickers=tickers, depth="standard", top_n=len(tickers))
+        )
+        return {s.ticker.upper(): _sentiment_from_score(s) for s in result.top}
+    except Exception:
+        log.exception("deployment_planner: holdings sentiment scoring unavailable")
+        return {}
+
+
+def _attach_sentiment(
+    holdings: list[dict[str, Any]], sentiment_by_ticker: dict[str, dict[str, Any]]
+) -> None:
+    for h in holdings:
+        match = sentiment_by_ticker.get(str(h.get("ticker", "")).upper())
+        if match:
+            h["sentiment"] = match
 
 
 def _macro_snapshot() -> dict[str, Any]:
@@ -193,9 +317,91 @@ def _macro_snapshot() -> dict[str, Any]:
 
 # ── Evidence pack + synthesis ────────────────────────────────────────────────
 
-def build_evidence_pack(inputs: DeploymentInputs, candidates: dict[str, Any]) -> dict[str, Any]:
+def _geo_value(macro_data: dict[str, Any], key: str) -> tuple[Optional[float], Optional[float]]:
+    item = macro_data.get(key)
+    if isinstance(item, dict):
+        value = item.get("value")
+        change = item.get("change_pct")
+        return (value if isinstance(value, (int, float)) else None,
+                change if isinstance(change, (int, float)) else None)
+    return (item if isinstance(item, (int, float)) else None, None)
+
+
+def _geopolitical_overlay(macro_data: dict[str, Any]) -> dict[str, Any]:
+    """Ground §3's geopolitical read in the macro proxies already in the pack
+    (gold/oil/USD/VIX) rather than leaving it to pure analyst judgment. Not a
+    dedicated geopolitical feed — labeled as such so the report is honest."""
+    if not isinstance(macro_data, dict) or not macro_data:
+        return {
+            "signals": [],
+            "risk_level": "unknown",
+            "note": "no live macro in pack — geopolitical read is analyst judgment / verify live",
+        }
+
+    signals: list[str] = []
+    score = 0
+
+    gold, gold_chg = _geo_value(macro_data, "gold")
+    if gold is not None:
+        line = f"Gold ${gold:,.0f}" + (f" ({gold_chg:+.1f}%)" if gold_chg is not None else "")
+        if gold >= 3000:
+            line += " — elevated safe-haven / central-bank demand signals monetary & geopolitical stress"
+            score += 2
+        signals.append(line)
+
+    oil, oil_chg = _geo_value(macro_data, "oil_wti")
+    if oil is not None:
+        line = f"WTI crude ${oil:,.1f}" + (f" ({oil_chg:+.1f}%)" if oil_chg is not None else "")
+        if oil_chg is not None and oil_chg >= 3:
+            line += " — rising energy risk premium (Middle East / supply)"
+            score += 1
+        elif oil_chg is not None and oil_chg <= -3:
+            line += " — soft; limited near-term energy-shock pricing"
+        signals.append(line)
+
+    usd, usd_chg = _geo_value(macro_data, "usd_index")
+    if usd is not None:
+        line = f"US dollar index {usd:,.1f}" + (f" ({usd_chg:+.1f}%)" if usd_chg is not None else "")
+        if usd_chg is not None and usd_chg <= -0.5:
+            line += " — soft dollar / de-dollarization tailwind for commodities & multinationals"
+        elif usd_chg is not None and usd_chg >= 0.5:
+            line += " — firm dollar, headwind for commodity exporters"
+        signals.append(line)
+
+    vix, _vix_chg = _geo_value(macro_data, "vix")
+    if vix is not None:
+        line = f"VIX {vix:.1f}"
+        if vix >= 25:
+            line += " — elevated fear; markets pricing tail risk"
+            score += 1
+        elif vix <= 16:
+            line += " — low fear; complacent to geopolitical shocks (hedges are cheap)"
+        signals.append(line)
+
+    risk_level = "elevated" if score >= 3 else "moderate" if score >= 1 else "contained"
+    return {
+        "signals": signals,
+        "risk_level": risk_level,
+        "note": "derived from live macro proxies (gold/oil/USD/VIX), not a dedicated geopolitical feed",
+    }
+
+
+def build_evidence_pack(
+    inputs: DeploymentInputs,
+    candidates: dict[str, Any],
+    holdings_sentiment: Optional[dict[str, dict[str, Any]]] = None,
+) -> dict[str, Any]:
     holdings = _load_current_holdings()
     _enrich_with_fundamentals(holdings)
+    weights_basis = _apply_market_value_weights(holdings)
+    _apply_liquidity(holdings)
+    _attach_sentiment(holdings, holdings_sentiment or {})
+
+    diagnosis = _diagnosis(holdings)
+    diagnosis["weights_basis"] = weights_basis
+
+    macro = _macro_snapshot()
+
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "mandate": {
@@ -205,14 +411,18 @@ def build_evidence_pack(inputs: DeploymentInputs, candidates: dict[str, Any]) ->
             "constraints": inputs.constraints,
             "tracked_themes": inputs.themes,
         },
+        # market_value when every holding has a live price + share count, else
+        # cost_basis — the report must label concentration math with this.
+        "weights_basis": weights_basis,
         "current_holdings": holdings,
-        "diagnosis": _diagnosis(holdings),
+        "diagnosis": diagnosis,
         "candidate_ideas": candidates,
-        "macro": _macro_snapshot(),
+        "macro": macro,
+        "geopolitical": _geopolitical_overlay(macro.get("data") or {}),
     }
 
 
-def _synthesize(inputs: DeploymentInputs, evidence_pack: dict[str, Any]) -> str:
+def _synthesize(inputs: DeploymentInputs, evidence_pack: dict[str, Any]) -> tuple[str, float]:
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY is required to synthesize a deployment plan")
@@ -276,7 +486,111 @@ def _synthesize(inputs: DeploymentInputs, evidence_pack: dict[str, Any]) -> str:
                 "raise OPENROUTER_DEPLOYMENT_MAX_TOKENS or check the reasoning toggle."
             )
         raise RuntimeError(f"Synthesis returned empty content (finish_reason={finish}).")
-    return content
+
+    # Track token usage / cost for the synthesis call (was previously untracked).
+    usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+    input_tokens = int(usage.get("prompt_tokens") or 0)
+    output_tokens = int(usage.get("completion_tokens") or 0)
+    cost = 0.0
+    try:
+        from src.shared.cost_tracker import record_usage
+
+        cost = record_usage("deployment_planner", input_tokens, output_tokens, model=SYNTHESIS_MODEL)
+    except Exception:
+        log.warning("deployment_planner: cost tracking unavailable", exc_info=True)
+    return content, cost
+
+
+def _synthesize_stream(inputs: DeploymentInputs, evidence_pack: dict[str, Any]):
+    """Streaming synthesis. Yields markdown deltas (str) as they arrive; the final
+    yielded item is a dict ``{"done": True, "markdown": <full>, "cost": <usd>}``.
+    Same request as `_synthesize` but with SSE streaming + usage included."""
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY is required to synthesize a deployment plan")
+
+    system_prompt = load_prompt(
+        "deployment_planner",
+        capital=f"${inputs.capital:,.0f}",
+        account_type=inputs.account_type,
+        return_target=inputs.return_target,
+        constraints=inputs.constraints,
+        themes=", ".join(inputs.themes),
+        evidence_pack=json.dumps(evidence_pack, indent=2, default=str),
+    )
+    resp = requests.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "HTTP-Referer": os.getenv("OPENROUTER_SITE_URL", "http://localhost:5173"),
+            "X-Title": "AlphaDesk Deployment Planner",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": SYNTHESIS_MODEL,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Generate the full deployment plan for ${inputs.capital:,.0f} "
+                        f"({inputs.return_target}) using the evidence pack. "
+                        "Follow every required section in order."
+                    ),
+                },
+            ],
+            "max_tokens": SYNTHESIS_MAX_TOKENS,
+            "temperature": 0.4,
+            "reasoning": {"enabled": False},
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        },
+        stream=True,
+        timeout=float(os.getenv("OPENROUTER_DEPLOYMENT_TIMEOUT_S", "300")),
+    )
+    resp.raise_for_status()
+
+    chunks: list[str] = []
+    usage: dict[str, Any] = {}
+    for raw_line in resp.iter_lines(decode_unicode=True):
+        if not raw_line:
+            continue
+        line = raw_line.strip()
+        if line.startswith(":"):  # OpenRouter keep-alive comment line
+            continue
+        if not line.startswith("data:"):
+            continue
+        payload = line[len("data:") :].strip()
+        if payload == "[DONE]":
+            break
+        try:
+            event = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event.get("usage"), dict):
+            usage = event["usage"]
+        for choice in event.get("choices") or []:
+            delta = (choice.get("delta") or {}).get("content")
+            if delta:
+                chunks.append(delta)
+                yield delta
+
+    markdown = "".join(chunks)
+    if not markdown.strip():
+        raise RuntimeError("Streaming synthesis produced no content.")
+    cost = 0.0
+    try:
+        from src.shared.cost_tracker import record_usage
+
+        cost = record_usage(
+            "deployment_planner",
+            int(usage.get("prompt_tokens") or 0),
+            int(usage.get("completion_tokens") or 0),
+            model=SYNTHESIS_MODEL,
+        )
+    except Exception:
+        log.warning("deployment_planner: cost tracking unavailable", exc_info=True)
+    yield {"done": True, "markdown": markdown, "cost": cost}
 
 
 def _parse_openrouter_body(raw_text: str) -> dict[str, Any]:
@@ -299,11 +613,18 @@ def _parse_openrouter_body(raw_text: str) -> dict[str, Any]:
 async def generate_deployment_plan(inputs: Optional[DeploymentInputs] = None) -> dict[str, Any]:
     """Full pipeline: gather grounded evidence → synthesize the Markdown report."""
     inputs = inputs or DeploymentInputs()
-    candidates = await _candidate_ideas()
-    evidence_pack = build_evidence_pack(inputs, candidates)
-    markdown = await asyncio.to_thread(_synthesize, inputs, evidence_pack)
+    holdings_tickers = [h["ticker"] for h in _load_current_holdings()]
+    # Broad candidate scan and the holdings sentiment scan both hit the sensor
+    # suite — run them concurrently so we pay one sweep of latency, not two.
+    candidates, holdings_sentiment = await asyncio.gather(
+        _candidate_ideas(),
+        _holdings_sentiment(holdings_tickers),
+    )
+    evidence_pack = build_evidence_pack(inputs, candidates, holdings_sentiment)
+    markdown, cost_usd = await asyncio.to_thread(_synthesize, inputs, evidence_pack)
     return {
         "markdown": markdown,
+        "cost_usd": cost_usd,
         "evidence_pack": evidence_pack,
         "model": SYNTHESIS_MODEL,
         "generated_at": evidence_pack["generated_at"],
