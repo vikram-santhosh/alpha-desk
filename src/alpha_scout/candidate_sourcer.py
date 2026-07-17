@@ -387,9 +387,13 @@ def source_all_candidates(
                         len(sourced or []),
                     )
 
-    # Deduplicate by ticker, keeping the first occurrence (preserves priority order)
+    # Deduplicate by ticker, keeping the first occurrence (preserves priority order).
+    # Duplicates are not discarded silently: each additional source is recorded on
+    # the kept candidate as corroboration breadth, so screening can tell a name
+    # surfaced by many independent channels from a lone single-signal discovery.
     existing_set = {t.upper() for t in existing_tickers}
     seen: set[str] = set()
+    kept_by_ticker: dict[str, dict[str, Any]] = {}
     unique_candidates: list[dict[str, Any]] = []
 
     for candidate in all_candidates:
@@ -402,6 +406,13 @@ def source_all_candidates(
 
         ticker_upper = ticker.upper()
         if ticker_upper in seen:
+            kept = kept_by_ticker.get(ticker_upper)
+            if kept is not None:
+                dup_source = candidate.get("source")
+                sources = kept["corroborating_sources"]
+                if dup_source and dup_source not in sources:
+                    sources.append(dup_source)
+                    kept["corroboration_count"] = len(sources)
             if audit is not None:
                 audit["duplicates"].append(ticker_upper)
             continue
@@ -416,6 +427,9 @@ def source_all_candidates(
 
         seen.add(ticker_upper)
         candidate["ticker"] = ticker
+        candidate["corroborating_sources"] = [candidate["source"]] if candidate.get("source") else []
+        candidate["corroboration_count"] = len(candidate["corroborating_sources"])
+        kept_by_ticker[ticker_upper] = candidate
         unique_candidates.append(candidate)
 
     # Cap at max

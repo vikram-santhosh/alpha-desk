@@ -295,7 +295,11 @@ async def run(mode: str = "top_buys") -> dict[str, Any]:
     include_existing = scout_mode == "top_buys"
     log.info("Alpha Scout pipeline starting in %s mode", scout_mode)
 
+    from src.shared import scout_progress
+    scout_progress.start(scout_mode)
+
     # ── Step 1: Load config + existing tickers ────────────────────────
+    scout_progress.stage("config", "Loading config & universe")
     try:
         from src.shared.config_loader import load_scout_config
         config = load_scout_config()
@@ -316,6 +320,7 @@ async def run(mode: str = "top_buys") -> dict[str, Any]:
         portfolio_tickers = [h["ticker"] for h in holdings]
     except Exception:
         log.exception("Failed to load portfolio config")
+        scout_progress.finish(error="config_load_failed")
         return {
             "formatted": "<b>Alpha Scout</b>\n\nError: could not load portfolio configuration.",
             "signals": [],
@@ -330,6 +335,7 @@ async def run(mode: str = "top_buys") -> dict[str, Any]:
     )
 
     # ── Step 2: Source candidates ──────────────────────────────────────
+    scout_progress.stage("source", "Sourcing candidates from all channels")
     step_start = time.time()
     candidate_audit: dict[str, Any] = {}
     try:
@@ -346,6 +352,7 @@ async def run(mode: str = "top_buys") -> dict[str, Any]:
     log.info("Step 2 (source candidates) completed in %.2fs — %d candidates", time.time() - step_start, len(candidates))
 
     if not candidates:
+        scout_progress.finish()
         return {
             "formatted": "<b>Alpha Scout</b>\n\n<i>No new candidates found this cycle.</i>",
             "signals": [],
@@ -359,6 +366,7 @@ async def run(mode: str = "top_buys") -> dict[str, Any]:
         }
 
     # ── Step 3: Fetch market data for candidates ──────────────────────
+    scout_progress.stage("market_data", f"Fetching prices/fundamentals for {len(candidates)} candidates")
     candidate_tickers = [c["ticker"] for c in candidates]
     candidate_lookup = {
         str(c.get("ticker", "")).upper(): c
@@ -415,6 +423,7 @@ async def run(mode: str = "top_buys") -> dict[str, Any]:
     log.info("Portfolio fundamentals fetched in %.2fs", time.time() - step_start)
 
     # ── Step 4: Multi-dimensional screening ───────────────────────────
+    scout_progress.stage("screening", "Scoring candidates across 7 dimensions")
     step_start = time.time()
 
     from src.portfolio_analyst.technical_analyzer import analyze_all as run_technical_analysis
@@ -444,6 +453,7 @@ async def run(mode: str = "top_buys") -> dict[str, Any]:
     log.info("Step 4 (screening) completed in %.2fs", time.time() - step_start)
 
     # ── Step 5: Gemini synthesis ──────────────────────────────────────
+    scout_progress.stage("synthesis", "Synthesizing ranked ideas")
     step_start = time.time()
     top_n = screening_config.get("top_n_for_synthesis", 20)
     output_config = config.get("output", {})
@@ -480,6 +490,7 @@ async def run(mode: str = "top_buys") -> dict[str, Any]:
     )
 
     # ── Step 6: Publish discovery signals to agent bus ─────────────────
+    scout_progress.stage("publish", "Publishing discovery signals")
     published_signals: list[dict[str, Any]] = []
     for rec in portfolio_recs + watchlist_recs:
         try:
@@ -534,6 +545,7 @@ async def run(mode: str = "top_buys") -> dict[str, Any]:
         formatted = "<b>Alpha Scout</b>\n\nError formatting report."
 
     log.info("Alpha Scout pipeline completed in %.2fs", total_time)
+    scout_progress.finish()
 
     return {
         "formatted": formatted,

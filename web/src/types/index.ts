@@ -126,6 +126,39 @@ export interface DailyBriefSection {
   content: unknown;
 }
 
+export type BriefRunType = "morning_full" | "evening_wrap" | "weekend" | "auto";
+
+export interface BriefRunResult {
+  run_id?: number;
+  saved_at?: string;
+  run_type: string;
+  formatted: string;
+  sections: Record<string, unknown>;
+  stats: Record<string, unknown>;
+  degraded_reasons: string[];
+}
+
+export interface DeploymentPlanInputs {
+  capital: number;
+  return_target?: string;
+  account_type?: string;
+  constraints?: string;
+  themes?: string[];
+}
+
+export interface DeploymentPlanResult {
+  run_id?: number;
+  saved_at?: string;
+  generated_at: string;
+  model: string;
+  markdown: string;
+  mandate: Record<string, unknown>;
+  diagnosis: Record<string, unknown>;
+  stats: Record<string, unknown>;
+  cost_usd: number;
+  degraded_reasons: string[];
+}
+
 export interface CommandResult {
   answer: string;
   agent: string;
@@ -146,6 +179,24 @@ export interface ModelOption {
   enabled: boolean;
 }
 
+export interface DimensionScore {
+  name: string;
+  score: number;
+  weight: number;
+  contribution: number;
+}
+
+export interface IdeaDebug {
+  composite: number;
+  dimensions: DimensionScore[];
+  factors: string[];
+  fundamentals: Record<string, number | string | null>;
+  source: string;
+  corroboration_count: number;
+  corroborating_sources: string[];
+  synthesis_source?: string | null;
+}
+
 export interface BackendTopIdea {
   rank: number;
   ticker: string;
@@ -157,6 +208,29 @@ export interface BackendTopIdea {
   catalysts: string[];
   risks: string[];
   source: string;
+  debug?: IdeaDebug | null;
+}
+
+export type ScoutStageStatus = "pending" | "running" | "done" | "skipped" | "error";
+
+export interface ScoutStage {
+  key: string;
+  label: string;
+  status: ScoutStageStatus;
+  detail: string;
+  ts?: number | null;
+}
+
+export interface ScoutProgress {
+  active: boolean;
+  mode?: string | null;
+  run_id?: string | null;
+  started_at?: number | null;
+  updated_at?: number | null;
+  finished_at?: number | null;
+  current?: string | null;
+  error?: string | null;
+  stages: ScoutStage[];
 }
 
 export type DataSourceStatus = "validated" | "configured" | "unavailable";

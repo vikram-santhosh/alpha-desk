@@ -783,6 +783,9 @@ def _fallback_recommendations(
             "scores": candidate.get("scores", {}),
             "fundamentals_summary": candidate.get("fundamentals_summary", {}),
             "source": candidate.get("source", "unknown"),
+            "corroboration_count": candidate.get("corroboration_count", 1),
+            "corroborating_sources": candidate.get("corroborating_sources", []),
+            "synthesis_source": synthesis_source,
         }
 
         top_ranked = index < max_portfolio and composite >= 45

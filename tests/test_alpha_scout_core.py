@@ -179,6 +179,107 @@ def test_top_buy_scoring_lifts_tracked_quality_names():
     assert meta["scores"]["weights"]["fundamental"] > meta["scores"]["weights"]["novelty"]
 
 
+def test_score_fundamental_penalises_expensive_thin_margin_names():
+    """A richly-valued, thin-margin name with little analyst upside (AFRM's real
+    profile) must not score like a high-quality compounder, and being down off the
+    highs is not, by itself, a reason to score well."""
+    from src.alpha_scout.screener import score_fundamental
+
+    afrm_like = {
+        "pe_trailing": 72.0, "pe_forward": 21.0, "ev_to_ebitda": 53.7,
+        "revenue_growth": 0.33, "net_margin": 0.10, "gross_margin": 0.48,
+        "implied_upside_pct": 5.5, "pct_from_52w_high": -20.5,
+        "market_cap": 26_000_000_000,
+    }
+    quality = {
+        "pe_trailing": 25.0, "ev_to_ebitda": 18.0,
+        "revenue_growth": 0.30, "net_margin": 0.40, "gross_margin": 0.70,
+        "implied_upside_pct": 35.0, "pct_from_52w_high": -12.0,
+        "market_cap": 1_000_000_000_000,
+    }
+    afrm_score = score_fundamental(afrm_like)
+    quality_score = score_fundamental(quality)
+    assert afrm_score < 80, afrm_score
+    assert quality_score >= 95, quality_score
+    assert afrm_score < quality_score
+
+    # Outright losses are penalised, not treated as neutral.
+    lossmaker = dict(afrm_like, net_margin=-0.15)
+    assert score_fundamental(lossmaker) < afrm_score
+
+
+def test_score_fundamental_penalises_low_quality_cheap_name():
+    """A cheap, fast-growing name with a thin gross margin and negative free cash
+    flow (SMCI's profile) must not score top-tier just because its multiple is low."""
+    from src.alpha_scout.screener import score_fundamental
+
+    smci_like = {
+        "pe_trailing": 16, "ev_to_ebitda": 16, "revenue_growth": 1.2,
+        "net_margin": 0.04, "gross_margin": 0.08, "free_cashflow": -7e9,
+        "implied_upside_pct": 21, "pct_from_52w_high": -50, "market_cap": 20e9,
+    }
+    quality = {
+        "pe_trailing": 25, "ev_to_ebitda": 18, "revenue_growth": 0.30,
+        "net_margin": 0.40, "gross_margin": 0.70, "free_cashflow": 30e9,
+        "implied_upside_pct": 35, "pct_from_52w_high": -12, "market_cap": 1e12,
+    }
+    assert score_fundamental(smci_like) < score_fundamental(quality)
+    assert score_fundamental(smci_like) < 90  # not top-tier despite cheap multiple
+
+
+def test_thin_single_source_discovery_does_not_outrank_tracked_name():
+    """Regression: a non-tracked name surfaced by a lone signal (e.g. a supply-chain
+    adjacency + one golden cross, as AFRM was) must not outrank a tracked watchlist
+    name in top_buys, even when its raw fundamentals look strong. Evidence-breadth
+    scoring should keep it below validated names."""
+    scored = screen_candidates(
+        candidates=[
+            {
+                "ticker": "AFRM",  # not in portfolio/watchlist; single thin source
+                "source": "agent_bus/portfolio_analyst",
+                "signal_type": "technical_signal",
+                "signal_data": {"signals": ["Golden Cross"]},
+                "corroboration_count": 1,
+                "corroborating_sources": ["agent_bus/portfolio_analyst"],
+            },
+            {
+                "ticker": "NVDA",  # tracked watchlist name
+                "source": "existing_watchlist",
+                "signal_type": "watchlist",
+                "signal_data": {"cohort": "watchlist"},
+                "corroboration_count": 1,
+                "corroborating_sources": ["existing_watchlist"],
+            },
+        ],
+        technicals={
+            "AFRM": {"moving_averages": {"golden_cross": True}, "signals_summary": ["Golden Cross"]},
+            "NVDA": {},
+        },
+        fundamentals={
+            "AFRM": {
+                "pe_trailing": None, "revenue_growth": 0.30, "net_margin": 0.05,
+                "gross_margin": 0.50, "market_cap": 40_000_000_000,
+                "sector": "Financial Services", "pct_from_52w_high": -12,
+            },
+            "NVDA": {
+                "pe_trailing": 45, "revenue_growth": 0.50, "net_margin": 0.50,
+                "gross_margin": 0.75, "market_cap": 3_000_000_000_000,
+                "sector": "Technology", "pct_from_52w_high": -8,
+            },
+        },
+        portfolio_tickers=["NVDA"],
+        portfolio_fundamentals={"NVDA": {"sector": "Technology"}},
+        weights={},
+        mode="top_buys",
+    )
+
+    by_ticker = {c["ticker"]: c["scores"] for c in scored}
+    assert by_ticker["NVDA"]["composite"] > by_ticker["AFRM"]["composite"]
+    # A lone-source discovery must not max the evidence dimension like a validated name.
+    assert by_ticker["AFRM"]["evidence_quality"] < by_ticker["NVDA"]["evidence_quality"]
+    assert scored[0]["ticker"] == "NVDA"
+
+
 def test_top_buy_synthesis_shortlist_keeps_core_tracked_candidates():
     scored = [
         {

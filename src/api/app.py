@@ -8,6 +8,7 @@ import os
 import re
 import urllib.error
 import urllib.request
+from contextlib import asynccontextmanager
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime
 from typing import Any, AsyncGenerator, Literal, Optional
@@ -21,9 +22,8 @@ from pydantic import BaseModel, Field
 # importing this module (e.g. in tests) must not mutate the process environment.
 
 from src.advisor import council
-from src.api import run_store
+from src.api import brief_store, deployment_store, run_store
 from src.shared.config_loader import load_config
-from src.shared.model_registry import enabled_roster
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -121,6 +121,26 @@ class ModelOption(BaseModel):
     enabled: bool
 
 
+class DimensionScore(BaseModel):
+    """One scoring dimension's contribution to a candidate's composite."""
+    name: str
+    score: float           # 0-100 raw dimension score
+    weight: float          # normalized weight (0-1)
+    contribution: float    # score * weight (points added to the composite)
+
+
+class IdeaDebug(BaseModel):
+    """Decision-explainability payload: *why* an idea scored/ranked as it did."""
+    composite: float                                   # 0-100 composite score
+    dimensions: list[DimensionScore] = Field(default_factory=list)
+    factors: list[str] = Field(default_factory=list)   # human-readable fundamental factors
+    fundamentals: dict[str, Any] = Field(default_factory=dict)
+    source: str = ""
+    corroboration_count: int = 1
+    corroborating_sources: list[str] = Field(default_factory=list)
+    synthesis_source: Optional[str] = None             # llm_json | score_fallback | ...
+
+
 class TopIdea(BaseModel):
     rank: int = Field(ge=1, le=12)
     ticker: str = Field(min_length=1)
@@ -132,6 +152,7 @@ class TopIdea(BaseModel):
     catalysts: list[str]
     risks: list[str]
     source: str
+    debug: Optional[IdeaDebug] = None
 
 
 class DataSourceCheck(BaseModel):
@@ -164,6 +185,27 @@ class IdeaScoutResult(BaseModel):
     cost_usd: float = Field(ge=0.0)
     degraded_reasons: list[str] = Field(default_factory=list)
     disclaimer: str
+
+
+class ScoutStage(BaseModel):
+    key: str
+    label: str
+    status: Literal["pending", "running", "done", "skipped", "error"] = "pending"
+    detail: str = ""
+    ts: Optional[float] = None
+
+
+class ScoutProgress(BaseModel):
+    """Live progress of the Alpha Scout pipeline for the cockpit stage view."""
+    active: bool = False
+    mode: Optional[str] = None
+    run_id: Optional[str] = None
+    started_at: Optional[float] = None
+    updated_at: Optional[float] = None
+    finished_at: Optional[float] = None
+    current: Optional[str] = None
+    error: Optional[str] = None
+    stages: list[ScoutStage] = Field(default_factory=list)
 
 
 class MacroRegimeResponse(BaseModel):
@@ -212,6 +254,99 @@ class CouncilRunSummary(BaseModel):
     panel_count: int
     cost_usd: float
     execution_mode: str
+
+
+class BriefRunRequest(BaseModel):
+    run_type: Literal["morning_full", "evening_wrap", "weekend", "auto"] = "morning_full"
+
+
+class BriefRunResult(BaseModel):
+    run_id: Optional[int] = None
+    saved_at: Optional[str] = None
+    run_type: str
+    formatted: str
+    sections: dict[str, Any] = Field(default_factory=dict)
+    stats: dict[str, Any] = Field(default_factory=dict)
+    degraded_reasons: list[str] = Field(default_factory=list)
+
+
+class DeploymentPlanRequest(BaseModel):
+    capital: float = Field(default=100_000.0, gt=0)
+    return_target: Optional[str] = None
+    account_type: Optional[str] = None
+    constraints: Optional[str] = None
+    themes: list[str] = Field(default_factory=list)
+
+
+class DeploymentPlanResult(BaseModel):
+    run_id: Optional[int] = None
+    saved_at: Optional[str] = None
+    generated_at: str
+    model: str
+    markdown: str
+    mandate: dict[str, Any] = Field(default_factory=dict)
+    diagnosis: dict[str, Any] = Field(default_factory=dict)
+    stats: dict[str, Any] = Field(default_factory=dict)
+    cost_usd: float = Field(default=0.0, ge=0.0)
+    degraded_reasons: list[str] = Field(default_factory=list)
+
+
+class SparklinePoint(BaseModel):
+    value: float
+    label: Optional[str] = None
+
+
+class PredictionMarketOut(BaseModel):
+    id: str
+    question: str
+    probability: float
+    modelEstimate: float
+    sevenDaySparkline: list[SparklinePoint] = Field(default_factory=list)
+    position: Optional[Literal["yes", "no"]] = None
+    resolutionDate: str = ""
+    source: str
+
+
+class AlertOut(BaseModel):
+    id: str
+    ticker: str
+    metric: str
+    severity: Literal["critical", "warning", "info"]
+    state: Literal["new", "acknowledged", "muted", "resolved"] = "new"
+    currentValue: float = 0.0
+    thresholdValue: float = 0.0
+    firstTriggeredAt: str
+    resolvedAt: Optional[str] = None
+    description: str
+
+
+class SentimentTickerOut(BaseModel):
+    ticker: str
+    socialScore: float
+    bullishPct: float
+    bearishPct: float
+    socialVolume: list[SparklinePoint] = Field(default_factory=list)
+    priceChangePct: float = 0.0
+    divergence: Literal["bullish", "bearish", "none"] = "none"
+    topInfluencerPosts: list[str] = Field(default_factory=list)
+
+
+class ResearchSection(BaseModel):
+    heading: str
+    content: str
+
+
+class ResearchReportOut(BaseModel):
+    id: str
+    title: str
+    tickers: list[str] = Field(default_factory=list)
+    agent: str = "Model Council"
+    tier: Literal["quick", "deep"] = "deep"
+    freshness: str = ""
+    summary: str = ""
+    verdict: str = ""
+    confidence: float = 0.0
+    sections: list[ResearchSection] = Field(default_factory=list)
 
 
 DEFAULT_OPENROUTER_ANALYSIS_MODELS = [
@@ -264,7 +399,17 @@ OPENROUTER_MODEL_ALIASES = {
 }
 
 
-app = FastAPI(title="AlphaDesk Cockpit API")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        await asyncio.to_thread(_init_schema_sync)
+    except Exception as exc:
+        log.warning("MySQL schema initialization skipped: %s", exc)
+    yield
+
+
+app = FastAPI(title="AlphaDesk Cockpit API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     # Local personal tool: allow any localhost port (dev server may vary).
@@ -275,22 +420,16 @@ app.add_middleware(
 )
 
 
+def _init_schema_sync() -> None:
+    from src.shared.schema import init_schema
+
+    init_schema()
+
+
 @app.get("/api/council/models", response_model=list[ModelOption])
 def get_council_models() -> list[ModelOption]:
     """Return the configured council roster for UI chips."""
-    if os.getenv("OPENROUTER_API_KEY"):
-        return _openrouter_model_options()
-
-    roster = enabled_roster(require_gcp_project=False)
-    return [
-        ModelOption(
-            model_id=spec.model_id,
-            label=spec.label,
-            provider=spec.provider.value,
-            enabled=spec.enabled,
-        )
-        for spec in roster
-    ]
+    return _openrouter_model_options()
 
 
 @app.post("/api/council/run", response_model=CouncilResult)
@@ -346,7 +485,7 @@ async def stream_council(
                 yield _sse("done", done)
                 return
 
-            if os.getenv("OPENROUTER_API_KEY"):
+            if os.getenv("OPENROUTER_API_KEY") or _mock_openrouter_enabled():
                 async for event_name, event_data in _stream_openrouter_council_events(
                     ticker_value,
                     model_ids,
@@ -413,6 +552,238 @@ def list_council_runs(
     return [CouncilRunSummary.model_validate(item) for item in run_store.list_council_runs(limit, ticker_value)]
 
 
+@app.post("/api/brief/run", response_model=BriefRunResult)
+async def run_brief(request: BriefRunRequest) -> BriefRunResult:
+    """Run the advisor brief pipeline and persist the latest web result."""
+    try:
+        from src.advisor.main import run as run_advisor
+
+        raw_result = await asyncio.wait_for(
+            run_advisor(run_type=request.run_type),
+            timeout=_brief_timeout_s(),
+        )
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="Brief run timed out.") from exc
+    except Exception as exc:
+        log.exception("Brief run failed")
+        raise HTTPException(status_code=500, detail=str(exc) or "Brief run failed.") from exc
+
+    payload = _brief_payload(request.run_type, raw_result)
+    try:
+        run_id, saved_at = brief_store.save_brief_run(payload["run_type"], payload)
+        payload["run_id"] = run_id
+        payload["saved_at"] = saved_at
+    except Exception as exc:
+        log.exception("Brief run persistence failed")
+        payload["degraded_reasons"].append(f"MySQL persistence failed: {exc}")
+    return BriefRunResult.model_validate(payload)
+
+
+@app.get("/api/brief/runs/latest", response_model=BriefRunResult)
+def latest_brief_run() -> BriefRunResult:
+    """Return the most recent saved brief run."""
+    try:
+        payload = brief_store.latest_brief_run()
+    except Exception as exc:
+        log.warning("Latest brief lookup unavailable: %s", exc)
+        payload = None
+    if payload is None:
+        raise HTTPException(status_code=404, detail="No saved brief run found.")
+    return BriefRunResult.model_validate(payload)
+
+
+def _deployment_timeout_s() -> float:
+    try:
+        return float(os.getenv("DEPLOYMENT_TIMEOUT_S", os.getenv("OPENROUTER_DEPLOYMENT_TIMEOUT_S", "300")))
+    except (TypeError, ValueError):
+        return 300.0
+
+
+def _deployment_inputs(request: DeploymentPlanRequest):
+    from src.advisor.deployment_planner import DeploymentInputs
+
+    defaults = DeploymentInputs()
+    return DeploymentInputs(
+        capital=request.capital,
+        return_target=request.return_target or defaults.return_target,
+        account_type=request.account_type or defaults.account_type,
+        constraints=request.constraints or defaults.constraints,
+        themes=[theme.strip() for theme in request.themes if theme.strip()] or defaults.themes,
+    )
+
+
+def _deployment_payload(raw_result: dict[str, Any]) -> dict[str, Any]:
+    evidence_pack = raw_result.get("evidence_pack") if isinstance(raw_result.get("evidence_pack"), dict) else {}
+    mandate = evidence_pack.get("mandate") if isinstance(evidence_pack.get("mandate"), dict) else {}
+    diagnosis = evidence_pack.get("diagnosis") if isinstance(evidence_pack.get("diagnosis"), dict) else {}
+    candidates = evidence_pack.get("candidate_ideas") if isinstance(evidence_pack.get("candidate_ideas"), dict) else {}
+    macro = evidence_pack.get("macro") if isinstance(evidence_pack.get("macro"), dict) else {}
+
+    degraded_reasons: list[str] = []
+    if candidates.get("note"):
+        degraded_reasons.append(f"Candidate ideas: {candidates['note']}")
+    if macro.get("note"):
+        degraded_reasons.append(f"Macro: {macro['note']}")
+
+    stats = {
+        "hhi": diagnosis.get("hhi"),
+        "top1_pct": diagnosis.get("top1_pct"),
+        "top3_pct": diagnosis.get("top3_pct"),
+        "n_holdings": diagnosis.get("n_holdings"),
+        "candidate_count": len(candidates.get("ideas") or []),
+        "weights_basis": diagnosis.get("weights_basis") or evidence_pack.get("weights_basis"),
+    }
+    return {
+        "generated_at": raw_result.get("generated_at") or datetime.now().isoformat(),
+        "model": raw_result.get("model") or "unknown",
+        "markdown": raw_result.get("markdown") or "",
+        "mandate": mandate,
+        "diagnosis": diagnosis,
+        "stats": stats,
+        "cost_usd": _first_numeric(raw_result.get("cost_usd"), 0.0) or 0.0,
+        "degraded_reasons": degraded_reasons,
+    }
+
+
+@app.post("/api/deployment/plan", response_model=DeploymentPlanResult)
+async def run_deployment_plan(request: DeploymentPlanRequest) -> DeploymentPlanResult:
+    """Generate a capital-deployment plan and persist the latest web result."""
+    try:
+        from src.advisor.deployment_planner import generate_deployment_plan
+
+        raw_result = await asyncio.wait_for(
+            generate_deployment_plan(_deployment_inputs(request)),
+            timeout=_deployment_timeout_s(),
+        )
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="Deployment plan timed out.") from exc
+    except Exception as exc:
+        log.exception("Deployment plan run failed")
+        raise HTTPException(status_code=500, detail=str(exc) or "Deployment plan run failed.") from exc
+
+    payload = _deployment_payload(raw_result)
+    try:
+        run_id, saved_at = deployment_store.save_deployment_run(payload)
+        payload["run_id"] = run_id
+        payload["saved_at"] = saved_at
+    except Exception as exc:
+        log.exception("Deployment plan persistence failed")
+        payload["degraded_reasons"].append(f"MySQL persistence failed: {exc}")
+    return DeploymentPlanResult.model_validate(payload)
+
+
+@app.get("/api/deployment/runs/latest", response_model=DeploymentPlanResult)
+def latest_deployment_run() -> DeploymentPlanResult:
+    """Return the most recent saved deployment plan without starting a new run."""
+    try:
+        payload = deployment_store.latest_deployment_run()
+    except Exception as exc:
+        log.warning("Latest deployment lookup unavailable: %s", exc)
+        payload = None
+    if payload is None:
+        raise HTTPException(status_code=404, detail="No saved deployment plan found.")
+    return DeploymentPlanResult.model_validate(payload)
+
+
+_STREAM_SENTINEL = object()
+
+
+@app.get("/api/deployment/stream")
+async def stream_deployment_plan(
+    capital: float = Query(default=100_000.0, gt=0),
+    return_target: Optional[str] = Query(default=None),
+    account_type: Optional[str] = Query(default=None),
+    constraints: Optional[str] = Query(default=None),
+    themes: str = Query(default=""),
+) -> StreamingResponse:
+    """Stream the deployment report as it's written (SSE): progress → chunk* → done."""
+    theme_list = [t.strip() for t in themes.split(",") if t.strip()]
+    inputs = _deployment_inputs(
+        DeploymentPlanRequest(
+            capital=capital,
+            return_target=return_target,
+            account_type=account_type,
+            constraints=constraints,
+            themes=theme_list,
+        )
+    )
+
+    from src.advisor.deployment_planner import (
+        SYNTHESIS_MODEL,
+        _candidate_ideas,
+        _holdings_sentiment,
+        _load_current_holdings,
+        _synthesize_stream,
+        build_evidence_pack,
+    )
+
+    async def event_generator() -> AsyncGenerator[str, None]:
+        yield _sse("progress", {"phase": "evidence", "message": "Assembling the grounded evidence pack…"})
+        try:
+            holdings_tickers = [h["ticker"] for h in await asyncio.to_thread(_load_current_holdings)]
+            candidates, holdings_sentiment = await asyncio.gather(
+                _candidate_ideas(), _holdings_sentiment(holdings_tickers)
+            )
+            evidence_pack = await asyncio.to_thread(build_evidence_pack, inputs, candidates, holdings_sentiment)
+        except Exception as exc:
+            log.exception("Deployment stream: evidence assembly failed")
+            yield _sse("error", {"message": str(exc) or "Failed to assemble evidence."})
+            return
+
+        yield _sse("progress", {"phase": "synthesis", "message": "Writing the report…"})
+        markdown = ""
+        cost = 0.0
+        try:
+            gen = _synthesize_stream(inputs, evidence_pack)
+            while True:
+                # Pull the blocking sync generator one item at a time off the loop.
+                item = await asyncio.to_thread(next, gen, _STREAM_SENTINEL)
+                if item is _STREAM_SENTINEL:
+                    break
+                if isinstance(item, dict) and item.get("done"):
+                    markdown = item.get("markdown", markdown)
+                    cost = float(item.get("cost") or 0.0)
+                    break
+                markdown += item
+                yield _sse("chunk", {"delta": item})
+        except Exception as exc:
+            log.exception("Deployment stream: synthesis failed")
+            yield _sse("error", {"message": str(exc) or "Synthesis failed."})
+            return
+
+        payload = _deployment_payload(
+            {
+                "markdown": markdown,
+                "cost_usd": cost,
+                "evidence_pack": evidence_pack,
+                "model": SYNTHESIS_MODEL,
+                "generated_at": evidence_pack.get("generated_at") or datetime.now().isoformat(),
+            }
+        )
+        try:
+            run_id, saved_at = await asyncio.to_thread(deployment_store.save_deployment_run, payload)
+            payload["run_id"] = run_id
+            payload["saved_at"] = saved_at
+        except Exception as exc:
+            log.exception("Deployment stream: persistence failed")
+            payload["degraded_reasons"].append(f"MySQL persistence failed: {exc}")
+
+        yield _sse(
+            "done",
+            {
+                "run_id": payload.get("run_id"),
+                "saved_at": payload.get("saved_at"),
+                "stats": payload["stats"],
+                "cost_usd": payload["cost_usd"],
+                "model": payload["model"],
+                "generated_at": payload["generated_at"],
+                "degraded_reasons": payload["degraded_reasons"],
+            },
+        )
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
 @app.get("/api/ideas/today", response_model=IdeaScoutResult)
 async def scout_today_ideas(
     limit: int = Query(default=12, ge=10, le=12),
@@ -432,11 +803,31 @@ async def scout_today_ideas(
     else:
         fallback_reason = "Alpha Scout full pipeline skipped because ALPHA_SCOUT_MOCK=1."
 
-    if os.getenv("OPENROUTER_API_KEY"):
-        result = await asyncio.to_thread(_run_openrouter_idea_scout_sync, limit)
-    else:
+    # Fallback when the full pipeline is unavailable. We deliberately do NOT fall
+    # back to a free-form LLM idea scout — that path bypasses the quantitative
+    # screen and can hallucinate names (e.g. AFRM) far above their real composite.
+    if _mock_openrouter_enabled():
         result = _mock_today_ideas(limit)
+    else:
+        # Live: rank deterministically from the score engine (respects the screen).
+        try:
+            score_result = await _fast_score_result(limit)
+            result = _idea_scout_from_score_result(score_result, limit)
+        except Exception:
+            log.exception("Deterministic score-engine fallback failed; using mock ideas")
+            result = _mock_today_ideas(limit)
     return _save_idea_scout_result(_with_alpha_scout_fallback_reason(result, fallback_reason), mode)
+
+
+@app.get("/api/ideas/progress", response_model=ScoutProgress)
+def idea_scout_progress() -> ScoutProgress:
+    """Live stage progress of the in-flight (or most recent) Alpha Scout run."""
+    try:
+        from src.shared import scout_progress
+        return ScoutProgress.model_validate(scout_progress.snapshot())
+    except Exception:
+        log.exception("Failed to read Alpha Scout progress")
+        return ScoutProgress()
 
 
 @app.get("/api/ideas/runs/latest", response_model=IdeaScoutResult)
@@ -448,6 +839,100 @@ def latest_idea_scout_run(
     if payload is None:
         raise HTTPException(status_code=404, detail="No saved Alpha Scout run found.")
     return IdeaScoutResult.model_validate(payload)
+
+
+def _idea_scout_from_score_result(result: dict[str, Any], limit: int) -> IdeaScoutResult:
+    """Map a deterministic score-engine result into the Top Buys card contract,
+    with catalysts/risks pulled from the per-sensor evidence (no LLM involved)."""
+    ideas: list[TopIdea] = []
+    for index, ts in enumerate((result.get("top") or [])[:limit]):
+        ticker = _clean_ticker(str(ts.get("ticker") or ""))
+        if not ticker:
+            continue
+        breakdown = ts.get("breakdown") if isinstance(ts.get("breakdown"), list) else []
+        catalysts = [
+            _first_text(b.get("evidence"))
+            for b in breakdown
+            if str(b.get("direction", "")).upper() == "BULL" and _first_text(b.get("evidence"))
+        ][:3]
+        risks = [
+            _first_text(b.get("evidence"))
+            for b in breakdown
+            if str(b.get("direction", "")).upper() == "BEAR" and _first_text(b.get("evidence"))
+        ][:3]
+        platforms = [str(p) for p in (ts.get("platforms_reporting") or [])]
+        score10 = _first_numeric(ts.get("score"), 0.0) or 0.0
+        ideas.append(
+            TopIdea(
+                rank=index + 1,
+                ticker=ticker,
+                company=ticker,
+                theme=f"Score engine · {len(platforms)} signal{'' if len(platforms) == 1 else 's'}",
+                score=max(0.0, min(1.0, score10 / 10.0)),
+                horizon="tactical",
+                thesis=(
+                    catalysts[0]
+                    if catalysts
+                    else f"Composite {score10:.1f}/10 across {', '.join(platforms) or 'available signals'}."
+                ),
+                catalysts=catalysts,
+                risks=risks,
+                source="score_engine",
+            )
+        )
+    return IdeaScoutResult(
+        as_of=date.today().isoformat(),
+        universe="Deterministic score-engine snapshot",
+        scout_mode="top_buys",
+        ideas=ideas,
+        data_source_checks=[
+            DataSourceCheck(
+                source="Score engine",
+                status="validated",
+                detail=f"{len(ideas)} names ranked from the deterministic sensor suite (no LLM).",
+                checked_at=date.today().isoformat(),
+            )
+        ],
+        cost_usd=0.0,
+        degraded_reasons=[],
+        disclaimer="Deterministic quantitative screen — research support, not financial advice.",
+    )
+
+
+def _convert_snapshot_to_result_dict(snap: dict[str, Any], limit: int) -> dict[str, Any]:
+    from src.score_engine.aggregator import score_tickers
+    from src.score_engine.signals import RunResult
+    from src.score_engine.weights import load_weights
+
+    scores = snap["scores"] or score_tickers(snap["signals"], load_weights(), [])
+    ranked = sorted(scores, key=lambda s: (-s.score, s.ticker))[:limit]
+    return _score_result_to_dict(
+        RunResult(top=ranked, snapshot_id=snap["snapshot_id"], weights_version=snap["weights_version"], diagnostics={})
+    )
+
+
+async def _fast_score_result(limit: int) -> dict[str, Any]:
+    from src.score_engine.snapshot import list_snapshots, load_snapshot
+
+    rows = await asyncio.to_thread(list_snapshots, 1)
+    if rows:
+        snap = await asyncio.to_thread(load_snapshot, rows[0]["snapshot_id"])
+        if snap is not None:
+            return await asyncio.to_thread(_convert_snapshot_to_result_dict, snap, limit)
+    # No snapshot yet — run a quick deterministic score so fast mode still returns.
+    from src.score_engine.engine import run_scoring
+    from src.score_engine.signals import RunRequest
+
+    result = await run_scoring(RunRequest(depth="quick", top_n=limit))
+    return _score_result_to_dict(result)
+
+
+@app.get("/api/ideas/fast", response_model=IdeaScoutResult)
+async def fast_top_buys(limit: int = Query(default=12, ge=1, le=12)) -> IdeaScoutResult:
+    """Instant, deterministic Top Buys from the score engine — no LLM, no slow
+    Alpha Scout pipeline. Uses the latest score snapshot when available."""
+    result_dict = await _fast_score_result(limit)
+    return _idea_scout_from_score_result(result_dict, limit)
 
 
 @app.get("/api/ideas/runs", response_model=list[IdeaScoutRunSummary])
@@ -510,6 +995,355 @@ def get_portfolio() -> PortfolioSnapshot:
         top3_pct=top3,
         concentration_flag=concentration_flag,
     )
+
+
+def _markets_payload(raw_markets: Any) -> list[PredictionMarketOut]:
+    """Map prediction_market dicts ({platform,title,probability,...}) to the
+    cockpit's PredictionMarket shape. Probability is normalized to 0–100;
+    modelEstimate mirrors it (no separate model), sparkline is a flat current
+    reading until daily history accrues."""
+    out: list[PredictionMarketOut] = []
+    for index, market in enumerate(raw_markets or []):
+        if not isinstance(market, dict):
+            continue
+        title = _first_text(market.get("title"))
+        if not title:
+            continue
+        prob = _first_numeric(market.get("probability"), 0.0) or 0.0
+        prob_pct = round(prob * 100, 1) if abs(prob) <= 1 else round(prob, 1)
+        platform = _first_text(market.get("platform")) or "market"
+        out.append(
+            PredictionMarketOut(
+                id=_first_text(market.get("url")) or f"{platform}-{index}",
+                question=title,
+                probability=prob_pct,
+                modelEstimate=prob_pct,
+                sevenDaySparkline=[SparklinePoint(value=prob_pct), SparklinePoint(value=prob_pct)],
+                position=None,
+                resolutionDate=_first_text(market.get("resolution_date")) or "",
+                source=platform.title(),
+            )
+        )
+    return out[:24]
+
+
+@app.get("/api/markets", response_model=list[PredictionMarketOut])
+async def get_prediction_markets() -> list[PredictionMarketOut]:
+    """Live crowd-odds (Polymarket/Kalshi) for the cockpit's Markets view."""
+    try:
+        config = load_config("advisor").get("prediction_markets") or {}
+    except Exception:
+        config = {}
+    try:
+        from src.advisor.prediction_market import fetch_prediction_markets
+
+        raw = await asyncio.wait_for(
+            asyncio.to_thread(fetch_prediction_markets, config),
+            timeout=float(os.getenv("MARKETS_TIMEOUT_S", "30")),
+        )
+    except Exception:
+        log.exception("Prediction markets fetch failed")
+        return []
+    return _markets_payload(raw)
+
+
+def _research_from_council_runs(payloads: list[dict[str, Any]]) -> list[ResearchReportOut]:
+    """Turn saved council deliberations into a research library (no LLM, no
+    social data — pure history of what the council already concluded)."""
+
+    def _bullets(items: Any) -> str:
+        return "\n".join(f"- {text}" for text in _as_string_list(items) if text)
+
+    reports: list[ResearchReportOut] = []
+    for payload in payloads or []:
+        if not isinstance(payload, dict):
+            continue
+        verdict = payload.get("verdict") if isinstance(payload.get("verdict"), dict) else {}
+        judge = payload.get("judge") if isinstance(payload.get("judge"), dict) else {}
+        panel = payload.get("panel") if isinstance(payload.get("panel"), list) else []
+        ticker = _clean_ticker(str(verdict.get("ticker") or payload.get("ticker") or ""))
+        if not ticker:
+            continue
+
+        consensus = _as_string_list(judge.get("consensus"))
+        first_panel_thesis = next(
+            (_first_text(p.get("thesis")) for p in panel if isinstance(p, dict) and _first_text(p.get("thesis"))),
+            "",
+        )
+        summary = consensus[0] if consensus else (first_panel_thesis or "Model council deliberation.")
+
+        sections: list[ResearchSection] = []
+        for heading, items in (
+            ("Consensus", judge.get("consensus")),
+            ("Contradictions", judge.get("contradictions")),
+            ("Blind spots", judge.get("blind_spots")),
+            ("Catalysts", verdict.get("catalysts")),
+            ("Risks", verdict.get("risks")),
+        ):
+            content = _bullets(items)
+            if content:
+                sections.append(ResearchSection(heading=heading, content=content))
+        scenarios = verdict.get("scenarios") if isinstance(verdict.get("scenarios"), list) else []
+        scenario_lines = [
+            f"- {_first_text(s.get('name'))}: {round((_first_numeric(s.get('probability'), 0.0) or 0.0) * 100)}% → {_first_numeric(s.get('ret_pct'), 0.0)}%"
+            for s in scenarios
+            if isinstance(s, dict)
+        ]
+        if scenario_lines:
+            sections.append(ResearchSection(heading="Scenarios", content="\n".join(scenario_lines)))
+
+        rating = _first_text(verdict.get("rating"))
+        conviction_label = _first_text(verdict.get("conviction_label"))
+        reports.append(
+            ResearchReportOut(
+                id=str(payload.get("run_id") or f"{ticker}-{payload.get('saved_at', '')}"),
+                title=f"{ticker} — council deep-dive",
+                tickers=[ticker],
+                agent="Model Council",
+                tier="deep",
+                freshness=_first_text(payload.get("saved_at")),
+                summary=summary,
+                verdict=" · ".join([x for x in (rating, conviction_label) if x]) or "—",
+                confidence=round((_first_numeric(verdict.get("conviction"), 0.0) or 0.0) * 100, 1),
+                sections=sections,
+            )
+        )
+    return reports
+
+
+@app.get("/api/research", response_model=list[ResearchReportOut])
+def get_research_reports(limit: int = Query(default=12, ge=1, le=50)) -> list[ResearchReportOut]:
+    """Research library built from saved council deep-dives (real history)."""
+    try:
+        payloads = run_store.list_council_payloads(limit)
+    except Exception:
+        log.exception("Research history unavailable")
+        return []
+    return _research_from_council_runs(payloads)
+
+
+def _db_strategy_alerts() -> list[AlertOut]:
+    """Active strategy flags + mandate breaches from the DB (real history; empty
+    until advisor runs accrue). Degrades to [] if the store is unavailable."""
+    out: list[AlertOut] = []
+    try:
+        from src.shared.db import query_all
+
+        for raw in query_all(
+            "SELECT ticker, flag_type, flag_date, description FROM strategy_flags WHERE resolved = 0 "
+            "ORDER BY flag_date DESC LIMIT 50"
+        ):
+            row = dict(raw)
+            out.append(
+                AlertOut(
+                    id=f"flag-{row.get('ticker')}-{row.get('flag_type')}",
+                    ticker=str(row.get("ticker") or ""),
+                    metric=str(row.get("flag_type") or "Strategy flag"),
+                    severity="warning",
+                    firstTriggeredAt=str(row.get("flag_date") or ""),
+                    description=str(row.get("description") or "Strategy flag is active."),
+                )
+            )
+        for raw in query_all(
+            "SELECT ticker, breach_type, severity, detail, created_at FROM mandate_breaches "
+            "ORDER BY created_at DESC LIMIT 50"
+        ):
+            row = dict(raw)
+            sev = str(row.get("severity") or "warning").lower()
+            out.append(
+                AlertOut(
+                    id=f"breach-{row.get('ticker')}-{row.get('breach_type')}",
+                    ticker=str(row.get("ticker") or ""),
+                    metric=str(row.get("breach_type") or "Mandate breach"),
+                    severity=sev if sev in ("critical", "warning", "info") else "warning",  # type: ignore[arg-type]
+                    firstTriggeredAt=str(row.get("created_at") or ""),
+                    description=str(row.get("detail") or "Mandate breach detected."),
+                )
+            )
+    except Exception:
+        log.warning("DB strategy alerts unavailable", exc_info=True)
+    return out
+
+
+@app.get("/api/alerts", response_model=list[AlertOut])
+def get_alerts() -> list[AlertOut]:
+    """Live alerts: portfolio-concentration breaches (computed now) + DB flags."""
+    alerts: list[AlertOut] = []
+    now = datetime.now().isoformat()
+    try:
+        snapshot = get_portfolio()
+        threshold = _portfolio_threshold()
+        for position in snapshot.positions:
+            if position.weight_pct > threshold:
+                alerts.append(
+                    AlertOut(
+                        id=f"weight-{position.ticker}",
+                        ticker=position.ticker,
+                        metric="Position weight",
+                        severity="critical" if position.weight_pct > threshold * 1.5 else "warning",
+                        state="new",
+                        currentValue=position.weight_pct,
+                        thresholdValue=threshold,
+                        firstTriggeredAt=now,
+                        description=(
+                            f"{position.ticker} at {position.weight_pct:.1f}% exceeds the "
+                            f"{threshold:.0f}% max-position guardrail."
+                        ),
+                    )
+                )
+    except Exception:
+        log.exception("Concentration alerts failed")
+    alerts.extend(_db_strategy_alerts())
+    return alerts
+
+
+def _sentiment_from_score_result(result: dict[str, Any], limit: int) -> list[SentimentTickerOut]:
+    """Derive per-ticker sentiment from the deterministic sensor breakdown
+    (BULL/BEAR directions + evidence). Real signal — not social-feed-rich until
+    Reddit/social keys are configured, so price-divergence stays neutral."""
+    out: list[SentimentTickerOut] = []
+    for ts in (result.get("top") or [])[:limit]:
+        ticker = _clean_ticker(str(ts.get("ticker") or ""))
+        if not ticker:
+            continue
+        breakdown = ts.get("breakdown") if isinstance(ts.get("breakdown"), list) else []
+        bull = sum(1 for b in breakdown if str(b.get("direction", "")).upper() == "BULL")
+        bear = sum(1 for b in breakdown if str(b.get("direction", "")).upper() == "BEAR")
+        total = bull + bear
+        bullish = round(bull / total * 100, 1) if total else 50.0
+        score10 = _first_numeric(ts.get("score"), 0.0) or 0.0
+        social_score = round(score10 * 10, 1)
+        evidence = [_first_text(b.get("evidence")) for b in breakdown if _first_text(b.get("evidence"))][:3]
+        out.append(
+            SentimentTickerOut(
+                ticker=ticker,
+                socialScore=social_score,
+                bullishPct=bullish,
+                bearishPct=round(100 - bullish, 1),
+                socialVolume=[SparklinePoint(value=social_score), SparklinePoint(value=social_score)],
+                priceChangePct=0.0,
+                divergence="none",
+                topInfluencerPosts=evidence,
+            )
+        )
+    return out
+
+
+def _lc_bullish_pct(types_sentiment: Any) -> float | None:
+    """Average LunarCrush per-platform sentiment (0-100) into one bullish %."""
+    if not isinstance(types_sentiment, dict):
+        return None
+    vals = [float(v) for v in types_sentiment.values() if isinstance(v, (int, float))]
+    if not vals:
+        return None
+    return round(sum(vals) / len(vals), 1)
+
+
+# Cap how many tickers we enrich per request to stay friendly with the LunarCrush
+# rate limit (each ticker = 2 calls).
+_LC_SENTIMENT_MAX_TICKERS = 12
+
+
+async def _enrich_sentiment_with_lunarcrush(
+    base: list[SentimentTickerOut], limit: int
+) -> list[SentimentTickerOut]:
+    """Overlay real cross-platform social data (X/Reddit/YouTube/TikTok) from
+    LunarCrush onto the snapshot-derived rows. No-ops (returns `base` unchanged)
+    when no LunarCrush key is configured, so the view degrades gracefully."""
+    from src.shared import lunarcrush as lc
+
+    if lc._get_headers() is None or not base:
+        return base
+
+    try:
+        trending = await asyncio.to_thread(lc.get_trending_social_stocks, 300)
+    except Exception:
+        trending = []
+    price_map = {str(s.get("symbol", "")).upper(): s for s in trending}
+
+    async def _enrich(item: SentimentTickerOut) -> SentimentTickerOut:
+        sym = item.ticker.upper()
+        try:
+            summary, posts = await asyncio.gather(
+                asyncio.to_thread(lc.get_social_summary, sym),
+                asyncio.to_thread(lc.get_social_posts, sym, 8),
+            )
+        except Exception:
+            return item
+        if not summary and not posts:
+            return item
+
+        bull = _lc_bullish_pct((summary or {}).get("types_sentiment"))
+        social_volume = [
+            SparklinePoint(value=float(p["interactions"]), label=p.get("platform"))
+            for p in (posts or [])
+            if isinstance(p.get("interactions"), (int, float))
+        ][:7]
+        influencer = [
+            f"@{p['creator']}: {p['title']}"
+            for p in (posts or [])
+            if p.get("creator") and p.get("title")
+        ][:5]
+
+        price_chg = price_map.get(sym, {}).get("percent_change_24h")
+        price_chg = round(float(price_chg), 2) if isinstance(price_chg, (int, float)) else item.priceChangePct
+
+        divergence = item.divergence
+        if bull is not None and isinstance(price_chg, (int, float)):
+            if bull >= 60 and price_chg < -1:
+                divergence = "bullish"   # crowd bullish, price hasn't followed
+            elif bull <= 40 and price_chg > 1:
+                divergence = "bearish"   # crowd bearish, price hasn't followed
+            else:
+                divergence = "none"
+
+        return SentimentTickerOut(
+            ticker=item.ticker,
+            socialScore=bull if bull is not None else item.socialScore,
+            bullishPct=bull if bull is not None else item.bullishPct,
+            bearishPct=round(100 - bull, 1) if bull is not None else item.bearishPct,
+            socialVolume=social_volume or item.socialVolume,
+            priceChangePct=price_chg,
+            divergence=divergence,
+            topInfluencerPosts=influencer or item.topInfluencerPosts,
+        )
+
+    head = await asyncio.gather(*[_enrich(i) for i in base[:_LC_SENTIMENT_MAX_TICKERS]])
+    return list(head) + base[_LC_SENTIMENT_MAX_TICKERS:]
+
+
+@app.get("/api/sentiment", response_model=list[SentimentTickerOut])
+async def get_sentiment(limit: int = Query(default=12, ge=1, le=24)) -> list[SentimentTickerOut]:
+    """Per-ticker sentiment. Base signal is the deterministic score snapshot; when
+    a LunarCrush key is configured it's overlaid with real cross-platform social
+    posts/sentiment (no LLM). Degrades to the snapshot, then to []."""
+    base: list[SentimentTickerOut] = []
+    try:
+        result = await _fast_score_result(limit)
+        base = _sentiment_from_score_result(result, limit)
+    except Exception:
+        log.exception("Sentiment scoring failed")
+
+    # If the score snapshot is empty, still populate from the tracked universe so
+    # the social overlay has something to enrich.
+    if not base:
+        try:
+            from src.shared.config_loader import get_all_tickers
+
+            tickers = [_clean_ticker(t) for t in get_all_tickers()][:limit]
+            base = [
+                SentimentTickerOut(ticker=t, socialScore=50.0, bullishPct=50.0, bearishPct=50.0)
+                for t in tickers
+                if t
+            ]
+        except Exception:
+            log.exception("Sentiment universe seeding failed")
+
+    try:
+        return await _enrich_sentiment_with_lunarcrush(base, limit)
+    except Exception:
+        log.exception("LunarCrush sentiment enrichment failed")
+        return base
 
 
 @app.get("/api/macro", response_model=MacroDashboardResponse)
@@ -1161,7 +1995,7 @@ async def _run_council(
     context: Optional[dict[str, Any]] = None,
 ) -> CouncilResult:
     """Run the underlying council and normalize it into the Phase-F contract."""
-    if os.getenv("OPENROUTER_API_KEY"):
+    if os.getenv("OPENROUTER_API_KEY") or _mock_openrouter_enabled():
         return await _run_openrouter_council(ticker, models, context or {})
     prompt = _council_prompt(ticker, context or {})
     raw_result = await council.deliberate(prompt=prompt, max_tokens=1400)
@@ -1735,7 +2569,16 @@ def _mock_openrouter_panel_model(ticker: str, model_id: str) -> PanelVerdict:
 async def _run_alpha_scout_pipeline(mode: str = "top_buys") -> dict[str, Any]:
     from src.alpha_scout import main as alpha_scout_main
 
-    return await alpha_scout_main.run(mode=mode)
+    try:
+        return await alpha_scout_main.run(mode=mode)
+    except Exception:
+        # Ensure the live stage view doesn't get stuck "active" on a crash.
+        try:
+            from src.shared import scout_progress
+            scout_progress.finish(error="pipeline failed")
+        except Exception:
+            pass
+        raise
 
 
 def _idea_scout_from_alpha_scout(result: dict[str, Any], limit: int) -> IdeaScoutResult:
@@ -1880,6 +2723,69 @@ def _idea_audit_from_alpha_scout_stats(stats: dict[str, Any]) -> IdeaScoutAudit:
     )
 
 
+def _growth_pct(value: Any) -> Optional[str]:
+    """Format a yfinance fraction (0.21) or percent as a clean percentage string."""
+    n = _first_numeric(value)
+    if n is None:
+        return None
+    pct = n * 100 if abs(n) <= 5 else n
+    return f"{pct:.0f}%"
+
+
+def _alpha_scout_catalysts(fund: dict[str, Any], tech_summary: Any) -> list[str]:
+    """Real, per-name catalysts derived from fundamentals/technicals — replaces the
+    old "Alpha Scout composite score X" boilerplate that just echoed the score."""
+    out: list[str] = []
+    upside = _first_numeric(fund.get("implied_upside_pct"))
+    if upside is not None and upside > 12:
+        out.append(f"Analysts see ~{upside:.0f}% upside to the average price target")
+    rev = _first_numeric(fund.get("revenue_growth"))
+    if rev is not None and rev > 0.15:
+        out.append(f"Revenue growing {_growth_pct(rev)} year-over-year")
+    margin = _first_numeric(fund.get("net_margin"))
+    if margin is not None and margin > 0.20:
+        out.append(f"High {_growth_pct(margin)} net margin")
+    pe = _first_numeric(fund.get("pe_trailing"))
+    if pe is not None and 0 < pe <= 30:
+        out.append(f"Reasonable valuation at {pe:.1f}x P/E")
+    pct_from_high = _first_numeric(fund.get("pct_from_52w_high"))
+    if pct_from_high is not None and pct_from_high < -15:
+        out.append(f"{abs(pct_from_high):.0f}% below its 52-week high — pullback entry")
+    next_earnings = _first_text(fund.get("next_earnings_date"))
+    if next_earnings:
+        out.append(f"Upcoming earnings catalyst ({next_earnings[:10]})")
+    for item in (tech_summary or []):
+        text = _first_text(item)
+        if text and any(k in text.lower() for k in ("bullish", "oversold", "golden cross", "breakout", "unusual volume")):
+            out.append(text)
+            break
+    return out[:3]
+
+
+def _alpha_scout_risks(fund: dict[str, Any], scores: dict[str, Any]) -> list[str]:
+    """Real, per-name risks — replaces the universal "Requires follow-up council
+    validation" boilerplate that appeared identically on every card."""
+    out: list[str] = []
+    pe = _first_numeric(fund.get("pe_trailing"))
+    if pe is not None and pe > 40:
+        out.append(f"Elevated {pe:.1f}x P/E prices in strong execution")
+    pct_from_high = _first_numeric(fund.get("pct_from_52w_high"))
+    if pct_from_high is not None and pct_from_high > -5:
+        out.append("Near its 52-week high — limited margin of safety")
+    margin = _first_numeric(fund.get("net_margin"))
+    if margin is not None and margin < 0:
+        out.append("Negative net margin")
+    rev = _first_numeric(fund.get("revenue_growth"))
+    if rev is not None and rev < 0:
+        out.append("Revenue declining year-over-year")
+    sentiment = _first_numeric((scores or {}).get("sentiment"))
+    if sentiment is not None and sentiment <= 50:
+        out.append("Thin social/news sentiment coverage")
+    if not out:
+        out.append("Screen-based signal — confirm with fresh news and liquidity before acting")
+    return out[:3]
+
+
 def _top_idea_from_alpha_scout_rec(rec: Any, index: int) -> Optional[TopIdea]:
     if not isinstance(rec, dict):
         return None
@@ -1890,7 +2796,6 @@ def _top_idea_from_alpha_scout_rec(rec: Any, index: int) -> Optional[TopIdea]:
     fund = rec.get("fundamentals_summary") if isinstance(rec.get("fundamentals_summary"), dict) else {}
     composite = _first_numeric(scores.get("composite"), 50.0) or 50.0
     category = _first_text(rec.get("category")) or "watchlist"
-    conviction = _first_text(rec.get("conviction")) or "medium"
     sector = _first_text(fund.get("sector")) or "Alpha Scout discovery"
     thesis = _first_text(rec.get("thesis")) or f"Alpha Scout ranked {ticker} from its discovery pipeline."
     return TopIdea(
@@ -1901,15 +2806,62 @@ def _top_idea_from_alpha_scout_rec(rec: Any, index: int) -> Optional[TopIdea]:
         score=max(0.0, min(1.0, composite / 100.0)),
         horizon="6-18 months",
         thesis=thesis,
-        catalysts=[
-            f"Alpha Scout composite score {composite:.1f}",
-            f"Conviction: {conviction}",
-        ],
-        risks=[
-            "Requires follow-up council validation before action.",
-            "Quantitative screen may miss fresh news or liquidity risk.",
-        ],
+        catalysts=_alpha_scout_catalysts(fund, rec.get("technical_summary")),
+        risks=_alpha_scout_risks(fund, scores),
         source=_first_text(rec.get("source")) or "alpha_scout",
+        debug=_idea_debug_from_rec(rec, scores, fund),
+    )
+
+
+# Dimensions, in display order, that contribute to the composite score.
+_DEBUG_DIMENSIONS = (
+    "technical", "fundamental", "sentiment", "diversification",
+    "novelty", "catalyst_proximity", "evidence_quality",
+)
+
+
+def _idea_debug_from_rec(rec: dict[str, Any], scores: dict[str, Any], fund: dict[str, Any]) -> Optional[IdeaDebug]:
+    """Build the decision-explainability payload from a scored candidate."""
+    if not scores:
+        return None
+    weights = scores.get("weights") if isinstance(scores.get("weights"), dict) else {}
+    dimensions: list[DimensionScore] = []
+    for name in _DEBUG_DIMENSIONS:
+        if name not in scores:
+            continue
+        raw = _first_numeric(scores.get(name), 0.0) or 0.0
+        weight = _first_numeric(weights.get(name), 0.0) or 0.0
+        dimensions.append(
+            DimensionScore(
+                name=name,
+                score=round(raw, 1),
+                weight=round(weight, 3),
+                contribution=round(raw * weight, 1),
+            )
+        )
+
+    try:
+        from src.alpha_scout.screener import explain_fundamental_factors
+        factors = explain_fundamental_factors(fund)
+    except Exception:
+        factors = []
+
+    sources = rec.get("corroborating_sources")
+    return IdeaDebug(
+        composite=round(_first_numeric(scores.get("composite"), 0.0) or 0.0, 1),
+        dimensions=dimensions,
+        factors=factors,
+        fundamentals={
+            k: fund.get(k)
+            for k in ("pe_trailing", "pe_forward", "peg_ratio", "ev_to_ebitda",
+                      "revenue_growth", "net_margin", "gross_margin",
+                      "implied_upside_pct", "pct_from_52w_high", "market_cap", "sector")
+            if fund.get(k) is not None
+        },
+        source=_first_text(rec.get("source")) or "alpha_scout",
+        corroboration_count=int(_first_numeric(rec.get("corroboration_count"), 1) or 1),
+        corroborating_sources=sources if isinstance(sources, list) else [],
+        synthesis_source=_first_text(rec.get("synthesis_source")) or None,
     )
 
 
@@ -2328,7 +3280,7 @@ def _idea_source_checks(
             )
         )
 
-    roster_count = len(_openrouter_model_options()) if os.getenv("OPENROUTER_API_KEY") else len(enabled_roster(require_gcp_project=False))
+    roster_count = len(_openrouter_model_options())
     checks.append(
         DataSourceCheck(
             source="Council roster",
@@ -3248,11 +4200,11 @@ def _label_from_model_id(model_id: str) -> str:
 
 def _normalize_council_result(ticker: str, raw_result: Any, models: list[str]) -> CouncilResult:
     if isinstance(raw_result, CouncilResult):
-        return raw_result.model_copy(update={"execution_mode": raw_result.execution_mode or "gcp_council"})
+        return raw_result.model_copy(update={"execution_mode": raw_result.execution_mode or "council"})
     raw_payload = _to_plain_data(raw_result)
     if isinstance(raw_payload, dict) and {"panel", "judge", "verdict"}.issubset(raw_payload):
         result = CouncilResult.model_validate(raw_payload)
-        return result.model_copy(update={"execution_mode": result.execution_mode or "gcp_council"})
+        return result.model_copy(update={"execution_mode": result.execution_mode or "council"})
 
     if isinstance(raw_payload, list):
         panel = [_panel_from_text_response(item) for item in raw_payload]
@@ -3282,7 +4234,7 @@ def _normalize_council_result(ticker: str, raw_result: Any, models: list[str]) -
             ),
             cost_usd=0.0,
             degraded_reasons=["Council output was normalized from unstructured model responses."],
-            execution_mode="gcp_council",
+            execution_mode="council",
         )
 
     raise RuntimeError("Council returned an unsupported result shape.")
@@ -3505,6 +4457,26 @@ def _model_timeout_s() -> float:
         return float(os.getenv("COUNCIL_MODEL_TIMEOUT_S", "60"))
     except ValueError:
         return 60.0
+
+
+def _brief_timeout_s() -> float:
+    try:
+        return float(os.getenv("BRIEF_RUN_TIMEOUT_S", "600"))
+    except ValueError:
+        return 600.0
+
+
+def _brief_payload(requested_run_type: str, raw_result: dict[str, Any]) -> dict[str, Any]:
+    result = raw_result if isinstance(raw_result, dict) else {}
+    run_profile = result.get("run_profile") if isinstance(result.get("run_profile"), dict) else {}
+    degraded = result.get("degraded_reasons") if isinstance(result.get("degraded_reasons"), list) else []
+    return {
+        "run_type": str(run_profile.get("run_type") or result.get("run_type") or requested_run_type),
+        "formatted": str(result.get("formatted") or result.get("formatted_brief") or ""),
+        "sections": result.get("sections") if isinstance(result.get("sections"), dict) else {},
+        "stats": result.get("stats") if isinstance(result.get("stats"), dict) else {},
+        "degraded_reasons": [str(item) for item in degraded],
+    }
 
 
 def _openrouter_max_tokens() -> int:

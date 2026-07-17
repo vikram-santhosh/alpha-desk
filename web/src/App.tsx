@@ -11,18 +11,30 @@ import {
 import { AppShell } from "@/components/layout/AppShell";
 import { Skeleton } from "@/components/ui/Skeleton";
 
-const BackendCockpitView = lazy(() => import("@/components/backend/BackendCockpitView"));
+const BriefView = lazy(() => import("@/components/brief/BriefView"));
 const CouncilView = lazy(() => import("@/components/council/CouncilView"));
 const MacroView = lazy(() => import("@/components/macro/MacroView"));
 const TopBuysView = lazy(() => import("@/components/scout/TopBuysView"));
+const DeploymentView = lazy(() => import("@/components/deployment/DeploymentView"));
 const PortfolioView = lazy(() => import("@/components/portfolio/BackendPortfolioView"));
+const MarketsView = lazy(() => import("@/components/markets/MarketsView"));
+const ResearchView = lazy(() => import("@/components/research/ResearchView"));
+const MoonshotsView = lazy(() => import("@/components/moonshots/MoonshotsView"));
+const AlertsView = lazy(() => import("@/components/alerts/AlertsView"));
+const SentimentView = lazy(() => import("@/components/sentiment/SentimentView"));
 
 const routeToNavId: Record<string, string> = {
   "/": "dashboard",
   "/scout": "scout",
+  "/deployment": "deployment",
   "/council": "council",
+  "/research": "research",
+  "/moonshots": "moonshots",
   "/portfolio": "portfolio",
   "/macro": "macro",
+  "/markets": "markets",
+  "/sentiment": "sentiment",
+  "/alerts": "alerts",
 };
 
 const navIdToRoute: Record<string, string> = Object.fromEntries(
@@ -69,12 +81,18 @@ function AppRouter() {
         >
           <Suspense fallback={<PageLoader />}>
             <Routes location={location}>
-              <Route path="/" element={<BackendCockpitView />} />
+              <Route path="/" element={<BriefView />} />
               <Route path="/scout" element={<TopBuysView />} />
+              <Route path="/deployment" element={<DeploymentView />} />
               <Route path="/council" element={<CouncilView />} />
+              <Route path="/research" element={<ResearchView />} />
+              <Route path="/moonshots" element={<MoonshotsView />} />
+              <Route path="/markets" element={<MarketsView />} />
+              <Route path="/sentiment" element={<SentimentView />} />
+              <Route path="/alerts" element={<AlertsView />} />
               <Route path="/portfolio" element={<PortfolioView />} />
               <Route path="/macro" element={<MacroView />} />
-              <Route path="*" element={<BackendCockpitView />} />
+              <Route path="*" element={<BriefView />} />
             </Routes>
           </Suspense>
         </motion.div>

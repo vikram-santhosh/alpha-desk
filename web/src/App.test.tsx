@@ -18,23 +18,14 @@ describe("AlphaDesk cockpit", () => {
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input);
-        if (url.includes("/api/council/models")) {
-          return jsonResponse([
-            { model_id: "z-ai/glm-5.2", label: "GLM 5.2", provider: "z-ai", enabled: true },
-          ]);
-        }
-        if (url.includes("/api/macro")) {
+        if (url.includes("/api/brief/runs/latest")) {
           return jsonResponse({
-            regime: {
-              call: "risk-on",
-              score: 72,
-              confidence: 81,
-              rationale: "Backend smoke-test macro regime.",
-              agent: "macro",
-              scannedAt: "2026-06-22T20:30:00",
-              source: "backend",
-            },
-            themes: [],
+            run_id: 42,
+            saved_at: "2026-06-22T20:30:00",
+            run_type: "morning_full",
+            formatted: "<b>AlphaDesk Daily Brief</b>\nHold current exposure.",
+            sections: {},
+            stats: { total_time_s: 12.3, run_cost: 0.12, holdings_count: 5 },
             degraded_reasons: [],
           });
         }
@@ -55,13 +46,12 @@ describe("AlphaDesk cockpit", () => {
     vi.unstubAllGlobals();
   });
 
-  it("renders the themed backend cockpit shell", async () => {
+  it("renders the daily brief shell", async () => {
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Backend Cockpit" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Daily Brief" })).toBeTruthy();
+    expect(await screen.findByText(/AlphaDesk Daily Brief/)).toBeTruthy();
     expect(screen.getAllByText("Alpha Scout").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Model Council").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Macro Regime").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Portfolio").length).toBeGreaterThan(0);
   });
 });

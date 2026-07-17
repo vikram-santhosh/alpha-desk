@@ -28,14 +28,36 @@ function tierFor(score100: number): Tier {
   return { label: "Avoid", text: "text-(--color-accent-rose)", bar: "bg-(--color-accent-rose)", glow: "rose", badge: "critical" };
 }
 
-// Never repeat the ticker as its own sublabel (backend falls company → ticker).
-function subLabel(idea: BackendTopIdea): string {
+// The score-engine fallback fills thesis/catalysts/risks with generic boilerplate
+// that just repeats the score or states the obvious. Drop it so cards surface
+// real signal (and look clean) instead of the same three lines on every card.
+const BOILERPLATE = [
+  /^alpha scout composite score/i,
+  /^composite score\b/i,
+  /^conviction:/i,
+  /^requires follow-up council/i,
+  /^quantitative screen may miss/i,
+  /^alpha scout ranked /i,
+];
+
+function meaningful(text?: string): string {
+  const trimmed = (text || "").trim();
+  if (!trimmed) return "";
+  return BOILERPLATE.some((re) => re.test(trimmed)) ? "" : trimmed;
+}
+
+function meaningfulList(items?: string[]): string[] {
+  return (items || []).map(meaningful).filter(Boolean);
+}
+
+// theme arrives as "Portfolio · Communication Services" (source · sector) —
+// split into individual chips, ignoring anything that just echoes the ticker.
+function metaChips(idea: BackendTopIdea): string[] {
   const ticker = idea.ticker?.toUpperCase();
-  const company = idea.company?.trim();
-  if (company && company.toUpperCase() !== ticker) return company;
-  const theme = idea.theme?.trim();
-  if (theme && theme.toUpperCase() !== ticker) return theme;
-  return "";
+  return (idea.theme || "")
+    .split("·")
+    .map((part) => part.trim())
+    .filter((part) => part && part.toUpperCase() !== ticker);
 }
 
 interface IdeaCardProps {
@@ -48,9 +70,13 @@ export function IdeaCard({ idea, index }: IdeaCardProps) {
   const navigate = useNavigate();
   const score = Math.round(idea.score * 100);
   const tier = tierFor(score);
-  const sub = subLabel(idea);
-  const catalyst = idea.catalysts?.[0]?.trim();
-  const risk = idea.risks?.[0]?.trim();
+  const company = idea.company?.trim() && idea.company.trim().toUpperCase() !== idea.ticker?.toUpperCase()
+    ? idea.company.trim()
+    : "";
+  const chips = metaChips(idea);
+  const thesis = meaningful(idea.thesis);
+  const catalysts = meaningfulList(idea.catalysts).slice(0, 2);
+  const risks = meaningfulList(idea.risks).slice(0, 2);
 
   return (
     <motion.div
@@ -62,72 +88,88 @@ export function IdeaCard({ idea, index }: IdeaCardProps) {
       <GlassCard glow={tier.glow} hoverLift className="flex h-full flex-col p-5">
         {/* Header: rank · ticker · company / score · tier */}
         <div className="flex items-start justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-3">
-            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-(--color-surface-elevated) font-mono text-xs font-bold text-(--color-text-tertiary)">
-              #{idea.rank}
+          <div className="flex min-w-0 items-start gap-3">
+            <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-(--color-surface-elevated) font-mono text-xs font-bold text-(--color-text-tertiary)">
+              {idea.rank}
             </span>
             <div className="min-w-0">
-              <h3 className="font-mono text-lg font-bold tracking-tight text-(--color-text-primary)">{idea.ticker}</h3>
-              {sub && <p className="truncate text-xs text-(--color-text-tertiary)">{sub}</p>}
+              <h3 className="font-mono text-xl font-bold leading-none tracking-tight text-(--color-text-primary)">
+                {idea.ticker}
+              </h3>
+              {company && <p className="mt-1 truncate text-xs text-(--color-text-tertiary)">{company}</p>}
             </div>
           </div>
-          <div className="flex shrink-0 flex-col items-end gap-1.5">
-            <span className={`font-mono text-2xl font-bold tabular-nums ${tier.text}`}>{score}</span>
+          <div className="flex shrink-0 flex-col items-end gap-1">
+            <span className={`font-mono text-3xl font-bold leading-none tabular-nums ${tier.text}`}>{score}</span>
             <StatusBadge variant={tier.badge}>{tier.label}</StatusBadge>
           </div>
         </div>
 
-        {/* Score bar */}
-        <div className="mt-4">
-          <div className="h-2 w-full overflow-hidden rounded-full bg-(--color-surface-elevated)">
-            <motion.div
-              className={`h-full rounded-full ${tier.bar}`}
-              initial={{ width: 0 }}
-              animate={{ width: `${Math.max(0, Math.min(100, score))}%` }}
-              transition={{ duration: reducedMotion ? 0 : 0.8, delay: reducedMotion ? 0 : index * 0.05 + 0.15, ease: [0.25, 0.46, 0.45, 0.94] }}
-            />
-          </div>
-        </div>
-
-        {/* Thesis */}
-        <p className="mt-4 line-clamp-3 flex-1 text-[13px] leading-relaxed text-(--color-text-secondary)">
-          {idea.thesis}
-        </p>
-
-        {/* Catalyst / risk chips */}
-        {(catalyst || risk) && (
-          <div className="mt-4 space-y-1.5">
-            {catalyst && (
-              <div className="flex items-start gap-2 rounded-lg bg-(--color-surface-elevated)/40 px-3 py-1.5">
-                <TrendingUp className="mt-0.5 h-3.5 w-3.5 shrink-0 text-(--color-accent-emerald)" />
-                <span className="line-clamp-1 text-[11px] leading-relaxed text-(--color-text-secondary)">{catalyst}</span>
-              </div>
-            )}
-            {risk && (
-              <div className="flex items-start gap-2 rounded-lg bg-(--color-surface-elevated)/40 px-3 py-1.5">
-                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-(--color-accent-amber)" />
-                <span className="line-clamp-1 text-[11px] leading-relaxed text-(--color-text-secondary)">{risk}</span>
-              </div>
-            )}
+        {/* Meta chips: source · sector */}
+        {chips.length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            {chips.map((chip) => (
+              <span
+                key={chip}
+                className="rounded-md border border-(--color-border-subtle) bg-(--color-surface-elevated)/40 px-2 py-0.5 text-[11px] font-medium text-(--color-text-tertiary)"
+              >
+                {chip}
+              </span>
+            ))}
           </div>
         )}
 
-        {/* Footer: horizon + council CTA */}
-        <div className="mt-4 flex items-center gap-2 border-t border-(--color-border-subtle) pt-4">
-          {idea.horizon && (
-            <span className="shrink-0 font-mono text-[10px] uppercase tracking-wider text-(--color-text-tertiary)">
-              {idea.horizon}
-            </span>
-          )}
-          <GlassButton
-            type="button"
-            variant="ghost"
-            leftIcon={<BrainCircuit className="h-4 w-4" />}
-            onClick={() => navigate(`/council?ticker=${idea.ticker}&run=1&from=scout`)}
-            className="ml-auto"
-          >
-            Council deep dive
-          </GlassButton>
+        {/* Tier-calibrated score meter */}
+        <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-(--color-surface-elevated)">
+          <motion.div
+            className={`h-full rounded-full ${tier.bar}`}
+            initial={{ width: 0 }}
+            animate={{ width: `${Math.max(0, Math.min(100, score))}%` }}
+            transition={{ duration: reducedMotion ? 0 : 0.8, delay: reducedMotion ? 0 : index * 0.05 + 0.15, ease: [0.25, 0.46, 0.45, 0.94] }}
+          />
+        </div>
+
+        {/* Thesis (only when it carries real signal) */}
+        {thesis && (
+          <p className="mt-4 line-clamp-3 text-[13px] leading-relaxed text-(--color-text-secondary)">{thesis}</p>
+        )}
+
+        {/* Real catalysts / risks */}
+        {(catalysts.length > 0 || risks.length > 0) && (
+          <div className="mt-4 space-y-1.5">
+            {catalysts.map((catalyst) => (
+              <div key={catalyst} className="flex items-start gap-2">
+                <TrendingUp className="mt-0.5 h-3.5 w-3.5 shrink-0 text-(--color-accent-emerald)" />
+                <span className="line-clamp-2 text-[12px] leading-relaxed text-(--color-text-secondary)">{catalyst}</span>
+              </div>
+            ))}
+            {risks.map((risk) => (
+              <div key={risk} className="flex items-start gap-2">
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-(--color-accent-amber)" />
+                <span className="line-clamp-2 text-[12px] leading-relaxed text-(--color-text-secondary)">{risk}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Footer pinned to the bottom */}
+        <div className="mt-4 flex flex-1 items-end">
+          <div className="flex w-full items-center gap-2 border-t border-(--color-border-subtle) pt-3.5">
+            {idea.horizon && (
+              <span className="shrink-0 font-mono text-[10px] uppercase tracking-wider text-(--color-text-tertiary)">
+                {idea.horizon}
+              </span>
+            )}
+            <GlassButton
+              type="button"
+              variant="ghost"
+              leftIcon={<BrainCircuit className="h-4 w-4" />}
+              onClick={() => navigate(`/council?ticker=${idea.ticker}&run=1&from=scout`)}
+              className="ml-auto"
+            >
+              Council deep dive
+            </GlassButton>
+          </div>
         </div>
       </GlassCard>
     </motion.div>

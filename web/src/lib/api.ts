@@ -1,9 +1,13 @@
 import type {
   Alert,
+  BriefRunResult,
+  BriefRunType,
   CommandResult,
   CouncilResult,
   CouncilRunRequest,
   DailyBriefSection,
+  DeploymentPlanInputs,
+  DeploymentPlanResult,
   IdeaScoutResult,
   MacroRegime,
   MacroTheme,
@@ -13,6 +17,7 @@ import type {
   PortfolioSummary,
   PredictionMarket,
   ResearchReport,
+  ScoutProgress,
   SentimentTicker,
   SleevePosition,
 } from "../types";
@@ -23,6 +28,9 @@ import { sentimentTickers } from "../data/sentiment";
 import { researchReports } from "../data/research";
 import { moonshots } from "../data/moonshots";
 import { predictionMarkets } from "../data/markets";
+import { mockDeploymentPlan } from "../data/deployment";
+import { mockIdeaScout } from "../data/scout";
+import { mockBrief } from "../data/brief";
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 const USE_MOCKS = import.meta.env.VITE_USE_MOCKS === "1";
@@ -50,18 +58,70 @@ function apiUrl(path: string) {
   return `${API_BASE_URL}${path}`;
 }
 
-async function getJson<T>(path: string, timeoutMs = 15_000): Promise<T> {
+const timeoutSeconds = (ms: number) => Math.round(ms / 1000);
+
+/**
+ * fetch with a timeout that fails with a clear, actionable message instead of
+ * the browser's opaque "signal is aborted without reason" DOMException — and
+ * distinguishes a slow/hung backend from one that isn't reachable at all.
+ */
+async function fetchWithTimeout(
+  path: string,
+  init: RequestInit = {},
+  timeoutMs = 15_000
+): Promise<Response> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timer = setTimeout(
+    () => controller.abort(new DOMException(`Timed out after ${timeoutSeconds(timeoutMs)}s`, "TimeoutError")),
+    timeoutMs
+  );
   try {
-    const response = await fetch(apiUrl(path), { signal: controller.signal });
-    if (!response.ok) {
-      throw new Error(`Backend request failed: ${response.status}`);
+    return await fetch(apiUrl(path), { ...init, signal: controller.signal });
+  } catch (err) {
+    if (err instanceof DOMException && (err.name === "TimeoutError" || err.name === "AbortError")) {
+      throw new Error(
+        `Request to ${path} timed out after ${timeoutSeconds(timeoutMs)}s — is the backend running at ${API_BASE_URL}?`
+      );
     }
-    return (await response.json()) as T;
+    if (err instanceof TypeError) {
+      // fetch throws TypeError ("Failed to fetch") when the host can't be reached.
+      throw new Error(`Could not reach the backend at ${API_BASE_URL}. Start it with: python run_api.py`);
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function getJson<T>(path: string, timeoutMs = 15_000): Promise<T> {
+  const response = await fetchWithTimeout(path, {}, timeoutMs);
+  if (!response.ok) {
+    throw new Error(`Backend request failed: ${response.status}`);
+  }
+  return (await response.json()) as T;
+}
+
+async function postJson<T>(path: string, body: unknown, timeoutMs = 15_000): Promise<T> {
+  const response = await fetchWithTimeout(
+    path,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+    timeoutMs
+  );
+  if (!response.ok) {
+    let detail = `Backend request failed: ${response.status}`;
+    try {
+      const payload = await response.json();
+      if (typeof payload.detail === "string") detail = payload.detail;
+    } catch {
+      // Keep status-based detail.
+    }
+    throw new Error(detail);
+  }
+  return (await response.json()) as T;
 }
 
 export function backendUrl(path: string) {
@@ -170,24 +230,178 @@ export async function fetchCouncilModels(): Promise<ModelOption[]> {
   return getJson<ModelOption[]>("/api/council/models", 15_000);
 }
 
+export async function runBrief(runType: BriefRunType): Promise<BriefRunResult> {
+  if (USE_MOCKS) return delay({ ...mockBrief, run_type: runType, saved_at: new Date().toISOString() }, 800);
+  return postJson<BriefRunResult>("/api/brief/run", { run_type: runType }, 620_000);
+}
+
+export async function fetchLatestBrief(): Promise<BriefRunResult | null> {
+  if (USE_MOCKS) return delay(mockBrief, 250);
+  const response = await fetchWithTimeout("/api/brief/runs/latest", {}, 15_000);
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`Backend request failed: ${response.status}`);
+  return (await response.json()) as BriefRunResult;
+}
+
+export async function runDeploymentPlan(
+  inputs: DeploymentPlanInputs
+): Promise<DeploymentPlanResult> {
+  if (USE_MOCKS) {
+    return delay(
+      {
+        ...mockDeploymentPlan,
+        saved_at: new Date().toISOString(),
+        generated_at: new Date().toISOString(),
+        mandate: {
+          ...mockDeploymentPlan.mandate,
+          capital: inputs.capital,
+          return_target: inputs.return_target ?? mockDeploymentPlan.mandate.return_target,
+          account_type: inputs.account_type ?? mockDeploymentPlan.mandate.account_type,
+          constraints: inputs.constraints ?? mockDeploymentPlan.mandate.constraints,
+          tracked_themes: inputs.themes?.length
+            ? inputs.themes
+            : mockDeploymentPlan.mandate.tracked_themes,
+        },
+      },
+      900
+    );
+  }
+  // Single long-form synthesis call — can take a minute or more, so allow a wide timeout.
+  return postJson<DeploymentPlanResult>("/api/deployment/plan", inputs, 620_000);
+}
+
+export interface DeploymentStreamHandlers {
+  onProgress?: (message: string) => void;
+  onChunk: (delta: string) => void;
+  onDone: (result: DeploymentPlanResult) => void;
+  onError: (message: string) => void;
+}
+
+/**
+ * Stream the deployment report as it's written. Returns a cancel function.
+ * In mock mode it simulates token streaming; otherwise it uses an SSE
+ * EventSource and closes it on done/error so it never auto-reconnects (which
+ * would re-trigger a billable synthesis).
+ */
+export function streamDeploymentPlan(
+  inputs: DeploymentPlanInputs,
+  handlers: DeploymentStreamHandlers
+): () => void {
+  if (USE_MOCKS) {
+    let cancelled = false;
+    const md = mockDeploymentPlan.markdown;
+    const parts = md.match(/[\s\S]{1,90}/g) ?? [md];
+    let i = 0;
+    handlers.onProgress?.("Writing the report…");
+    const tick = () => {
+      if (cancelled) return;
+      if (i < parts.length) {
+        handlers.onChunk(parts[i++]);
+        setTimeout(tick, 30);
+      } else {
+        handlers.onDone({ ...mockDeploymentPlan, markdown: md, saved_at: new Date().toISOString() });
+      }
+    };
+    setTimeout(tick, 150);
+    return () => {
+      cancelled = true;
+    };
+  }
+
+  const params = new URLSearchParams({ capital: String(inputs.capital) });
+  if (inputs.return_target) params.set("return_target", inputs.return_target);
+  if (inputs.account_type) params.set("account_type", inputs.account_type);
+  if (inputs.constraints) params.set("constraints", inputs.constraints);
+  if (inputs.themes?.length) params.set("themes", inputs.themes.join(","));
+
+  const source = new EventSource(apiUrl(`/api/deployment/stream?${params.toString()}`));
+  let markdown = "";
+  let finished = false;
+
+  const finish = () => {
+    finished = true;
+    source.close();
+  };
+
+  source.addEventListener("progress", (event) => {
+    try {
+      handlers.onProgress?.(JSON.parse((event as MessageEvent).data).message);
+    } catch {
+      /* ignore malformed progress */
+    }
+  });
+  source.addEventListener("chunk", (event) => {
+    try {
+      const delta = JSON.parse((event as MessageEvent).data).delta as string;
+      markdown += delta;
+      handlers.onChunk(delta);
+    } catch {
+      /* ignore malformed chunk */
+    }
+  });
+  source.addEventListener("error", (event) => {
+    if (finished) return;
+    let message = "Deployment stream failed";
+    const data = (event as MessageEvent).data;
+    if (data) {
+      try {
+        message = JSON.parse(data).message ?? message;
+      } catch {
+        /* keep default */
+      }
+    } else {
+      message = `Could not reach the streaming backend at ${API_BASE_URL}.`;
+    }
+    finish();
+    handlers.onError(message);
+  });
+  source.addEventListener("done", (event) => {
+    let done: Record<string, unknown> = {};
+    try {
+      done = JSON.parse((event as MessageEvent).data);
+    } catch {
+      /* tolerate */
+    }
+    finish();
+    handlers.onDone({
+      run_id: done.run_id as number | undefined,
+      saved_at: (done.saved_at as string) ?? new Date().toISOString(),
+      generated_at: (done.generated_at as string) ?? new Date().toISOString(),
+      model: (done.model as string) ?? "openrouter",
+      markdown,
+      mandate: {
+        capital: inputs.capital,
+        return_target: inputs.return_target,
+        account_type: inputs.account_type,
+        constraints: inputs.constraints,
+        tracked_themes: inputs.themes,
+      },
+      diagnosis: (done.stats as Record<string, unknown>) ?? {},
+      stats: (done.stats as Record<string, unknown>) ?? {},
+      cost_usd: (done.cost_usd as number) ?? 0,
+      degraded_reasons: (done.degraded_reasons as string[]) ?? [],
+    });
+  });
+
+  return finish;
+}
+
+export async function fetchLatestDeploymentPlan(): Promise<DeploymentPlanResult | null> {
+  if (USE_MOCKS) return delay(mockDeploymentPlan, 250);
+  const response = await fetchWithTimeout("/api/deployment/runs/latest", {}, 15_000);
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`Backend request failed: ${response.status}`);
+  return (await response.json()) as DeploymentPlanResult;
+}
+
 export async function fetchLatestCouncilRun(ticker?: string): Promise<CouncilResult | null> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15_000);
   const params = new URLSearchParams();
   if (ticker) params.set("ticker", ticker);
   const suffix = params.toString() ? `?${params.toString()}` : "";
-  try {
-    const response = await fetch(apiUrl(`/api/council/runs/latest${suffix}`), { signal: controller.signal });
-    if (response.status === 404) {
-      return null;
-    }
-    if (!response.ok) {
-      throw new Error(`Backend request failed: ${response.status}`);
-    }
-    return (await response.json()) as CouncilResult;
-  } finally {
-    clearTimeout(timer);
-  }
+  const response = await fetchWithTimeout(`/api/council/runs/latest${suffix}`, {}, 15_000);
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`Backend request failed: ${response.status}`);
+  return (await response.json()) as CouncilResult;
 }
 
 export async function fetchPortfolioSnapshot(): Promise<PortfolioSnapshot> {
@@ -195,7 +409,8 @@ export async function fetchPortfolioSnapshot(): Promise<PortfolioSnapshot> {
 }
 
 export async function fetchAlerts(): Promise<Alert[]> {
-  return delay([...alerts]);
+  if (USE_MOCKS) return delay([...alerts]);
+  return getJson<Alert[]>("/api/alerts", 15_000);
 }
 
 export async function fetchMacroRegime(): Promise<MacroRegime> {
@@ -212,38 +427,46 @@ export async function fetchIdeaScout(
   mode: "top_buys" | "new_discoveries" = "new_discoveries",
   limit = 10
 ): Promise<IdeaScoutResult> {
+  if (USE_MOCKS) return delay({ ...mockIdeaScout, scout_mode: mode }, 700);
   const params = new URLSearchParams({ limit: String(limit), mode });
   return getJson<IdeaScoutResult>(`/api/ideas/today?${params.toString()}`, 240_000);
+}
+
+// Live stage progress of the in-flight Alpha Scout pipeline (for the stage view).
+export async function fetchScoutProgress(): Promise<ScoutProgress> {
+  if (USE_MOCKS) return { active: false, stages: [] };
+  return getJson<ScoutProgress>(`/api/ideas/progress`, 8_000);
+}
+
+// Instant deterministic Top Buys from the score engine (no LLM / Alpha Scout).
+export async function fetchFastTopBuys(limit = 10): Promise<IdeaScoutResult> {
+  if (USE_MOCKS) {
+    return delay({ ...mockIdeaScout, scout_mode: "top_buys", universe: "Deterministic score-engine snapshot" }, 300);
+  }
+  return getJson<IdeaScoutResult>(`/api/ideas/fast?limit=${limit}`, 60_000);
 }
 
 export async function fetchLatestIdeaScout(
   mode?: "top_buys" | "new_discoveries"
 ): Promise<IdeaScoutResult | null> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15_000);
+  if (USE_MOCKS) return delay({ ...mockIdeaScout, scout_mode: mode ?? mockIdeaScout.scout_mode }, 250);
   const params = new URLSearchParams();
   if (mode) params.set("mode", mode);
   const suffix = params.toString() ? `?${params.toString()}` : "";
-  try {
-    const response = await fetch(apiUrl(`/api/ideas/runs/latest${suffix}`), { signal: controller.signal });
-    if (response.status === 404) {
-      return null;
-    }
-    if (!response.ok) {
-      throw new Error(`Backend request failed: ${response.status}`);
-    }
-    return (await response.json()) as IdeaScoutResult;
-  } finally {
-    clearTimeout(timer);
-  }
+  const response = await fetchWithTimeout(`/api/ideas/runs/latest${suffix}`, {}, 15_000);
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`Backend request failed: ${response.status}`);
+  return (await response.json()) as IdeaScoutResult;
 }
 
 export async function fetchSentimentTickers(): Promise<SentimentTicker[]> {
-  return delay([...sentimentTickers]);
+  if (USE_MOCKS) return delay([...sentimentTickers]);
+  return getJson<SentimentTicker[]>("/api/sentiment", 20_000);
 }
 
 export async function fetchResearchReports(): Promise<ResearchReport[]> {
-  return delay([...researchReports]);
+  if (USE_MOCKS) return delay([...researchReports]);
+  return getJson<ResearchReport[]>("/api/research", 15_000);
 }
 
 export async function runResearchQuery(query: string): Promise<ResearchReport> {
@@ -286,67 +509,21 @@ export async function fetchMoonshots(): Promise<Moonshot[]> {
 }
 
 export async function fetchPredictionMarkets(): Promise<PredictionMarket[]> {
-  return delay([...predictionMarkets]);
+  if (USE_MOCKS) return delay([...predictionMarkets]);
+  return getJson<PredictionMarket[]>("/api/markets", 30_000);
 }
 
 export async function fetchDailyBrief(): Promise<DailyBriefSection[]> {
-  const [regime, liveMoonshots] = await Promise.all([fetchMacroRegime(), fetchMoonshots()]);
-  const activeAlerts = alerts.filter((a) => a.state !== "resolved");
-  const sections: DailyBriefSection[] = [];
-
-  if (activeAlerts.length > 0) {
-    sections.push({
-      type: "breaches",
-      title: "Active Breaches",
+  const latest = await fetchLatestBrief();
+  if (!latest) return [];
+  return [
+    {
+      type: "research",
+      title: "Latest Daily Brief",
       salience: 100,
-      content: activeAlerts,
-    });
-  }
-
-  const topMovers = [...positions]
-    .filter((p) => p.ticker !== "SGOV")
-    .sort((a, b) => Math.abs(b.changePct) - Math.abs(a.changePct))
-    .slice(0, 4);
-
-  sections.push({
-    type: "movers",
-    title: "Top Movers",
-    salience: 90,
-    content: topMovers,
-  });
-
-  sections.push({
-    type: "macro",
-    title: "Macro Regime",
-    salience: 80,
-    content: regime,
-  });
-
-  const divergences = sentimentTickers.filter((s) => s.divergence !== "none").slice(0, 3);
-  sections.push({
-    type: "sentiment",
-    title: "Street Ear Pulse",
-    salience: 70,
-    content: divergences,
-  });
-
-  const latestResearch = researchReports[0];
-  sections.push({
-    type: "research",
-    title: "Fresh Research",
-    salience: 60,
-    content: latestResearch,
-  });
-
-  const moonshot = liveMoonshots[0] ?? mockMoonshots("Mock fallback: no backend recommendation available.")[0];
-  sections.push({
-    type: "moonshot",
-    title: moonshot.source === "backend" ? "Backend Recommendation" : "Moonshot of the Day",
-    salience: 40,
-    content: moonshot,
-  });
-
-  return delay(sections.sort((a, b) => b.salience - a.salience));
+      content: latest,
+    },
+  ];
 }
 
 export async function askAlphaDesk(question: string): Promise<CommandResult> {

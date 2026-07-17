@@ -4,7 +4,7 @@ These dataclasses freeze in M0–M1 and all later milestones bolt onto them.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 

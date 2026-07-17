@@ -9,7 +9,6 @@ import json
 import os
 import sqlite3
 import uuid
-from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 

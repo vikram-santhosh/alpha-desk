@@ -154,21 +154,22 @@ def score_top_buy_technical(analysis: dict[str, Any]) -> int:
 
 
 def score_fundamental(fundamentals: dict[str, Any]) -> int:
-    """Score a candidate on fundamental metrics (0-100).
+    """Score a candidate on fundamental *quality* (0-100).
 
-    Rubric:
-        P/E 10-30: +20 | P/E <10: +10 | P/E >50: -10
-        Positive revenue growth: +20 | >20% growth: +10 bonus
-        Positive net margin: +15 | Gross margin >40%: +10
-        >10% below 52wk high: +15 | Near 52wk low (<10% above): +10
-        Market cap >$10B: +5
+    The screen rewards profitable, sensibly-valued growth and penalises the
+    profile that previously slipped through as a false positive: a richly-valued,
+    thin-margin name that merely happened to be down off its highs. It uses the
+    valuation signals already fetched (EV/EBITDA, analyst implied upside) rather
+    than treating a high multiple as nearly free, and it no longer treats "down
+    from the 52-week high / near the low" as a standalone positive (that rewarded
+    value traps). Penalties for losses and extreme multiples are real.
     """
     if not fundamentals:
         return 50  # neutral baseline
 
     score = 40
 
-    # P/E ratio
+    # P/E ratio — a very high trailing multiple is a real headwind, not ~free.
     pe = fundamentals.get("pe_trailing")
     if pe is not None:
         if 10 <= pe <= 30:
@@ -177,8 +178,20 @@ def score_fundamental(fundamentals: dict[str, Any]) -> int:
             score += 10
         elif pe <= 50:
             score += 5
-        elif pe > 50:
+        elif pe <= 60:
             score -= 5
+        else:  # >60×
+            score -= 10
+
+    # EV/EBITDA — absolute valuation richness (cash-flow basis).
+    ev_ebitda = fundamentals.get("ev_to_ebitda")
+    if isinstance(ev_ebitda, (int, float)) and ev_ebitda > 0:
+        if ev_ebitda > 40:
+            score -= 15
+        elif ev_ebitda > 25:
+            score -= 5
+        elif ev_ebitda < 15:
+            score += 3
 
     # Revenue growth
     rev_growth = fundamentals.get("revenue_growth")
@@ -192,25 +205,47 @@ def score_fundamental(fundamentals: dict[str, Any]) -> int:
         elif rev_growth < -0.05:
             score -= 10
 
-    # Margins
+    # Profitability — reward strong margins, penalise losses (was: no penalty).
     net_margin = fundamentals.get("net_margin")
-    if net_margin is not None and net_margin > 0:
-        score += 10
+    if net_margin is not None:
         if net_margin > 0.20:
-            score += 5
+            score += 15
+        elif net_margin > 0.05:
+            score += 10
+        elif net_margin > 0:
+            score += 4
+        elif net_margin < -0.10:
+            score -= 20
+        else:  # marginally negative
+            score -= 12
 
     gross_margin = fundamentals.get("gross_margin")
-    if gross_margin is not None and gross_margin > 0.40:
-        score += 10
+    if gross_margin is not None:
+        if gross_margin > 0.40:
+            score += 10
+        elif gross_margin < 0.20:
+            score -= 10  # low-margin, low-differentiation business (e.g. box assembly)
 
-    # 52-week proximity
+    # Free cash flow — penalise cash burn (a cheap multiple on negative FCF is a trap).
+    free_cashflow = fundamentals.get("free_cashflow")
+    if isinstance(free_cashflow, (int, float)) and free_cashflow < 0:
+        score -= 10
+
+    # Analyst implied upside — forward-looking sanity check on price vs. targets.
+    implied_upside = fundamentals.get("implied_upside_pct")
+    if isinstance(implied_upside, (int, float)):
+        if implied_upside > 25:
+            score += 8
+        elif implied_upside > 10:
+            score += 4
+        elif implied_upside < 0:
+            score -= 8
+        # 0-10%: no credit (e.g. the street sees little left in the name)
+
+    # 52-week proximity — only a small mean-reversion nudge, never a value-trap reward.
     pct_from_high = fundamentals.get("pct_from_52w_high")
-    pct_from_low = fundamentals.get("pct_from_52w_low")
-
-    if pct_from_high is not None and pct_from_high < -10:
-        score += 15
-    if pct_from_low is not None and pct_from_low < 10:
-        score += 10
+    if pct_from_high is not None and pct_from_high < -15:
+        score += 5
 
     # Market cap
     market_cap = fundamentals.get("market_cap")
@@ -218,6 +253,96 @@ def score_fundamental(fundamentals: dict[str, Any]) -> int:
         score += 5
 
     return max(0, min(100, score))
+
+
+def explain_fundamental_factors(fundamentals: dict[str, Any]) -> list[str]:
+    """Human-readable, signed factors mirroring ``score_fundamental``'s rubric.
+
+    Powers the cockpit's "why was this scored this way?" debug view. Kept in lockstep
+    with ``score_fundamental`` — update both together.
+    """
+    if not fundamentals:
+        return ["No fundamental data — neutral baseline (50)"]
+
+    factors: list[str] = []
+
+    pe = fundamentals.get("pe_trailing")
+    if pe is not None:
+        if 10 <= pe <= 30:
+            factors.append(f"+15 P/E {pe:.0f} (reasonable)")
+        elif 0 < pe < 10:
+            factors.append(f"+10 P/E {pe:.0f} (cheap)")
+        elif pe <= 50:
+            factors.append(f"+5 P/E {pe:.0f} (full)")
+        elif pe <= 60:
+            factors.append(f"-5 P/E {pe:.0f} (expensive)")
+        else:
+            factors.append(f"-10 P/E {pe:.0f} (very expensive)")
+
+    ev = fundamentals.get("ev_to_ebitda")
+    if isinstance(ev, (int, float)) and ev > 0:
+        if ev > 40:
+            factors.append(f"-15 EV/EBITDA {ev:.0f} (richly valued)")
+        elif ev > 25:
+            factors.append(f"-5 EV/EBITDA {ev:.0f} (elevated)")
+        elif ev < 15:
+            factors.append(f"+3 EV/EBITDA {ev:.0f} (cheap)")
+
+    rg = fundamentals.get("revenue_growth")
+    if rg is not None:
+        if rg > 0.20:
+            factors.append(f"+25 revenue growth {rg * 100:.0f}% (strong)")
+        elif rg > 0.10:
+            factors.append(f"+20 revenue growth {rg * 100:.0f}%")
+        elif rg > 0:
+            factors.append(f"+15 revenue growth {rg * 100:.0f}%")
+        elif rg < -0.05:
+            factors.append(f"-10 revenue declining {rg * 100:.0f}%")
+
+    nm = fundamentals.get("net_margin")
+    if nm is not None:
+        if nm > 0.20:
+            factors.append(f"+15 net margin {nm * 100:.0f}% (high quality)")
+        elif nm > 0.05:
+            factors.append(f"+10 net margin {nm * 100:.0f}%")
+        elif nm > 0:
+            factors.append(f"+4 net margin {nm * 100:.0f}% (thin)")
+        elif nm < -0.10:
+            factors.append(f"-20 net margin {nm * 100:.0f}% (deep losses)")
+        else:
+            factors.append(f"-12 net margin {nm * 100:.0f}% (unprofitable)")
+
+    gm = fundamentals.get("gross_margin")
+    if gm is not None:
+        if gm > 0.40:
+            factors.append(f"+10 gross margin {gm * 100:.0f}%")
+        elif gm < 0.20:
+            factors.append(f"-10 gross margin {gm * 100:.0f}% (low-margin business)")
+
+    fcf = fundamentals.get("free_cashflow")
+    if isinstance(fcf, (int, float)) and fcf < 0:
+        factors.append("-10 negative free cash flow (cash burn)")
+
+    iu = fundamentals.get("implied_upside_pct")
+    if isinstance(iu, (int, float)):
+        if iu > 25:
+            factors.append(f"+8 analyst upside {iu:.0f}%")
+        elif iu > 10:
+            factors.append(f"+4 analyst upside {iu:.0f}%")
+        elif iu < 0:
+            factors.append(f"-8 analyst downside {iu:.0f}%")
+        else:
+            factors.append(f"±0 analyst upside {iu:.0f}% (little left)")
+
+    ph = fundamentals.get("pct_from_52w_high")
+    if ph is not None and ph < -15:
+        factors.append(f"+5 off 52w high {ph:.0f}% (mean-reversion)")
+
+    mc = fundamentals.get("market_cap")
+    if mc is not None and mc > 10_000_000_000:
+        factors.append("+5 large cap (>$10B)")
+
+    return factors or ["No scoring factors triggered"]
 
 
 def score_sentiment(candidate: dict[str, Any]) -> int:
@@ -346,16 +471,33 @@ def score_catalyst_proximity(candidate: dict[str, Any], fundamentals: dict[str, 
 
 
 def score_evidence_quality(candidate: dict[str, Any], fundamentals: dict[str, Any], technicals: dict[str, Any]) -> int:
-    """Score source/data breadth so thin candidates do not look as strong as validated names."""
-    score = 35
+    """Score source/data breadth so thin candidates do not look as strong as validated names.
+
+    Having fundamentals + a technical read + a signal earns a solid *base*, but the
+    top of the range is reserved for *corroboration*: names already in the tracked
+    universe (validated by definition) or surfaced by multiple independent sources.
+    A lone single-signal discovery (e.g. one supply-chain adjacency plus a golden
+    cross) is capped well below a name confirmed across channels, so it cannot
+    outrank core holdings on data breadth alone.
+    """
+    score = 25
     if fundamentals:
-        score += 25
+        score += 15
     if technicals and not technicals.get("error"):
-        score += 15
-    if candidate.get("signal_data"):
-        score += 15
-    if "/" in str(candidate.get("source", "")) or candidate.get("signal_type"):
         score += 10
+    if candidate.get("signal_data"):
+        score += 5
+    if "/" in str(candidate.get("source", "")) or candidate.get("signal_type"):
+        score += 5
+
+    corroboration = int(candidate.get("corroboration_count", 1) or 1)
+    if _is_existing_candidate(candidate):
+        score += 40  # in the portfolio/watchlist already = validated
+    else:
+        # +18 per additional independent source, capped: a single-source
+        # discovery gets no breadth credit and lands ~60.
+        score += min(40, max(0, corroboration - 1) * 18)
+
     return max(0, min(100, score))
 
 
@@ -555,8 +697,11 @@ def screen_candidates(
             if scout_mode == "top_buys"
             else None
         )
-        if quality_floor is not None:
-            composite = max(composite, quality_floor)
+        if quality_floor is not None and quality_floor > composite:
+            # Lift high-quality tracked names toward the floor, but PARTIALLY, so
+            # genuinely different names keep different scores instead of all being
+            # hard-pinned to the same floor value (which made every card read 88).
+            composite = composite + 0.5 * (quality_floor - composite)
 
         scored.append({
             **candidate,
@@ -575,6 +720,10 @@ def screen_candidates(
                 "sector": candidate_sector,
                 "pct_from_52w_high": fund_data.get("pct_from_52w_high"),
                 "next_earnings_date": fund_data.get("next_earnings_date"),
+                "target_mean_price": fund_data.get("target_mean_price"),
+                "implied_upside_pct": fund_data.get("implied_upside_pct"),
+                "peg_ratio": fund_data.get("peg_ratio"),
+                "ev_to_ebitda": fund_data.get("ev_to_ebitda"),
             },
             "technical_summary": tech_data.get("signals_summary", []),
         })

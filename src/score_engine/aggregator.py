@@ -42,6 +42,29 @@ def _dedup(signals: list[TickerSignal]) -> list[TickerSignal]:
     return list(best.values())
 
 
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, value))
+
+
+def _breadth_gate(raw_score: float, cap: float, bull_signals: list[TickerSignal], band: float = 0.8) -> float:
+    """Keep breadth-limited names under `cap`, but SPREAD the ones that would all
+    pin to exactly `cap`.
+
+    An all-bullish ticker normalizes to ~10 regardless of signal magnitude, so the
+    old hard `min(raw, cap)` collapsed every mid-breadth name to the same value
+    (e.g. 7.9). Names already below the cap keep their (already-differentiated)
+    score; names that hit the ceiling are positioned within [cap-band, cap] by
+    their average bullish conviction (strength × confidence) so stronger evidence
+    ranks higher instead of tying.
+    """
+    if raw_score < cap:
+        return raw_score
+    if not bull_signals:
+        return cap
+    quality = sum(_clamp01(s.strength) * _clamp01(s.confidence) for s in bull_signals) / len(bull_signals)
+    return round(cap - band + band * _clamp01(quality), 6)
+
+
 def score_tickers(
     signals: list[TickerSignal],
     weights: dict[str, float],
@@ -109,12 +132,13 @@ def score_tickers(
             raw_score = max(0.0, raw / denom * SCORE_SCALE)
             raw_score = min(raw_score, SCORE_SCALE)
 
-        # Breadth gate
+        # Breadth gate (soft: caps the tier but spreads names within it)
         n_bull = len(bull_platforms)
+        bull_signals = [s for s in ticker_signals if s.direction == Direction.BULL]
         if n_bull < BREADTH_MIN:
-            raw_score = min(raw_score, 6.9)
+            raw_score = _breadth_gate(raw_score, 6.9, bull_signals)
         elif n_bull < TOP_TIER_MIN:
-            raw_score = min(raw_score, 7.9)
+            raw_score = _breadth_gate(raw_score, 7.9, bull_signals)
 
         final_score = round(raw_score, SCORE_PRECISION)
 
