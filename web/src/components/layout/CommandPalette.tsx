@@ -23,7 +23,7 @@ import { MockDataBadge } from "@/components/ui/MockDataBadge";
 import { StreamingText } from "@/components/ui/StreamingText";
 
 const commands = [
-  { id: "dashboard", label: "Go to Dashboard", icon: LayoutDashboard },
+  { id: "dashboard", label: "Go to Daily Brief", icon: LayoutDashboard },
   { id: "portfolio", label: "Go to Portfolio", icon: Wallet },
   { id: "alerts", label: "Go to Alerts", icon: Search },
   { id: "macro", label: "Go to Macro", icon: Globe },

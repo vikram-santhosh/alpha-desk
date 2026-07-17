@@ -36,7 +36,9 @@ export function AppShell({
       <div className="flex min-h-screen">
         <Sidebar activeId={activeNavId} onNavigate={onNavigate} />
 
-        <div className="flex flex-1 flex-col lg:ml-0">
+        {/* min-w-0 lets the content column shrink so wide children (e.g. report
+            tables) scroll inside their own container instead of overflowing the page. */}
+        <div className="flex min-w-0 flex-1 flex-col lg:ml-0">
           {/* Top bar */}
           <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-(--color-border-subtle) bg-(--color-surface-base)/70 px-4 backdrop-blur-xl sm:px-6">
             <div className="flex items-center gap-3">

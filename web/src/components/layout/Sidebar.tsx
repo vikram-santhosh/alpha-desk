@@ -1,11 +1,17 @@
 import { cn } from "@/lib/cn";
 import { motion } from "motion/react";
 import {
+  Bell,
   BrainCircuit,
   DatabaseZap,
+  FlaskConical,
   Globe,
+  LineChart,
   Menu,
   Rocket,
+  Sparkles,
+  Target,
+  Users,
   Wallet,
 } from "lucide-react";
 import { useState } from "react";
@@ -18,10 +24,16 @@ export type NavItem = {
 };
 
 const navItems: NavItem[] = [
-  { id: "dashboard", label: "Backend", icon: DatabaseZap },
+  { id: "dashboard", label: "Daily Brief", icon: DatabaseZap },
   { id: "scout", label: "Alpha Scout", icon: Rocket },
+  { id: "deployment", label: "Deploy Plan", icon: Target },
   { id: "council", label: "Council", icon: BrainCircuit },
+  { id: "research", label: "Research", icon: FlaskConical },
+  { id: "moonshots", label: "Moonshots", icon: Sparkles },
   { id: "macro", label: "Macro", icon: Globe },
+  { id: "markets", label: "Markets", icon: LineChart },
+  { id: "sentiment", label: "Sentiment", icon: Users },
+  { id: "alerts", label: "Alerts", icon: Bell },
   { id: "portfolio", label: "Portfolio", icon: Wallet },
 ];
 
