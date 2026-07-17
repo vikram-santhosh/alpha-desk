@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
-import tempfile
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -68,7 +66,6 @@ def test_bus_signals_use_source_agent_not_agent_name(tmp_data_dir):
     """Signals are read with source_agent, matching what agent_bus publishes."""
     import importlib
 
-    import json
 
     from src.shared import agent_bus
 

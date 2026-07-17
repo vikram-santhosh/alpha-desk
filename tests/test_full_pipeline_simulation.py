@@ -8,18 +8,15 @@ Usage:
     python tests/test_full_pipeline_simulation.py
 """
 
-import asyncio
 import json
 import os
 import random
 import shutil
-import sqlite3
 import sys
 import tempfile
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from pathlib import Path
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 # Ensure project root is on sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -462,14 +459,12 @@ def _run_simulation_inner(trading_days: list[date], price_paths: dict, temp_db: 
         seed_holdings,
         seed_macro_theses,
         build_memory_context,
-        record_snapshot,
         save_daily_brief,
         increment_conviction_weeks,
-        get_recent_snapshots,
     )
-    from src.advisor.holdings_monitor import monitor_holdings, build_holdings_narrative
-    from src.advisor.valuation_engine import compute_target_price, passes_investment_gate
-    from src.advisor.conviction_manager import update_conviction_list, evidence_test
+    from src.advisor.holdings_monitor import monitor_holdings
+    from src.advisor.valuation_engine import compute_target_price
+    from src.advisor.conviction_manager import update_conviction_list
     from src.advisor.moonshot_manager import update_moonshot_list
     from src.advisor.strategy_engine import generate_strategy
     from src.advisor.formatter import (
@@ -777,7 +772,6 @@ def _run_simulation_inner(trading_days: list[date], price_paths: dict, temp_db: 
         print("=" * 70)
         print()
         # Strip HTML tags for terminal display
-        import re
         display = last_brief
         # Convert HTML to terminal-friendly format
         display = display.replace("<b>", "\033[1m").replace("</b>", "\033[0m")

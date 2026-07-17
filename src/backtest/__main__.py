@@ -88,7 +88,7 @@ Examples:
         print(f"  Output: {args.output or 'backtests/{date}/'}")
         print("\nEstimated cost:")
         if args.skip_committee:
-            print(f"  ~$0.10-0.50 (rule-based only, no LLM calls)")
+            print("  ~$0.10-0.50 (rule-based only, no LLM calls)")
         else:
             print(f"  ~${args.days * 0.60:.2f}-${args.days * 0.80:.2f} ({args.days} days x $0.60-0.80/day)")
         return

@@ -12,10 +12,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import json
-import sqlite3
 import time
 from datetime import datetime, timezone, date
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 # Pre-mock heavy external packages so imports don't fail
 for mod in [

@@ -14,6 +14,8 @@ from fastapi.testclient import TestClient
 @pytest.fixture(autouse=True)
 def isolate_api_data_dir(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("ALPHADESK_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_MOCK", raising=False)
 
 
 def _sample_result(ticker: str = "NVDA") -> dict:

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import importlib
 
-import pytest
 
 from src.score_engine.aggregator import score_tickers
 from src.score_engine.signals import Direction, TickerSignal
@@ -56,7 +55,6 @@ def test_snapshot_rescore_identical(tmp_path, monkeypatch):
     import src.score_engine.snapshot as snap_mod
     importlib.reload(snap_mod)
 
-    from src.score_engine.snapshot import load_snapshot, save_snapshot
 
     weights = load_weights()
     scores1 = score_tickers(SIGNALS, weights, [])

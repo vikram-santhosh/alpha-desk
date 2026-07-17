@@ -181,7 +181,7 @@ def format_news_digest(
         sections[section].append(article)
 
     # Build the message
-    lines: list[str] = [f"<b>\U0001f4f0 News Desk</b>"]
+    lines: list[str] = ["<b>\U0001f4f0 News Desk</b>"]
     current_length = len(lines[0])
 
     # Section order: portfolio first, then earnings, sector, market

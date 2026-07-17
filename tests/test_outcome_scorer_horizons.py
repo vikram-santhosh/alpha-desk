@@ -5,7 +5,6 @@ import importlib
 import sqlite3
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pandas as pd

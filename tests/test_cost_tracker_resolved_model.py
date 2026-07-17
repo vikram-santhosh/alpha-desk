@@ -3,9 +3,8 @@ from __future__ import annotations
 
 import importlib
 from dataclasses import dataclass
-from pathlib import Path
 
-from src.shared.cost_tracker import _get_pricing, record_usage
+from src.shared.cost_tracker import _get_pricing
 
 
 @dataclass
@@ -26,15 +25,15 @@ def _reload_cost_tracker(monkeypatch, tmp_path):
     return importlib.reload(cost_tracker)
 
 
-def test_get_pricing_for_gemini_31_pro():
-    """gemini-3.1-pro-preview must be priced as Gemini, not as Claude Opus."""
-    pricing = _get_pricing("gemini-3.1-pro-preview")
-    assert pricing["input"] < 5.0  # Claude Opus is $15
+def test_get_pricing_for_openrouter_kimi():
+    """Resolved Kimi should be priced as OpenRouter, not as Claude Opus."""
+    pricing = _get_pricing("moonshotai/kimi-k2.6")
+    assert pricing["input"] < 1.0
 
 
-def test_get_pricing_for_gemini_31_flash_lite():
-    """gemini-3.1-flash-lite-preview must be priced as a flash model."""
-    pricing = _get_pricing("gemini-3.1-flash-lite-preview")
+def test_get_pricing_for_openrouter_glm():
+    """Resolved GLM should be priced as an inexpensive council model."""
+    pricing = _get_pricing("z-ai/glm-5.2")
     assert pricing["input"] < 1.0
 
 
@@ -42,9 +41,9 @@ def test_record_usage_prefers_response_model(monkeypatch, tmp_path):
     """record_usage uses the resolved backend model, not the requested alias."""
     cost_tracker = _reload_cost_tracker(monkeypatch, tmp_path)
 
-    # Simulate a Gemini shim response: requested claude-opus-4-6, resolved gemini-3.1-pro-preview
+    # Simulate an OpenRouter shim response: requested claude-opus-4-6, resolved Kimi.
     response = _FakeResponse(
-        model="gemini-3.1-pro-preview",
+        model="moonshotai/kimi-k2.6",
         usage=_FakeUsage(input_tokens=1_000_000, output_tokens=1_000_000),
     )
 
@@ -52,8 +51,8 @@ def test_record_usage_prefers_response_model(monkeypatch, tmp_path):
         "test_agent", 1_000_000, 1_000_000, model="claude-opus-4-6", response=response
     )
 
-    # Gemini pricing: $1.25 in + $10.00 out = $11.25
-    assert cost == 11.25
+    # OpenRouter Kimi pricing: $0.15 in + $2.50 out = $2.65
+    assert cost == 2.65
 
     # If it had used the requested alias, it would be $15 + $75 = $90
     assert cost != 90.0

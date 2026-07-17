@@ -6,7 +6,7 @@ proximity, upcoming earnings, negative margins).
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 
 import yfinance as yf
@@ -32,6 +32,13 @@ _KEY_MAP: dict[str, str] = {
     "net_margin": "profitMargins",
     "market_cap": "marketCap",
     "beta": "beta",
+    "avg_volume": "averageVolume",
+    "target_mean_price": "targetMeanPrice",
+    "num_analyst_opinions": "numberOfAnalystOpinions",
+    "peg_ratio": "trailingPegRatio",
+    "ev_to_ebitda": "enterpriseToEbitda",
+    "enterprise_value": "enterpriseValue",
+    "free_cashflow": "freeCashflow",
     "fifty_two_week_high": "fiftyTwoWeekHigh",
     "fifty_two_week_low": "fiftyTwoWeekLow",
     "sector": "sector",
@@ -45,6 +52,16 @@ def _safe_pct(current: float | None, reference: float | None) -> float | None:
     if current is None or reference is None or reference == 0:
         return None
     return round((current - reference) / reference * 100, 2)
+
+
+def _safe_ratio(numerator: float | None, denominator: float | None) -> float | None:
+    """Compute numerator / denominator, rounded; None if not computable."""
+    if numerator is None or denominator is None or denominator == 0:
+        return None
+    try:
+        return round(numerator / denominator, 1)
+    except (TypeError, ZeroDivisionError):
+        return None
 
 
 def fetch_fundamentals(ticker: str) -> dict[str, Any]:
@@ -72,6 +89,12 @@ def fetch_fundamentals(ticker: str) -> dict[str, Any]:
     result["current_price"] = price
     result["pct_from_52w_high"] = _safe_pct(price, result["fifty_two_week_high"])
     result["pct_from_52w_low"] = _safe_pct(price, result["fifty_two_week_low"])
+
+    # Analyst price target → implied upside; EV/FCF from enterprise value & FCF.
+    result["implied_upside_pct"] = _safe_pct(result.get("target_mean_price"), price)
+    if result.get("peg_ratio") is None:  # older yfinance uses "pegRatio"
+        result["peg_ratio"] = info.get("pegRatio")
+    result["ev_to_fcf"] = _safe_ratio(result.get("enterprise_value"), result.get("free_cashflow"))
 
     # Next earnings date — yfinance exposes this via .calendar
     next_earnings: str | None = None

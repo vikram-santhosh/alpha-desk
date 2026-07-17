@@ -8,7 +8,6 @@ from unittest.mock import patch, MagicMock
 sys.modules.setdefault("anthropic", MagicMock())
 sys.modules.setdefault("fredapi", MagicMock())
 
-import pytest
 
 
 def _make_reddit_post(title, selftext="", score=50, num_comments=10, subreddit="smallstreetbets"):

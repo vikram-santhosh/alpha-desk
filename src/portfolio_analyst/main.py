@@ -61,7 +61,7 @@ async def run() -> dict[str, Any]:
         portfolio = load_portfolio()
         holdings = portfolio.get("holdings", [])
         all_tickers = get_all_tickers()
-        portfolio_tickers = [h["ticker"] for h in holdings]
+        [h["ticker"] for h in holdings]
     except Exception:
         log.exception("Failed to load portfolio config")
         return {

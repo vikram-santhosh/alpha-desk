@@ -11,7 +11,6 @@ Covers:
 """
 
 import sys
-import os
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -25,9 +24,8 @@ for mod in ("anthropic", "fredapi", "yfinance", "feedparser",
     sys.modules.setdefault(mod, MagicMock())
 
 import json
-import sqlite3
 import time
-from datetime import date, datetime
+from datetime import datetime
 
 import pytest
 

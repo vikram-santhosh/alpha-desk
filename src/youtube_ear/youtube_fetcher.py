@@ -164,7 +164,7 @@ def _fetch_channel_videos(
 
         # Parse ISO 8601 timestamp
         try:
-            from datetime import datetime, timezone
+            from datetime import datetime
 
             dt = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
             created_utc = dt.timestamp()

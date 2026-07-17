@@ -10,12 +10,8 @@ Usage:
 
 import asyncio
 import json
-import sqlite3
 import sys
-from datetime import datetime
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest

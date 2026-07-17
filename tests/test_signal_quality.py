@@ -20,9 +20,7 @@ for mod in ("anthropic", "fredapi", "yfinance", "googleapiclient",
             "googleapiclient.discovery", "youtube_transcript_api"):
     sys.modules.setdefault(mod, MagicMock())
 
-import json
-import sqlite3
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from typing import Any
 from unittest.mock import patch
 

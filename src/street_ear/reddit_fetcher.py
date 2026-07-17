@@ -1,10 +1,13 @@
-"""Reddit public JSON API fetcher for Street Ear.
+"""Reddit fetcher for Street Ear.
 
-Fetches posts from configured subreddits using Reddit's public JSON API
-(no authentication required). Applies filtering by score, comment count,
-and post age. Includes rate limiting and robust error handling.
+Fetches posts from configured subreddits. Reddit now blocks most anonymous
+traffic, so this authenticates with app-only OAuth when Reddit credentials are
+configured (REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET, optionally
+REDDIT_USERNAME / REDDIT_PASSWORD) and falls back to the public JSON endpoint
+otherwise. Applies score/comment/age filtering with rate limiting.
 """
 
+import os
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -19,8 +22,57 @@ log = get_logger(__name__)
 
 USER_AGENT = "AlphaDesk/0.1 (market research bot)"
 BASE_URL = "https://www.reddit.com/r/{sub}/hot.json?limit={limit}"
+OAUTH_BASE_URL = "https://oauth.reddit.com/r/{sub}/hot.json?limit={limit}"
+TOKEN_URL = "https://www.reddit.com/api/v1/access_token"
 REQUEST_TIMEOUT = 15  # seconds
 RATE_LIMIT_DELAY = 2.0  # seconds between requests
+
+
+def _reddit_user_agent() -> str:
+    return os.getenv("REDDIT_USER_AGENT") or USER_AGENT
+
+
+def _authenticate(session: requests.Session) -> bool:
+    """Attach an OAuth bearer token to `session` when Reddit credentials are set.
+
+    Uses the password grant when REDDIT_USERNAME/REDDIT_PASSWORD are present
+    (script app), otherwise app-only client_credentials. Returns True when the
+    session is authenticated; on any failure logs and returns False so the
+    caller can fall back to the (often-empty) public endpoint.
+    """
+    client_id = os.getenv("REDDIT_CLIENT_ID")
+    client_secret = os.getenv("REDDIT_CLIENT_SECRET")
+    if not client_id or not client_secret:
+        return False
+
+    username = os.getenv("REDDIT_USERNAME")
+    password = os.getenv("REDDIT_PASSWORD")
+    if username and password:
+        data = {"grant_type": "password", "username": username, "password": password}
+    else:
+        data = {"grant_type": "client_credentials"}
+
+    try:
+        response = requests.post(
+            TOKEN_URL,
+            auth=(client_id, client_secret),
+            data=data,
+            headers={"User-Agent": _reddit_user_agent()},
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+        token = response.json().get("access_token")
+    except Exception as exc:  # network error, 401, bad JSON — degrade, don't crash
+        log.warning("Reddit OAuth failed (%s); falling back to unauthenticated public API", exc)
+        return False
+
+    if not token:
+        log.warning("Reddit OAuth returned no access_token; falling back to unauthenticated public API")
+        return False
+
+    session.headers["Authorization"] = f"bearer {token}"
+    log.info("Reddit OAuth authenticated (%s grant)", data["grant_type"])
+    return True
 
 
 def _get_all_subreddits(config: dict[str, Any]) -> list[str]:
@@ -43,6 +95,7 @@ def _fetch_subreddit(
     subreddit: str,
     limit: int,
     session: requests.Session,
+    base_url: str = BASE_URL,
 ) -> list[dict[str, Any]]:
     """Fetch posts from a single subreddit's hot listing.
 
@@ -50,11 +103,12 @@ def _fetch_subreddit(
         subreddit: Name of the subreddit (without r/ prefix).
         limit: Maximum number of posts to fetch.
         session: Requests session with proper headers.
+        base_url: URL template (public or authenticated oauth.reddit.com).
 
     Returns:
         List of raw post data dicts from Reddit API.
     """
-    url = BASE_URL.format(sub=subreddit, limit=limit)
+    url = base_url.format(sub=subreddit, limit=limit)
 
     try:
         response = session.get(url, timeout=REQUEST_TIMEOUT)
@@ -166,7 +220,15 @@ def fetch_posts() -> list[dict[str, Any]]:
     )
 
     session = requests.Session()
-    session.headers.update({"User-Agent": USER_AGENT})
+    session.headers.update({"User-Agent": _reddit_user_agent()})
+
+    authenticated = _authenticate(session)
+    base_url = OAUTH_BASE_URL if authenticated else BASE_URL
+    if not authenticated:
+        log.warning(
+            "Reddit fetcher is unauthenticated — set REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET. "
+            "Reddit blocks most anonymous traffic, so results will likely be empty."
+        )
 
     all_posts: list[dict[str, Any]] = []
 
@@ -175,7 +237,7 @@ def fetch_posts() -> list[dict[str, Any]]:
         if i > 0:
             time.sleep(RATE_LIMIT_DELAY)
 
-        raw_posts = _fetch_subreddit(sub, posts_per_sub, session)
+        raw_posts = _fetch_subreddit(sub, posts_per_sub, session, base_url)
         filtered = _filter_posts(raw_posts, min_score, min_comments, max_age_hours)
 
         log.info(

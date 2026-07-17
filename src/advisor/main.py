@@ -1429,20 +1429,6 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
         log.exception("Failed to format brief")
         formatted = "<b>AlphaDesk Advisor</b>\n\nError formatting daily brief."
 
-    # ── Step 9b: Update chat session context for Q&A ──────────────────
-    try:
-        from src.advisor.chat_session import ChatSession
-        import os
-        _tg_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
-        if _tg_chat_id:
-            _chat = ChatSession(_tg_chat_id)
-            _brief_for_chat = synthesis.get("formatted_brief", formatted)
-            _holdings_summary = _holdings_ctx_str
-            _chat.update_brief_context(_brief_for_chat, _holdings_summary)
-            log.info("Chat session context updated for Q&A")
-    except Exception:
-        log.debug("Failed to update chat session context — chat Q&A may lack context")
-
     # ── Step 10: Generate verbose report ─────────────────────────────
     total_time = time.time() - pipeline_start
     verbose_report_dir = ""
@@ -1541,29 +1527,6 @@ async def _run_pipeline(run_profile: RunProfile) -> dict[str, Any]:
             verbose_report_dir = paths.get("html", "")
             log.info("Verbose report generated: %d chars MD, %d chars HTML",
                      len(md_report), len(html_report))
-    
-            # ── Email delivery ────────────────────────────────────────────
-            try:
-                from src.shared.email_reporter import EmailReporter
-                reporter = EmailReporter()
-                if reporter.is_configured():
-                    # Build subject from CIO brief first line, fallback to date
-                    _cio_text = (synthesis.get("committee_result") or {}).get("cio_brief", "")
-                    _first_line = (_cio_text.strip().splitlines() or [""])[0].strip(" #*")
-                    _today_str = date.today().strftime("%b %d, %Y")
-                    _subject = f"AlphaDesk {_today_str} — {_first_line}" if _first_line else f"AlphaDesk Daily Report — {_today_str}"
-                    try:
-                        from src.shared.email_template import wrap_email_html
-                        html_report_wrapped = wrap_email_html(html_report, subject=_subject)
-                    except Exception:
-                        html_report_wrapped = html_report
-                    ok = reporter.send_report(html_report_wrapped, subject=_subject, plain_text=md_report)
-                    if ok:
-                        log.info("Verbose report emailed: %s", _subject)
-                else:
-                    log.debug("Email not configured — set SMTP_USER, SMTP_PASS, REPORT_EMAIL_TO in .env to enable")
-            except Exception:
-                log.exception("Failed to send email report — continuing")
     
         except Exception:
             log.exception("Failed to generate verbose report — continuing without it")

@@ -15,8 +15,6 @@ from unittest.mock import MagicMock
 for mod in ("anthropic", "fredapi", "yfinance"):
     sys.modules.setdefault(mod, MagicMock())
 
-import json
-import sqlite3
 from datetime import date, datetime, timedelta
 from unittest.mock import patch
 

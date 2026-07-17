@@ -15,10 +15,11 @@ from typing import Any
 
 from src.shared import gemini_compat as anthropic
 
-from src.shared.agent_bus import get_recent_signals
+# Re-exported as a module attribute that tests patch (not called directly here).
+from src.shared.agent_bus import get_recent_signals  # noqa: F401
+
 from src.shared.cost_tracker import (
     check_budget,
-    format_cost_report,
     get_daily_cost,
     record_usage,
 )
@@ -242,12 +243,12 @@ def _assemble_briefing(
         "",
         separator,
         "",
-        f"\U0001f525 <b>STREET EAR \u2014 Reddit Intelligence</b>",
+        "\U0001f525 <b>STREET EAR \u2014 Reddit Intelligence</b>",
         street_ear_formatted,
         "",
         separator,
         "",
-        f"\U0001f4f0 <b>NEWS DESK \u2014 Market Intelligence</b>",
+        "\U0001f4f0 <b>NEWS DESK \u2014 Market Intelligence</b>",
         news_desk_formatted,
     ]
 

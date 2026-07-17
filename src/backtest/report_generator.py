@@ -154,8 +154,8 @@ class BacktestReportGenerator:
         lines.append("| Day | High | Medium | Low | Total |")
         lines.append("|-----|------|--------|-----|-------|")
         for r in day_results:
-            h, m, l = r.get("delta_high", 0), r.get("delta_med", 0), r.get("delta_low", 0)
-            lines.append(f"| {r.get('day', '?')} | {h} | {m} | {l} | {h+m+l} |")
+            hi, md, lo = r.get("delta_high", 0), r.get("delta_med", 0), r.get("delta_low", 0)
+            lines.append(f"| {r.get('day', '?')} | {hi} | {md} | {lo} | {hi+md+lo} |")
 
         # Decision engine summary
         lines.append("\n## Decision Engine Summary\n")

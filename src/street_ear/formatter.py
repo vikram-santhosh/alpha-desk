@@ -140,7 +140,7 @@ def format_output(
     sections: list[str] = []
 
     # Header
-    sections.append(f"<b>Street Ear — Reddit Pulse</b>")
+    sections.append("<b>Street Ear — Reddit Pulse</b>")
     if market_mood != "unknown":
         safe_mood = sanitize_html(market_mood)
         sections.append(f"<i>Mood: {safe_mood}</i>")

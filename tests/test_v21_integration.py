@@ -9,9 +9,7 @@ Tests cover:
 from __future__ import annotations
 
 import json
-import os
-import sqlite3
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -22,8 +20,8 @@ import pytest
 # ═══════════════════════════════════════════════════════
 
 
-class TestDuplicateEmailRemoval:
-    """Verify telegram_bot.py no longer sends email."""
+class TestDeliveryRemoval:
+    """Verify legacy delivery entry points are removed."""
 
     def test_no_email_send_in_telegram_bot(self):
         """Grep for email send code in telegram_bot.py — should be removed."""
@@ -32,16 +30,16 @@ class TestDuplicateEmailRemoval:
             pytest.skip("telegram_bot.py not found")
         content = bot_path.read_text()
         assert "EmailReporter" not in content or content.count("EmailReporter") == 0, (
-            "telegram_bot.py should not contain EmailReporter — email is sent from advisor/main.py"
+            "telegram_bot.py should not contain EmailReporter"
         )
 
-    def test_email_still_in_advisor_main(self):
-        """advisor/main.py should still have email delivery."""
+    def test_email_removed_from_advisor_main(self):
+        """advisor/main.py should not send email directly."""
         main_path = Path("src/advisor/main.py")
         if not main_path.exists():
             pytest.skip("main.py not found")
         content = main_path.read_text()
-        assert "EmailReporter" in content, "advisor/main.py should retain email delivery"
+        assert "EmailReporter" not in content
 
 
 class TestStatefulMandateBreach:
@@ -351,20 +349,8 @@ class TestSupplyChain:
 
 
 # ═══════════════════════════════════════════════════════
-# SPRINT 5: Email Template & Config
+# SPRINT 5: Config
 # ═══════════════════════════════════════════════════════
-
-
-class TestEmailTemplate:
-    """Test HTML email template."""
-
-    def test_wrap_email_html(self):
-        from src.shared.email_template import wrap_email_html
-        result = wrap_email_html("<p>Hello</p>", subject="Test Report")
-        assert "<!DOCTYPE html>" in result
-        assert "AlphaDesk" in result
-        assert "<p>Hello</p>" in result
-        assert "Test Report" in result
 
 
 class TestLunarCrushEnvKey:

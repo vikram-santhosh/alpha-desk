@@ -7,7 +7,6 @@ from unittest.mock import MagicMock
 for mod in ["anthropic", "fredapi", "yfinance"]:
     sys.modules.setdefault(mod, MagicMock())
 
-import pytest
 
 
 def test_full_brief_output():

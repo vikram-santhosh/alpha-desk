@@ -5,7 +5,6 @@ captures signals, computes forward-looking outcomes, and generates reports.
 """
 from __future__ import annotations
 
-import asyncio
 import time
 from datetime import date
 from typing import Any
@@ -112,7 +111,7 @@ class BacktestRunner:
         print(f"  Trading days: {' | '.join(d.strftime('%a %b %d') for d in trading_days)}")
 
         # Pre-fetch data
-        print(f"\n  Pre-fetching historical data...")
+        print("\n  Pre-fetching historical data...")
         fetch_start = time.time()
         ticker_dfs = fetch_all_historical_data(tickers, macro_symbols, trading_days)
         print(f"  Fetched in {time.time() - fetch_start:.1f}s")

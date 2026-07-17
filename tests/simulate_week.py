@@ -12,7 +12,6 @@ Usage:
     python tests/simulate_week.py
 """
 
-import asyncio
 import json
 import os
 import random
@@ -20,9 +19,8 @@ import shutil
 import sys
 import tempfile
 import textwrap
-from datetime import date, datetime, timedelta
+from datetime import date
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -300,7 +298,7 @@ def run_simulation():
     print("\033[1;37m")
     print("=" * 80)
     print("  ALPHADESK ADVISOR v2 — WEEK SIMULATION")
-    print(f"  Period: Mon Feb 16 → Sun Feb 22, 2026")
+    print("  Period: Mon Feb 16 → Sun Feb 22, 2026")
     print("  Pipeline: Delta Engine → Analyst Committee → Editor Synthesis")
     print("=" * 80)
     print("\033[0m")
@@ -470,12 +468,6 @@ def _run_days(temp_db: str, mock_client):
     )
     from src.advisor.holdings_monitor import monitor_holdings
     from src.advisor.delta_engine import build_snapshot, compute_deltas, generate_delta_summary, format_delta_for_prompt
-    from src.advisor.formatter import (
-        format_macro_section, format_holdings_section, format_strategy_section,
-        format_conviction_section, format_moonshot_section,
-        format_delta_section, format_scorecard_section, split_message,
-    )
-    from src.advisor.catalyst_tracker import format_catalysts_for_prompt
 
     config = load_config("advisor")
 
@@ -694,7 +686,7 @@ def _run_sunday_retro(sim_date, mock_client):
         if not biases or biases[0] == "Insufficient data to detect biases":
             print("  Not enough data yet — continue building track record.")
 
-        print(f"\n  \033[1mThis context will be injected into Monday's synthesis prompt.\033[0m")
+        print("\n  \033[1mThis context will be injected into Monday's synthesis prompt.\033[0m")
 
 
 # ═══════════════════════════════════════════════════════

@@ -273,7 +273,7 @@ def publish_thesis_signals(analysis: dict[str, Any]) -> list[dict[str, Any]]:
 
     # Publish sector rotation signals for theses with sector-level implications
     for thesis in analysis.get("theses", []):
-        themes = thesis.get("themes", []) if "themes" in thesis else []
+        thesis.get("themes", []) if "themes" in thesis else []
         title_lower = thesis.get("title", "").lower()
         summary_lower = thesis.get("summary", "").lower()
 

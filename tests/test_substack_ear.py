@@ -10,10 +10,8 @@ Usage:
 
 import asyncio
 import json
-import sqlite3
 import sys
 import time
-from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any

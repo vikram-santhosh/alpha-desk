@@ -3,13 +3,12 @@ import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 
 # Mock all external dependencies before imports
 for mod in ["anthropic", "fredapi", "yfinance"]:
     sys.modules.setdefault(mod, MagicMock())
 
-import pytest
 
 
 def test_scan_new_positions():

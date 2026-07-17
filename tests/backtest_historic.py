@@ -15,15 +15,11 @@ Estimated time: ~3-5 minutes (yfinance fetches + LLM calls)
 """
 
 import asyncio
-import json
 import os
-import sqlite3
 import sys
-import tempfile
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any
 
 # ── Setup project path ────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -838,7 +834,7 @@ async def main():
     print(f"  Trading days: {' | '.join(d.strftime('%a %b %d') for d in trading_days)}")
 
     # ── Pre-fetch all historical data ─────────────────────────────
-    print(f"\n  Pre-fetching historical data...")
+    print("\n  Pre-fetching historical data...")
     fetch_start = time.time()
     ticker_dfs = fetch_all_historical_data(tickers, macro_symbols, trading_days)
     print(f"  Fetched in {time.time() - fetch_start:.1f}s")
@@ -859,7 +855,7 @@ async def main():
     try:
         from src.advisor.earnings_analyzer import run_earnings_analysis
         earnings_data = run_earnings_analysis(tickers)
-        print(f"  Got earnings data")
+        print("  Got earnings data")
     except Exception as e:
         print(f"  Warning: Earnings fetch failed: {e}")
 
@@ -888,7 +884,7 @@ async def main():
     moonshot_mod.check_budget = lambda: (True, 0.0, 50.0)
 
     # ── Run backtest in temp DB ───────────────────────────────────
-    print(f"\n  Initializing temp DB...")
+    print("\n  Initializing temp DB...")
     results = []
     day_costs: list[float] = []
 

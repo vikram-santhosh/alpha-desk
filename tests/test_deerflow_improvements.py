@@ -6,8 +6,7 @@ import json
 import sqlite3
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 
 # ─── Helpers ────────────────────────────────────────────

@@ -19,7 +19,6 @@ for mod_name in [
     if mod_name not in sys.modules:
         sys.modules[mod_name] = MagicMock()
 
-import pytest
 
 
 def test_news_by_ticker_indexes_all_tickers():

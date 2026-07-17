@@ -94,7 +94,7 @@ def test_morning_full_council_context_feeds_cio_editor(monkeypatch):
             captured["council_max_tokens"] = request.max_tokens
             return [
                 CouncilResponse(
-                    provider=CouncilProvider.GCP_GEMINI,
+                    provider=CouncilProvider.OPENROUTER,
                     model="gemini-test",
                     label="Gemini",
                     text="Add NVDA. Accepts AI demand, rejects weak valuation comfort.",
@@ -102,7 +102,7 @@ def test_morning_full_council_context_feeds_cio_editor(monkeypatch):
                     output_tokens=500,
                 ),
                 CouncilResponse(
-                    provider=CouncilProvider.GCP_GROK,
+                    provider=CouncilProvider.OPENROUTER,
                     model="grok-test",
                     label="Grok",
                     text="Hold META and wait. Crowded AI narrative deserves a haircut.",
@@ -111,7 +111,7 @@ def test_morning_full_council_context_feeds_cio_editor(monkeypatch):
                 ),
             ]
 
-    monkeypatch.setattr(committee, "GCPCouncilClient", FakeCouncilClient)
+    monkeypatch.setattr(committee, "CouncilClient", FakeCouncilClient)
     monkeypatch.setattr(committee.cost_tracker, "record_usage", lambda *args, **kwargs: 0.05)
 
     result = _run(committee.run_analyst_committee(**_committee_kwargs()))
@@ -137,7 +137,7 @@ def test_council_disabled_keeps_editor_prompt_without_council(monkeypatch):
         async def deliberate(self, request):
             raise AssertionError("council should not run when COUNCIL_ENABLED is false")
 
-    monkeypatch.setattr(committee, "GCPCouncilClient", FailingCouncilClient)
+    monkeypatch.setattr(committee, "CouncilClient", FailingCouncilClient)
 
     result = _run(committee.run_analyst_committee(**_committee_kwargs()))
 
@@ -157,7 +157,7 @@ def test_council_cost_cap_falls_back_without_feeding_editor(monkeypatch):
         async def deliberate(self, request):
             return [
                 CouncilResponse(
-                    provider=CouncilProvider.GCP_CLAUDE,
+                    provider=CouncilProvider.OPENROUTER,
                     model="claude-expensive",
                     label="Claude",
                     text="Add NVDA, but only after checking valuation.",
@@ -166,7 +166,7 @@ def test_council_cost_cap_falls_back_without_feeding_editor(monkeypatch):
                 )
             ]
 
-    monkeypatch.setattr(committee, "GCPCouncilClient", ExpensiveCouncilClient)
+    monkeypatch.setattr(committee, "CouncilClient", ExpensiveCouncilClient)
     monkeypatch.setattr(committee.cost_tracker, "record_usage", lambda *args, **kwargs: 5.0)
 
     result = _run(committee.run_analyst_committee(**_committee_kwargs()))
