@@ -117,3 +117,45 @@ def test_connection_error_exhausts_retries_raises_connection_error(monkeypatch):
 
     with pytest.raises(gemini_compat.APIConnectionError):
         _create(gemini_compat)
+
+
+def test_stale_google_key_is_ignored_in_favor_of_openrouter_env(monkeypatch):
+    """Regression: callers still pass a legacy GEMINI_API_KEY (a Google
+    'AIza...' value) as api_key. Sending that as the OpenRouter bearer token
+    yields a 401. The shim must ignore a non-OpenRouter key and use
+    OPENROUTER_API_KEY from the environment instead."""
+    captured: dict[str, str] = {}
+
+    def fake_post(url, *, headers, json, timeout):
+        captured["auth"] = headers["Authorization"]
+        return _Resp(200, _ok_body())
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-realkey")
+    monkeypatch.setattr("requests.post", fake_post)
+    gemini_compat = importlib.reload(importlib.import_module("src.shared.gemini_compat"))
+
+    client = gemini_compat.Anthropic(api_key="AIzaSyStaleGoogleKey")
+    client.messages.create(
+        model="claude-opus-4-6", max_tokens=64, messages=[{"role": "user", "content": "hi"}]
+    )
+
+    assert captured["auth"] == "Bearer sk-or-v1-realkey"
+
+
+def test_explicit_openrouter_key_is_honored(monkeypatch):
+    captured: dict[str, str] = {}
+
+    def fake_post(url, *, headers, json, timeout):
+        captured["auth"] = headers["Authorization"]
+        return _Resp(200, _ok_body())
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-envkey")
+    monkeypatch.setattr("requests.post", fake_post)
+    gemini_compat = importlib.reload(importlib.import_module("src.shared.gemini_compat"))
+
+    client = gemini_compat.Anthropic(api_key="sk-or-v1-explicitkey")
+    client.messages.create(
+        model="claude-opus-4-6", max_tokens=64, messages=[{"role": "user", "content": "hi"}]
+    )
+
+    assert captured["auth"] == "Bearer sk-or-v1-explicitkey"

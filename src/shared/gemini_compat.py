@@ -121,6 +121,22 @@ def _detect_backend(api_key: str | None = None) -> str:
     return "openrouter" if os.getenv("OPENROUTER_API_KEY") else "none"
 
 
+def _resolve_api_key(passed: str | None) -> str | None:
+    """Pick the actual OpenRouter bearer token.
+
+    The shim talks ONLY to OpenRouter, whose keys are prefixed ``sk-or-``.
+    Many call sites still pass a legacy ``api_key=`` sourced from
+    GEMINI_API_KEY/ANTHROPIC_API_KEY (a Google ``AIza…`` or Anthropic
+    ``sk-ant-…`` value) left over from the pre-OpenRouter design. Sending
+    that as the OpenRouter Authorization header produces a 401. So only
+    honour a passed key that actually looks like an OpenRouter key; anything
+    else falls back to OPENROUTER_API_KEY from the environment.
+    """
+    if passed and passed.startswith("sk-or-"):
+        return passed
+    return os.getenv("OPENROUTER_API_KEY")
+
+
 class _Messages:
     def __init__(self, api_key: str | None, backend: str):
         self._api_key = api_key
@@ -148,7 +164,7 @@ class _Messages:
         options: dict[str, Any] | None = None,
     ) -> _Message:
         resolved_model = _resolve_openrouter_model(model)
-        api_key = self._api_key or os.getenv("OPENROUTER_API_KEY")
+        api_key = _resolve_api_key(self._api_key)
         if not api_key:
             raise APIError("No API key found. Set OPENROUTER_API_KEY.")
 

@@ -462,7 +462,11 @@ async def run(mode: str = "top_buys") -> dict[str, Any]:
     synthesis_candidates = _select_synthesis_candidates(scored, top_n, scout_mode)
 
     try:
-        synthesis = synthesize_recommendations(
+        # Run in a worker thread: synthesize_recommendations may issue a blocking
+        # LLM HTTP call, and doing that directly on the async event loop freezes
+        # the whole API server (even /health) for the call's duration.
+        synthesis = await asyncio.to_thread(
+            synthesize_recommendations,
             scored_candidates=synthesis_candidates,
             top_n=len(synthesis_candidates),
             max_portfolio=max_portfolio,
