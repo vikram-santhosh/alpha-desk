@@ -15,8 +15,16 @@ onto the same allowlist so stale prompts or env values cannot escape it.
 from __future__ import annotations
 
 import os
+import random
+import time
 from dataclasses import dataclass
 from typing import Any
+
+# Transient failures worth retrying: rate limits and server-side errors.
+# Anything else (4xx auth/validation) fails the same way every time.
+_RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+_MAX_RETRIES = int(os.getenv("OPENROUTER_MAX_RETRIES", "3"))
+_BACKOFF_BASE_S = float(os.getenv("OPENROUTER_RETRY_BACKOFF_S", "1.0"))
 
 
 # Roles map by cost/capability: heavy -> Kimi K2.6, standard/bulk -> GLM 5.2,
@@ -139,8 +147,6 @@ class _Messages:
         system: str | None,
         options: dict[str, Any] | None = None,
     ) -> _Message:
-        import requests
-
         resolved_model = _resolve_openrouter_model(model)
         api_key = self._api_key or os.getenv("OPENROUTER_API_KEY")
         if not api_key:
@@ -168,28 +174,7 @@ class _Messages:
             if key in options:
                 payload[key] = options[key]
 
-        try:
-            resp = requests.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                    "X-Title": "AlphaDesk",
-                },
-                json=payload,
-                timeout=120,
-            )
-        except requests.exceptions.ConnectionError as exc:
-            raise APIConnectionError(str(exc)) from exc
-        except requests.exceptions.RequestException as exc:
-            raise APIError(str(exc)) from exc
-
-        if resp.status_code >= 400:
-            raise APIStatusError(
-                f"OpenRouter {resp.status_code}: {resp.text[:300]}",
-                status_code=resp.status_code,
-            )
-
+        resp = self._post_with_retry(payload, api_key)
         data = resp.json()
         text = (data.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
         usage = data.get("usage") or {}
@@ -201,6 +186,52 @@ class _Messages:
             ),
             model=resolved_model,
         )
+
+    @staticmethod
+    def _post_with_retry(payload: dict[str, Any], api_key: str) -> Any:
+        """POST with retry on transient failures (timeouts, connection errors,
+        429/5xx). A single dropped OpenRouter call otherwise kills a whole
+        council seat or pipeline stage outright."""
+        import requests
+
+        last_exc: Exception | None = None
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                resp = requests.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                        "X-Title": "AlphaDesk",
+                    },
+                    json=payload,
+                    timeout=120,
+                )
+            except requests.exceptions.ConnectionError as exc:
+                last_exc = APIConnectionError(str(exc))
+            except requests.exceptions.Timeout as exc:
+                last_exc = APIConnectionError(str(exc))
+            except requests.exceptions.RequestException as exc:
+                raise APIError(str(exc)) from exc
+            else:
+                if resp.status_code < 400:
+                    return resp
+                if resp.status_code not in _RETRYABLE_STATUS_CODES:
+                    raise APIStatusError(
+                        f"OpenRouter {resp.status_code}: {resp.text[:300]}",
+                        status_code=resp.status_code,
+                    )
+                last_exc = APIStatusError(
+                    f"OpenRouter {resp.status_code}: {resp.text[:300]}",
+                    status_code=resp.status_code,
+                )
+
+            if attempt < _MAX_RETRIES:
+                delay = _BACKOFF_BASE_S * (2**attempt) + random.uniform(0, _BACKOFF_BASE_S)
+                time.sleep(delay)
+
+        assert last_exc is not None
+        raise last_exc
 
 
 class Anthropic:
