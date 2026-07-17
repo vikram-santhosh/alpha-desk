@@ -6,12 +6,14 @@ import json
 import math
 import os
 import re
+import subprocess
 import urllib.error
 import urllib.request
 from contextlib import asynccontextmanager
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime
-from typing import Any, AsyncGenerator, Literal, Optional
+from pathlib import Path
+from typing import Any, Awaitable, AsyncGenerator, Callable, Literal, Optional, TypeVar
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -426,6 +428,76 @@ def _init_schema_sync() -> None:
     init_schema()
 
 
+_PROCESS_STARTED_AT = datetime.now()
+
+
+def _git_sha() -> str:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=Path(__file__).resolve().parents[2],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        sha = result.stdout.strip()
+        return sha if result.returncode == 0 and sha else "unknown"
+    except Exception:
+        return "unknown"
+
+
+_GIT_SHA = _git_sha()
+
+
+class HealthResponse(BaseModel):
+    status: str
+    git_sha: str
+    started_at: datetime
+    db_backend: Literal["mysql", "sqlite"]
+    model_allowlist: list[str]
+
+
+@app.get("/health", response_model=HealthResponse)
+def health() -> HealthResponse:
+    """Fingerprint this running process: which code and config it's actually
+    serving. A stale server on the expected port is otherwise indistinguishable
+    from a fresh one until you hit a route that only exists in the new code."""
+    from src.shared.db import _use_sqlite
+    from src.shared.gemini_compat import ALLOWED_OPENROUTER_MODELS
+
+    return HealthResponse(
+        status="ok",
+        git_sha=_GIT_SHA,
+        started_at=_PROCESS_STARTED_AT,
+        db_backend="sqlite" if _use_sqlite() else "mysql",
+        model_allowlist=sorted(ALLOWED_OPENROUTER_MODELS),
+    )
+
+
+_T = TypeVar("_T")
+_INFLIGHT_RUNS: dict[str, "asyncio.Task[Any]"] = {}
+
+
+async def _run_singleflight(key: str, factory: Callable[[], Awaitable[_T]]) -> _T:
+    """Coalesce concurrent callers with the same key onto one in-flight run.
+
+    A double-clicked "Run" button or a page remount firing the same request
+    twice would otherwise both hit the LLM and both write a run record; the
+    second caller here just awaits the first caller's task and gets the same
+    result instead of paying for (and racing) a duplicate run.
+    """
+    existing = _INFLIGHT_RUNS.get(key)
+    if existing is not None and not existing.done():
+        return await existing
+    task: "asyncio.Task[_T]" = asyncio.ensure_future(factory())
+    _INFLIGHT_RUNS[key] = task
+    try:
+        return await task
+    finally:
+        if _INFLIGHT_RUNS.get(key) is task:
+            del _INFLIGHT_RUNS[key]
+
+
 @app.get("/api/council/models", response_model=list[ModelOption])
 def get_council_models() -> list[ModelOption]:
     """Return the configured council roster for UI chips."""
@@ -552,14 +624,12 @@ def list_council_runs(
     return [CouncilRunSummary.model_validate(item) for item in run_store.list_council_runs(limit, ticker_value)]
 
 
-@app.post("/api/brief/run", response_model=BriefRunResult)
-async def run_brief(request: BriefRunRequest) -> BriefRunResult:
-    """Run the advisor brief pipeline and persist the latest web result."""
+async def _run_brief_once(run_type: str) -> BriefRunResult:
     try:
         from src.advisor.main import run as run_advisor
 
         raw_result = await asyncio.wait_for(
-            run_advisor(run_type=request.run_type),
+            run_advisor(run_type=run_type),
             timeout=_brief_timeout_s(),
         )
     except asyncio.TimeoutError as exc:
@@ -568,7 +638,7 @@ async def run_brief(request: BriefRunRequest) -> BriefRunResult:
         log.exception("Brief run failed")
         raise HTTPException(status_code=500, detail=str(exc) or "Brief run failed.") from exc
 
-    payload = _brief_payload(request.run_type, raw_result)
+    payload = _brief_payload(run_type, raw_result)
     try:
         run_id, saved_at = brief_store.save_brief_run(payload["run_type"], payload)
         payload["run_id"] = run_id
@@ -577,6 +647,14 @@ async def run_brief(request: BriefRunRequest) -> BriefRunResult:
         log.exception("Brief run persistence failed")
         payload["degraded_reasons"].append(f"MySQL persistence failed: {exc}")
     return BriefRunResult.model_validate(payload)
+
+
+@app.post("/api/brief/run", response_model=BriefRunResult)
+async def run_brief(request: BriefRunRequest) -> BriefRunResult:
+    """Run the advisor brief pipeline and persist the latest web result."""
+    return await _run_singleflight(
+        f"brief:{request.run_type}", lambda: _run_brief_once(request.run_type)
+    )
 
 
 @app.get("/api/brief/runs/latest", response_model=BriefRunResult)
@@ -645,9 +723,7 @@ def _deployment_payload(raw_result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@app.post("/api/deployment/plan", response_model=DeploymentPlanResult)
-async def run_deployment_plan(request: DeploymentPlanRequest) -> DeploymentPlanResult:
-    """Generate a capital-deployment plan and persist the latest web result."""
+async def _run_deployment_plan_once(request: DeploymentPlanRequest) -> DeploymentPlanResult:
     try:
         from src.advisor.deployment_planner import generate_deployment_plan
 
@@ -670,6 +746,20 @@ async def run_deployment_plan(request: DeploymentPlanRequest) -> DeploymentPlanR
         log.exception("Deployment plan persistence failed")
         payload["degraded_reasons"].append(f"MySQL persistence failed: {exc}")
     return DeploymentPlanResult.model_validate(payload)
+
+
+@app.post("/api/deployment/plan", response_model=DeploymentPlanResult)
+async def run_deployment_plan(request: DeploymentPlanRequest) -> DeploymentPlanResult:
+    """Generate a capital-deployment plan and persist the latest web result.
+
+    Single-flight is keyed globally (not per-request-params): this is a
+    single-user local tool with no run queue, so a second concurrent call
+    coalescing onto the first in-flight run trades away "different params
+    run concurrently" for "never double-spend on an accidental double-fire".
+    """
+    return await _run_singleflight(
+        "deployment:plan", lambda: _run_deployment_plan_once(request)
+    )
 
 
 @app.get("/api/deployment/runs/latest", response_model=DeploymentPlanResult)
@@ -784,12 +874,7 @@ async def stream_deployment_plan(
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
-@app.get("/api/ideas/today", response_model=IdeaScoutResult)
-async def scout_today_ideas(
-    limit: int = Query(default=12, ge=10, le=12),
-    mode: Literal["top_buys", "new_discoveries"] = Query(default="top_buys"),
-) -> IdeaScoutResult:
-    """Return a broad top-ideas screen for the cockpit."""
+async def _scout_today_ideas_once(limit: int, mode: str) -> IdeaScoutResult:
     if not _mock_alpha_scout_enabled():
         try:
             pipeline_result = await asyncio.wait_for(
@@ -817,6 +902,17 @@ async def scout_today_ideas(
             log.exception("Deterministic score-engine fallback failed; using mock ideas")
             result = _mock_today_ideas(limit)
     return _save_idea_scout_result(_with_alpha_scout_fallback_reason(result, fallback_reason), mode)
+
+
+@app.get("/api/ideas/today", response_model=IdeaScoutResult)
+async def scout_today_ideas(
+    limit: int = Query(default=12, ge=10, le=12),
+    mode: Literal["top_buys", "new_discoveries"] = Query(default="top_buys"),
+) -> IdeaScoutResult:
+    """Return a broad top-ideas screen for the cockpit."""
+    return await _run_singleflight(
+        f"ideas_today:{mode}:{limit}", lambda: _scout_today_ideas_once(limit, mode)
+    )
 
 
 @app.get("/api/ideas/progress", response_model=ScoutProgress)
