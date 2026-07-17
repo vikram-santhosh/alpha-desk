@@ -1,11 +1,11 @@
-anthropic
 fastapi
 uvicorn[standard]
-google-genai
 openai
 pyyaml
 python-dotenv
 requests
+PyMySQL>=1.1.1
+DBUtils>=3.0
 yfinance
 pandas
 lxml

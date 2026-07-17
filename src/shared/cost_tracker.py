@@ -19,7 +19,11 @@ DB_PATH = Path(os.environ.get("ALPHADESK_DATA_DIR", "data")) / "cost_tracker.db"
 
 # Pricing per million tokens by model family
 MODEL_PRICING = {
-    # Gemini models
+    # OpenRouter allowlist
+    "z-ai/glm-5.2": {"input": 0.20, "output": 0.80},
+    "moonshotai/kimi-k2.6": {"input": 0.15, "output": 2.50},
+    "deepseek/deepseek-v4-pro": {"input": 0.50, "output": 1.50},
+    # Historical Gemini models
     "gemini-2.5-pro": {"input": 1.25, "output": 10.0},
     "gemini-2.5-flash": {"input": 0.075, "output": 0.30},
     "gemini-1.5-pro": {"input": 1.25, "output": 5.0},

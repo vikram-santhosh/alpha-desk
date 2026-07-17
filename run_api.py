@@ -12,5 +12,11 @@ load_dotenv()
 
 if __name__ == "__main__":
     import uvicorn
+    from src.shared.schema import init_schema
+
+    try:
+        init_schema()
+    except Exception as exc:
+        print(f"AlphaDesk MySQL schema initialization skipped: {exc}")
 
     uvicorn.run("src.api.app:app", host="127.0.0.1", port=8000, log_level="warning")

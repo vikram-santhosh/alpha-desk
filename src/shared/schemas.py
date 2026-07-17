@@ -11,9 +11,7 @@ Uses stdlib dataclasses (not Pydantic) with to_dict() / from_dict() methods.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field, asdict
-from datetime import date, datetime
-from typing import Any
+from dataclasses import dataclass, field
 
 
 # ═══════════════════════════════════════════════════════

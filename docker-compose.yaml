@@ -4,7 +4,36 @@ services:
   alphadesk:
     build: .
     env_file: .env
+    ports:
+      - "8000:8000"
+    environment:
+      ALPHADESK_DB_HOST: db
+      ALPHADESK_DB_PORT: "3306"
+      ALPHADESK_DB_NAME: alphadesk
+      ALPHADESK_DB_USER: alphadesk
+      ALPHADESK_DB_PASSWORD: alphadesk
     volumes:
       - ./data:/app/data
       - ./config:/app/config
+    depends_on:
+      db:
+        condition: service_healthy
     restart: unless-stopped
+
+  db:
+    image: mysql:8
+    environment:
+      MYSQL_DATABASE: alphadesk
+      MYSQL_USER: alphadesk
+      MYSQL_PASSWORD: alphadesk
+      MYSQL_ROOT_PASSWORD: alphadesk
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-palphadesk"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  mysql_data:

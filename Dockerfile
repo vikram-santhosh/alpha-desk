@@ -8,11 +8,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY config/ config/
 COPY prompts/ prompts/
 COPY src/ src/
-COPY run_daily.py .
+COPY run_api.py .
 
 RUN mkdir -p data reports
 
-ENTRYPOINT ["python"]
+EXPOSE 8000
 
-# Default: run Telegram bot; Cloud Run Jobs can override args to run_daily.py --run-type=...
-CMD ["-m", "src.shared.telegram_bot"]
+CMD ["uvicorn", "src.api.app:app", "--host", "0.0.0.0", "--port", "8000"]

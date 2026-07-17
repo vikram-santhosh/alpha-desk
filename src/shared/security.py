@@ -1,4 +1,4 @@
-"""Security utilities: env validation, input sanitization, auth."""
+"""Security utilities: env validation and input sanitization."""
 from __future__ import annotations
 
 import html
@@ -13,9 +13,7 @@ from src.utils.logger import get_logger
 log = get_logger(__name__)
 
 REQUIRED_KEYS = [
-    "GEMINI_API_KEY",
-    "TELEGRAM_BOT_TOKEN",
-    "TELEGRAM_CHAT_ID",
+    "OPENROUTER_API_KEY",
 ]
 
 OPTIONAL_KEYS = [
@@ -57,7 +55,7 @@ def validate_env() -> dict[str, str]:
 
 
 def sanitize_html(text: str) -> str:
-    """Escape HTML special characters to prevent injection in Telegram messages."""
+    """Escape HTML special characters to prevent injection in rendered output."""
     return html.escape(text, quote=True)
 
 
@@ -74,12 +72,6 @@ def sanitize_ticker(ticker: str) -> str:
     if not cleaned or len(cleaned) > 10:
         raise ValueError(f"Invalid ticker: {ticker!r}")
     return cleaned
-
-
-def authorize_chat(chat_id: str | int) -> bool:
-    """Check if a Telegram chat ID is authorized."""
-    allowed = os.getenv("TELEGRAM_CHAT_ID", "")
-    return str(chat_id) == str(allowed)
 
 
 def check_no_secrets_in_path(path: Path) -> bool:

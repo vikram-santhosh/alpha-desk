@@ -279,3 +279,26 @@ def list_council_runs(limit: int = 20, ticker: Optional[str] = None) -> list[dic
             }
         )
     return summaries
+
+
+def list_council_payloads(limit: int = 12) -> list[dict[str, Any]]:
+    """Return the most recent council runs as FULL payloads (verdict/judge/panel),
+    used to render the Research library from real deliberation history."""
+    limit = max(1, min(50, int(limit)))
+    conn = _get_db()
+    rows = conn.execute(
+        "SELECT id, created_at, payload FROM council_runs ORDER BY created_at DESC, id DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    conn.close()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            payload = json.loads(row[2])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(payload, dict):
+            payload.setdefault("run_id", int(row[0]))
+            payload.setdefault("saved_at", row[1])
+            out.append(payload)
+    return out

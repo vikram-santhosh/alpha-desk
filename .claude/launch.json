@@ -10,6 +10,14 @@
       "cwd": "web"
     },
     {
+      "name": "web-mock",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--", "--mode", "mock"],
+      "port": 5180,
+      "autoPort": true,
+      "cwd": "web"
+    },
+    {
       "name": "dashboard",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
