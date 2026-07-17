@@ -76,12 +76,26 @@ export function IdeaDebugPanel({ debug }: { debug: IdeaDebug }) {
         </div>
       )}
 
-      {/* Fundamental factors (the human-readable "why") */}
+      {/* Business-quality factors (the human-readable "why") */}
       {debug.factors.length > 0 && (
         <div className="mt-3">
-          <div className="mb-1 text-[11px] uppercase tracking-wide text-(--color-text-tertiary)">Fundamental factors</div>
+          <div className="mb-1 text-[11px] uppercase tracking-wide text-(--color-text-tertiary)">Business quality</div>
           <div className="flex flex-wrap gap-x-3 gap-y-1">
             {debug.factors.map((f, i) => (
+              <span key={i} className={`text-xs tabular-nums ${factorColor(f)}`}>
+                {f}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Valuation / forward-upside factors */}
+      {debug.valuation_factors && debug.valuation_factors.length > 0 && (
+        <div className="mt-3">
+          <div className="mb-1 text-[11px] uppercase tracking-wide text-(--color-text-tertiary)">Valuation &amp; upside</div>
+          <div className="flex flex-wrap gap-x-3 gap-y-1">
+            {debug.valuation_factors.map((f, i) => (
               <span key={i} className={`text-xs tabular-nums ${factorColor(f)}`}>
                 {f}
               </span>

@@ -148,6 +148,8 @@ def test_top_buy_scoring_lifts_tracked_quality_names():
                 "market_cap": 1_500_000_000_000,
                 "sector": "Communication Services",
                 "pct_from_52w_high": -18,
+                "implied_upside_pct": 24,
+                "ev_to_ebitda": 17,
                 "next_earnings_date": "2026-07-25",
             },
             "NOVL": {

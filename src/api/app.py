@@ -135,7 +135,8 @@ class IdeaDebug(BaseModel):
     """Decision-explainability payload: *why* an idea scored/ranked as it did."""
     composite: float                                   # 0-100 composite score
     dimensions: list[DimensionScore] = Field(default_factory=list)
-    factors: list[str] = Field(default_factory=list)   # human-readable fundamental factors
+    factors: list[str] = Field(default_factory=list)   # business-quality factors
+    valuation_factors: list[str] = Field(default_factory=list)  # valuation/upside factors
     fundamentals: dict[str, Any] = Field(default_factory=dict)
     source: str = ""
     corroboration_count: int = 1
@@ -2911,7 +2912,7 @@ def _top_idea_from_alpha_scout_rec(rec: Any, index: int) -> Optional[TopIdea]:
 
 # Dimensions, in display order, that contribute to the composite score.
 _DEBUG_DIMENSIONS = (
-    "technical", "fundamental", "sentiment", "diversification",
+    "technical", "fundamental", "valuation", "sentiment", "diversification",
     "novelty", "catalyst_proximity", "evidence_quality",
 )
 
@@ -2936,9 +2937,15 @@ def _idea_debug_from_rec(rec: dict[str, Any], scores: dict[str, Any], fund: dict
             )
         )
 
+    valuation_factors: list[str] = []
     try:
-        from src.alpha_scout.screener import explain_fundamental_factors
+        from src.alpha_scout.screener import (
+            explain_fundamental_factors,
+            explain_valuation_factors,
+        )
         factors = explain_fundamental_factors(fund)
+        if "valuation" in scores:
+            valuation_factors = explain_valuation_factors(fund)
     except Exception:
         factors = []
 
@@ -2947,6 +2954,7 @@ def _idea_debug_from_rec(rec: dict[str, Any], scores: dict[str, Any], fund: dict
         composite=round(_first_numeric(scores.get("composite"), 0.0) or 0.0, 1),
         dimensions=dimensions,
         factors=factors,
+        valuation_factors=valuation_factors,
         fundamentals={
             k: fund.get(k)
             for k in ("pe_trailing", "pe_forward", "peg_ratio", "ev_to_ebitda",

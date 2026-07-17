@@ -9,16 +9,22 @@ def _candidate(ticker: str) -> dict:
     return {"ticker": ticker, "source": "existing_portfolio/core", "signal_data": {}, "signal_type": ""}
 
 
-# Four strong, tracked mega-caps with genuinely different fundamentals.
+# Four strong, tracked mega-caps with genuinely different fundamentals AND
+# different forward risk/reward (analyst upside + multiple) — the profile of
+# real names, which is what the valuation dimension spreads apart.
 _FUNDAMENTALS = {
     "AAA": {"pe_trailing": 25, "revenue_growth": 0.30, "net_margin": 0.30, "gross_margin": 0.60,
-            "market_cap": 600_000_000_000, "pct_from_52w_high": -12, "pct_from_52w_low": 40, "sector": "Technology"},
+            "market_cap": 600_000_000_000, "pct_from_52w_high": -12, "pct_from_52w_low": 40,
+            "implied_upside_pct": 40, "ev_to_ebitda": 16, "sector": "Technology"},
     "BBB": {"pe_trailing": 28, "revenue_growth": 0.12, "net_margin": 0.18, "gross_margin": 0.50,
-            "market_cap": 150_000_000_000, "pct_from_52w_high": -20, "pct_from_52w_low": 30, "sector": "Industrials"},
+            "market_cap": 150_000_000_000, "pct_from_52w_high": -20, "pct_from_52w_low": 30,
+            "implied_upside_pct": 12, "ev_to_ebitda": 22, "sector": "Industrials"},
     "CCC": {"pe_trailing": 22, "revenue_growth": 0.05, "net_margin": 0.16, "gross_margin": 0.45,
-            "market_cap": 50_000_000_000, "pct_from_52w_high": -30, "pct_from_52w_low": 15, "sector": "Materials"},
+            "market_cap": 50_000_000_000, "pct_from_52w_high": -30, "pct_from_52w_low": 15,
+            "implied_upside_pct": 8, "ev_to_ebitda": 20, "sector": "Materials"},
     "DDD": {"pe_trailing": 24, "revenue_growth": 0.25, "net_margin": 0.28, "gross_margin": 0.58,
-            "market_cap": 1_200_000_000_000, "pct_from_52w_high": -10, "pct_from_52w_low": 50, "sector": "Communications"},
+            "market_cap": 1_200_000_000_000, "pct_from_52w_high": -10, "pct_from_52w_low": 50,
+            "implied_upside_pct": 28, "ev_to_ebitda": 18, "sector": "Communications"},
 }
 
 

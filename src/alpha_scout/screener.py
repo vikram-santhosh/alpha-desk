@@ -176,6 +176,119 @@ def explain_fundamental_factors(fundamentals: dict[str, Any]) -> list[str]:
     return explain_fundamental_quality(fundamentals)
 
 
+def score_valuation(fundamentals: dict[str, Any]) -> int:
+    """Score forward risk/reward on a *continuous* scale (0-100).
+
+    This is deliberately separate from ``score_fundamental`` (business quality).
+    Quality saturates: every elite mega-cap scores ~100 on fundamentals and on
+    evidence, so a screen weighted mostly on those buckets collapses the whole
+    top tier to one number (MU, TSM, GOOG, NVDA all landed at 88). Valuation is
+    what actually separates equally-good businesses — analyst implied upside and
+    the multiple you pay — and it varies smoothly name to name, so it breaks
+    those ties in a way a human would agree with: among great companies, prefer
+    the one with the better upside at the cheaper price.
+    """
+    if not fundamentals:
+        return 50
+
+    score = 50.0
+
+    # Analyst implied upside — the primary, continuous differentiator.
+    implied_upside = fundamentals.get("implied_upside_pct")
+    if isinstance(implied_upside, (int, float)):
+        score += max(-25.0, min(38.0, implied_upside * 0.6))
+
+    # P/E as a valuation anchor — a smaller, always-available signal so names
+    # without analyst coverage still differentiate on how expensive they are
+    # (deliberately mild; the analyst-upside term above dominates when present).
+    pe = fundamentals.get("pe_trailing")
+    if isinstance(pe, (int, float)) and pe > 0:
+        if pe < 15:
+            score += 7
+        elif pe <= 25:
+            score += 3
+        elif pe <= 40:
+            score -= 3
+        else:
+            score -= 9
+
+    # Cash-flow multiple — cheaper is better, richer is worse (bounded).
+    ev_ebitda = fundamentals.get("ev_to_ebitda")
+    if isinstance(ev_ebitda, (int, float)) and ev_ebitda > 0:
+        if ev_ebitda < 10:
+            score += 8
+        elif ev_ebitda < 18:
+            score += 3
+        elif ev_ebitda > 35:
+            score -= 12
+        elif ev_ebitda > 25:
+            score -= 5
+
+    # PEG — growth-adjusted valuation.
+    peg = fundamentals.get("peg_ratio")
+    if isinstance(peg, (int, float)) and peg > 0:
+        if peg < 1.0:
+            score += 6
+        elif peg > 2.5:
+            score -= 6
+
+    # Cash generation backs the valuation; burn undercuts it.
+    fcf = fundamentals.get("free_cashflow")
+    if isinstance(fcf, (int, float)):
+        score += 3 if fcf > 0 else -6
+
+    return int(max(0, min(100, round(score))))
+
+
+def explain_valuation_factors(fundamentals: dict[str, Any]) -> list[str]:
+    """Signed, human-readable factors mirroring ``score_valuation`` for the
+    debug view. Keep in lockstep with ``score_valuation``."""
+    if not fundamentals:
+        return ["No valuation data — neutral baseline (50)"]
+
+    factors: list[str] = []
+    iu = fundamentals.get("implied_upside_pct")
+    if isinstance(iu, (int, float)):
+        pts = max(-25.0, min(38.0, iu * 0.6))
+        sign = "+" if pts >= 0 else ""
+        factors.append(f"{sign}{pts:.0f} analyst implied upside {iu:.0f}%")
+
+    pe = fundamentals.get("pe_trailing")
+    if isinstance(pe, (int, float)) and pe > 0:
+        if pe < 15:
+            factors.append(f"+7 P/E {pe:.0f} (inexpensive)")
+        elif pe <= 25:
+            factors.append(f"+3 P/E {pe:.0f} (fair)")
+        elif pe <= 40:
+            factors.append(f"-3 P/E {pe:.0f} (pricey)")
+        else:
+            factors.append(f"-9 P/E {pe:.0f} (expensive)")
+
+    ev = fundamentals.get("ev_to_ebitda")
+    if isinstance(ev, (int, float)) and ev > 0:
+        if ev < 10:
+            factors.append(f"+8 EV/EBITDA {ev:.0f} (cheap)")
+        elif ev < 18:
+            factors.append(f"+3 EV/EBITDA {ev:.0f} (fair)")
+        elif ev > 35:
+            factors.append(f"-12 EV/EBITDA {ev:.0f} (very rich)")
+        elif ev > 25:
+            factors.append(f"-5 EV/EBITDA {ev:.0f} (rich)")
+
+    peg = fundamentals.get("peg_ratio")
+    if isinstance(peg, (int, float)) and peg > 0:
+        if peg < 1.0:
+            factors.append(f"+6 PEG {peg:.1f} (growth cheap vs price)")
+        elif peg > 2.5:
+            factors.append(f"-6 PEG {peg:.1f} (paying up for growth)")
+
+    fcf = fundamentals.get("free_cashflow")
+    if isinstance(fcf, (int, float)):
+        factors.append("+3 positive free cash flow" if fcf > 0 else "-6 negative free cash flow")
+
+    return factors or ["No valuation factors triggered"]
+
+
 def score_sentiment(candidate: dict[str, Any]) -> int:
     """Score a candidate on sentiment from agent bus signals (0-100).
 
@@ -335,22 +448,29 @@ def score_evidence_quality(candidate: dict[str, Any], fundamentals: dict[str, An
 def normalize_weights(weights: dict[str, float], mode: str = "new_discoveries") -> dict[str, float]:
     """Return non-negative weights normalized to 1.0 for supported score dimensions."""
     discovery_defaults = {
-        "technical": 0.30,
-        "fundamental": 0.30,
-        "sentiment": 0.15,
-        "diversification": 0.10,
+        "technical": 0.28,
+        "fundamental": 0.28,
+        "valuation": 0.10,
+        "sentiment": 0.14,
+        "diversification": 0.08,
         "novelty": 0.05,
-        "catalyst_proximity": 0.05,
-        "evidence_quality": 0.05,
+        "catalyst_proximity": 0.03,
+        "evidence_quality": 0.04,
     }
+    # Weight moved into a continuous `valuation` dimension and out of the buckets
+    # that were near-constant across elite tracked names (evidence_quality was a
+    # flat 100, sentiment a flat 50), which is what collapsed the whole top tier
+    # to a single score. Valuation (analyst upside + multiple) varies name to
+    # name, so it separates equally-strong businesses the way a human would.
     top_buy_defaults = {
         "technical": 0.14,
-        "fundamental": 0.36,
-        "sentiment": 0.06,
-        "diversification": 0.04,
+        "fundamental": 0.30,
+        "valuation": 0.18,
+        "sentiment": 0.05,
+        "diversification": 0.03,
         "novelty": 0.03,
-        "catalyst_proximity": 0.13,
-        "evidence_quality": 0.24,
+        "catalyst_proximity": 0.10,
+        "evidence_quality": 0.17,
     }
     if _is_top_buy_mode(mode):
         nested = weights.get("top_buys") if isinstance(weights.get("top_buys"), dict) else None
@@ -450,7 +570,13 @@ def _top_buy_quality_floor(
     if dimension_scores["technical"] < 25:
         floor -= 3.0
 
-    return max(0.0, min(88.0, floor))
+    # Cap below the top of the range. The floor only exists to rescue a
+    # genuinely strong tracked name from being buried like a stale discovery —
+    # it must not pin the top tier to one value and undo the valuation-driven
+    # spread above it (a cap of 88 previously flattened every elite name to 88;
+    # the top tier now sits in the mid/high-80s on its own via valuation, so an
+    # 82 cap rescues weak-but-tracked names without touching the leaders).
+    return max(0.0, min(82.0, floor))
 
 
 def screen_candidates(
@@ -508,10 +634,12 @@ def screen_candidates(
         novelty_score = score_novelty(candidate, mode=scout_mode)
         catalyst_score = score_catalyst_proximity(candidate, fund_data)
         evidence_score = score_evidence_quality(candidate, fund_data, tech_data)
+        valuation_score = score_valuation(fund_data)
 
         dimension_scores = {
             "technical": tech_score,
             "fundamental": fund_score,
+            "valuation": valuation_score,
             "sentiment": sent_score,
             "diversification": div_score,
             "novelty": novelty_score,

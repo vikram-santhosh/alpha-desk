@@ -190,6 +190,7 @@ export interface IdeaDebug {
   composite: number;
   dimensions: DimensionScore[];
   factors: string[];
+  valuation_factors?: string[];
   fundamentals: Record<string, number | string | null>;
   source: string;
   corroboration_count: number;
