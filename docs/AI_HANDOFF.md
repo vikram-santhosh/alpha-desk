@@ -29,6 +29,29 @@ This file is append-only. Add a new session entry at the top of the session log 
 - The most useful next action.
 ```
 
+## Session 2026-07-16 UTC (part 2) - Claude
+
+### Goal
+- Self-improvement loop: launch the app, then iterate until the UI shows differentiated, defensible recommendations that hold up ("great recommendations you agree on").
+
+### What was wrong and fixed
+- **Stale-key 401**: news_desk passed GEMINI_API_KEY (Google 'AIza...') into the OpenRouter shim as the bearer token → 401 on every LLM call. gemini_compat now ignores non-`sk-or-` keys and uses OPENROUTER_API_KEY. (commit f5c386b)
+- **Event-loop freeze**: with the 401 fixed, alpha_scout synthesis reached a *blocking* LLM call that ran on the async event loop and froze the whole server (even /health) for its duration. Wrapped synthesize_recommendations in asyncio.to_thread; verified /health stays sub-ms mid-synthesis. (commit f5c386b)
+- **Score clustering**: Top Buys collapsed the top tier to one number (MU/TSM/GOOG/NVDA all 88) because it was weighted on saturated/constant buckets (fundamental pins at 100, evidence_quality flat 100, sentiment flat 50) — only `technical` varied. Added a continuous `valuation` dimension (analyst implied upside + EV/EBITDA + PEG + P/E), reweighted top_buys (valuation 0.18, from the constant buckets), softened the quality-floor cap 88→82. Live run now: 12/12 distinct composites 77–90, MU #1 on 75% upside, SMCI correctly low despite 51% upside. Debug panel gained a valuation bar + separate "Valuation & upside" factor list. (commit 72f74c1)
+- **Test DB pollution (root cause of the recurring NOISY0 stale data)**: the run stores persist to data/*.db — the same files the dev UI reads. Tests saved mock runs (NOISY0/SHOP/CELH), and run_store captured DB_PATH at import so setenv didn't redirect it, so `pytest` overwrote the dev "latest run" with fixtures. This is why the UI kept showing NOISY0 and a council deep-dive launched on a garbage ticker. Added an autouse conftest fixture isolating all cockpit stores per-test; verified data/cockpit_runs.db row count is unchanged by a full suite run. Cleaned the existing pollution from the dev DB. (commit b858c74)
+
+### Verified live in the browser
+- Top Buys: distinct scores/tiers (MU 90 "Conviction", VZ 86, NVDA/TSM 85 "Strong"), LLM-written theses, debug panel with valuation dimension + separated factor sections.
+- Council deep-dive on MU: 3/3 seats, GLM returned a real Overweight 74% with memory-cycle reasoning and cross-examination; Kimi (60s timeout) and DeepSeek (empty) degraded gracefully; judge synthesized a consensus.
+
+### Test/Lint/Build
+- Backend 475 passed / 2 skipped, ruff clean. Frontend tsc clean, 5 vitest pass, build succeeds.
+
+### Blockers / follow-ups
+- Kimi K2.6 and DeepSeek V4 Pro frequently time out / return empty via OpenRouter (provider latency); council degrades gracefully but 2 of 3 seats were unproductive this run. Consider raising COUNCIL_MODEL_TIMEOUT_S or swapping the roster.
+- Local dev needs ALPHADESK_DB_BACKEND=sqlite in .env (added) because PyMySQL is now installed; otherwise it tries a non-existent MySQL.
+- Nothing pushed to origin yet (pending user go-ahead).
+
 ## Session 2026-07-16 UTC - Claude
 
 ### Goal
