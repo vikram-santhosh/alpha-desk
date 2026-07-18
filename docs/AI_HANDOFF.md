@@ -29,6 +29,31 @@ This file is append-only. Add a new session entry at the top of the session log 
 - The most useful next action.
 ```
 
+## Session 2026-07-17 UTC - Claude
+
+### Goal
+- Verify the frontend + backend genuinely work, run a deep codebase audit of recommendation quality, then implement the top findings.
+
+### Audit (7-agent parallel workflow → synthesis)
+- Core finding: both Top Buys scorers are effectively single-source (yfinance). ~half the designed evidence is structurally dead — several score-engine sensors read a bus the cockpit path never populates; the screener's sentiment dimension was a constant 50, evidence_quality a constant 100; the LunarCrush feed and the council LLM verdict are computed but never reach ranking; the aggregator's symmetric strength floor normalized every all-bull name to ~10; 13F/thematic discovery was silently disabled by config plumbing. Full result in the workflow journal.
+
+### Implemented (each tested; 496+ backend tests green, ruff clean)
+- **evidence_quality graded** (was flat +40→100, 17% inert): now scales with analyst-coverage depth + multi-source corroboration; quality-floor evidence gate recalibrated 75→65. Verified: 93 (42 analysts) vs 81 (3 analysts).
+- **sentiment dimension wired to real social** (`score_social_sentiment` consumes `candidate['social']`; `main._enrich_candidates_with_social` populates it, gated/capped/threaded). DORMANT: the user's LunarCrush key returns 402 (one-day pass expired) — architecture is correct and tested, degrades to 50 until a key is active.
+- **analyst-target upside coverage-gated**: scale by `num_analyst_opinions`, sell-side optimism haircut, dampen when `target_low_below_price`; blend forward P/E with trailing so peak-cycle names don't read cheap. Verified: valuation 100 (42 analysts) vs 88 (3).
+- **aggregator top-tier spread**: 3+ bull-platform names were all pinned to ~10; now spread across [8,10] by mean conviction so evidence strength (not breadth) ranks the leaders. Sub-tier behavior unchanged.
+- **13F discovery activated**: merged `superinvestors` from advisor.yaml into the scout config (the 13F sourcer read a key that only lived in advisor.yaml → silent no-op). Free SEC EDGAR, wrapped/graceful.
+- **debug-panel honesty**: fundamentals_summary omitted num_analyst_opinions/pe_forward/target_low_below_price, so the panel showed "analysts: None" while the gating used 42. Now surfaced.
+
+### Verified live
+- Both surfaces work end-to-end (all endpoints 200 w/ real data, UI renders, no console errors; markets empty = intended degrade). Fresh run completed in ~90s, $0.01, 12/12→11/12 distinct composites spanning ~10 pts, MU #1 on coverage-gated 75% upside; pipeline unbroken by 13F sourcing.
+
+### Blockers / follow-ups (from the audit, not yet done)
+- Council verdicts still don't feed ranking (skeptic_confidence_modifier pinned to 1.0) — bounded verdict modifier is the next high-value bet.
+- No outcome/calibration loop yet (record_recommendation + retrospective are dormant); backtest not pointed at the live ranker.
+- yfinance batch fetch can throttle analyst fields under load — consider an FMP/AlphaVantage cross-check (keys exist, unused).
+- LunarCrush needs an active key to light up the sentiment dimension.
+
 ## Session 2026-07-16 UTC (part 2) - Claude
 
 ### Goal
