@@ -34,6 +34,8 @@ _KEY_MAP: dict[str, str] = {
     "beta": "beta",
     "avg_volume": "averageVolume",
     "target_mean_price": "targetMeanPrice",
+    "target_low_price": "targetLowPrice",
+    "target_high_price": "targetHighPrice",
     "num_analyst_opinions": "numberOfAnalystOpinions",
     "peg_ratio": "trailingPegRatio",
     "ev_to_ebitda": "enterpriseToEbitda",
@@ -92,6 +94,12 @@ def fetch_fundamentals(ticker: str) -> dict[str, Any]:
 
     # Analyst price target → implied upside; EV/FCF from enterprise value & FCF.
     result["implied_upside_pct"] = _safe_pct(result.get("target_mean_price"), price)
+    # Even the most bearish analyst target already below the price is a warning
+    # that the mean target is stale/optimistic — used to haircut the upside signal.
+    low = result.get("target_low_price")
+    result["target_low_below_price"] = bool(
+        isinstance(low, (int, float)) and isinstance(price, (int, float)) and low < price
+    )
     if result.get("peg_ratio") is None:  # older yfinance uses "pegRatio"
         result["peg_ratio"] = info.get("pegRatio")
     result["ev_to_fcf"] = _safe_ratio(result.get("enterprise_value"), result.get("free_cashflow"))
