@@ -139,6 +139,14 @@ def score_tickers(
             raw_score = _breadth_gate(raw_score, 6.9, bull_signals)
         elif n_bull < TOP_TIER_MIN:
             raw_score = _breadth_gate(raw_score, 7.9, bull_signals)
+        else:
+            # Top tier (>= TOP_TIER_MIN bull platforms): the conviction-weighted
+            # normalization pins every all-bull name to ~10, so a 40% EPS beat
+            # tied a marginal one and breadth (a data-availability artifact)
+            # decided order. Spread the top band [8.0, 10.0] by mean bull
+            # conviction so genuine evidence strength — not just breadth — ranks
+            # the leaders. Names already below 10 keep their (differentiated) score.
+            raw_score = _breadth_gate(raw_score, 10.0, bull_signals, band=2.0)
 
         final_score = round(raw_score, SCORE_PRECISION)
 

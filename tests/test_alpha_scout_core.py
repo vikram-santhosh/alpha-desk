@@ -150,6 +150,7 @@ def test_top_buy_scoring_lifts_tracked_quality_names():
                 "pct_from_52w_high": -18,
                 "implied_upside_pct": 24,
                 "ev_to_ebitda": 17,
+                "num_analyst_opinions": 50,
                 "next_earnings_date": "2026-07-25",
             },
             "NOVL": {
