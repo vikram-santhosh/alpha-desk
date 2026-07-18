@@ -788,6 +788,7 @@ def screen_candidates(
             },
             "fundamentals_summary": {
                 "pe_trailing": fund_data.get("pe_trailing"),
+                "pe_forward": fund_data.get("pe_forward"),
                 "revenue_growth": fund_data.get("revenue_growth"),
                 "net_margin": fund_data.get("net_margin"),
                 "gross_margin": fund_data.get("gross_margin"),
@@ -797,6 +798,10 @@ def screen_candidates(
                 "next_earnings_date": fund_data.get("next_earnings_date"),
                 "target_mean_price": fund_data.get("target_mean_price"),
                 "implied_upside_pct": fund_data.get("implied_upside_pct"),
+                # Inputs that now drive the valuation/evidence gating — surfaced
+                # so the debug panel truthfully shows why a name scored as it did.
+                "num_analyst_opinions": fund_data.get("num_analyst_opinions"),
+                "target_low_below_price": fund_data.get("target_low_below_price"),
                 "peg_ratio": fund_data.get("peg_ratio"),
                 "ev_to_ebitda": fund_data.get("ev_to_ebitda"),
             },

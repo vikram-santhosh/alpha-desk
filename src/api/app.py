@@ -2959,7 +2959,8 @@ def _idea_debug_from_rec(rec: dict[str, Any], scores: dict[str, Any], fund: dict
             k: fund.get(k)
             for k in ("pe_trailing", "pe_forward", "peg_ratio", "ev_to_ebitda",
                       "revenue_growth", "net_margin", "gross_margin",
-                      "implied_upside_pct", "pct_from_52w_high", "market_cap", "sector")
+                      "implied_upside_pct", "num_analyst_opinions", "target_low_below_price",
+                      "pct_from_52w_high", "market_cap", "sector")
             if fund.get(k) is not None
         },
         source=_first_text(rec.get("source")) or "alpha_scout",
