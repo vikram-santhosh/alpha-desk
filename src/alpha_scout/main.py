@@ -23,6 +23,50 @@ log = get_logger(__name__)
 SOURCE_AGENT = "alpha_scout"
 
 
+def _social_bull_pct(types_sentiment: Any) -> float | None:
+    """Average LunarCrush per-platform sentiment (0-100) into one bullish %."""
+    if not isinstance(types_sentiment, dict):
+        return None
+    vals = [float(v) for v in types_sentiment.values() if isinstance(v, (int, float))]
+    return round(sum(vals) / len(vals), 1) if vals else None
+
+
+def _enrich_candidates_with_social(candidates: list[dict[str, Any]], max_tickers: int = 25) -> int:
+    """Attach a cross-platform social snapshot to candidates for the sentiment
+    dimension. No-op (zero API calls) when no LunarCrush key is configured, so
+    the sentiment dimension simply falls back to bus signals / neutral. Only the
+    full pipeline calls this — never the instant /api/ideas/fast path.
+    """
+    try:
+        from src.shared import lunarcrush
+    except Exception:
+        return 0
+    if lunarcrush._get_headers() is None:  # no key → don't burn calls
+        return 0
+
+    enriched = 0
+    for candidate in candidates[:max_tickers]:
+        ticker = _candidate_ticker(candidate)
+        if not ticker:
+            continue
+        try:
+            summary = lunarcrush.get_social_summary(ticker)
+        except Exception:
+            summary = None
+        if not summary:
+            continue
+        bull = _social_bull_pct(summary.get("types_sentiment"))
+        if bull is None:
+            continue
+        candidate["social"] = {
+            "bull_pct": bull,
+            "num_contributors": summary.get("num_contributors"),
+            "interactions_24h": summary.get("interactions_24h"),
+        }
+        enriched += 1
+    return enriched
+
+
 def _candidate_ticker(candidate: dict[str, Any]) -> str:
     return str(candidate.get("ticker", "")).upper().strip()
 
@@ -313,6 +357,18 @@ async def run(mode: str = "top_buys") -> dict[str, Any]:
             "sector_peers": {},
         }
 
+    # The 13F sourcer reads config['superinvestors'], but that key lives in
+    # advisor.yaml — not scout.yaml — so the highest-signal discovery channel
+    # (what elite funds just bought) was a silent no-op. Merge it in so 13F new
+    # positions actually reach the candidate funnel.
+    if "superinvestors" not in config:
+        try:
+            from src.shared.config_loader import load_advisor_config
+            config["superinvestors"] = load_advisor_config().get("superinvestors", [])
+        except Exception:
+            log.exception("Failed to load superinvestors from advisor config")
+            config["superinvestors"] = []
+
     try:
         portfolio_data = load_portfolio()
         holdings = portfolio_data.get("holdings", [])
@@ -421,6 +477,16 @@ async def run(mode: str = "top_buys") -> dict[str, Any]:
         log.exception("Failed to fetch portfolio fundamentals")
         portfolio_fundamentals = {}
     log.info("Portfolio fundamentals fetched in %.2fs", time.time() - step_start)
+
+    # Enrich with cross-platform social sentiment (LunarCrush) before scoring so
+    # the sentiment dimension reflects real chatter, not a flat 50. No-op without
+    # a key; runs in a thread since it's network I/O.
+    try:
+        n_social = await asyncio.to_thread(_enrich_candidates_with_social, candidates)
+        if n_social:
+            log.info("Social sentiment attached to %d candidates", n_social)
+    except Exception:
+        log.exception("Social sentiment enrichment failed; continuing without it")
 
     # ── Step 4: Multi-dimensional screening ───────────────────────────
     scout_progress.stage("screening", "Scoring candidates across 7 dimensions")
