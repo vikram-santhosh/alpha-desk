@@ -176,6 +176,38 @@ def explain_fundamental_factors(fundamentals: dict[str, Any]) -> list[str]:
     return explain_fundamental_quality(fundamentals)
 
 
+def _analyst_coverage_factor(fundamentals: dict[str, Any]) -> float:
+    """Trust in the analyst-target signal, 0.35-1.0, by coverage depth.
+
+    A target backed by 20+ analysts is a consensus; one backed by 2 is noise.
+    Unknown coverage is treated as half-trust rather than full.
+    """
+    analysts = fundamentals.get("num_analyst_opinions")
+    if isinstance(analysts, (int, float)) and analysts > 0:
+        return max(0.35, min(1.0, analysts / 20.0))
+    return 0.5
+
+
+def _blended_pe(fundamentals: dict[str, Any]) -> float | None:
+    """Blend forward and trailing P/E (60/40 toward forward when both exist).
+
+    Peak-cycle names carry a low *trailing* P/E on inflated trailing earnings;
+    forward P/E, priced off normalized-ish forward earnings, corrects that. Fall
+    back to whichever single value exists.
+    """
+    trailing = fundamentals.get("pe_trailing")
+    forward = fundamentals.get("pe_forward")
+    t_ok = isinstance(trailing, (int, float)) and trailing > 0
+    f_ok = isinstance(forward, (int, float)) and forward > 0
+    if t_ok and f_ok:
+        return 0.4 * trailing + 0.6 * forward
+    if f_ok:
+        return forward
+    if t_ok:
+        return trailing
+    return None
+
+
 def score_valuation(fundamentals: dict[str, Any]) -> int:
     """Score forward risk/reward on a *continuous* scale (0-100).
 
@@ -193,15 +225,24 @@ def score_valuation(fundamentals: dict[str, Any]) -> int:
 
     score = 50.0
 
-    # Analyst implied upside — the primary, continuous differentiator.
+    # Analyst implied upside — the primary, continuous differentiator, but
+    # *trust-gated*. Sell-side 12-month targets are optimistic and herd, and a
+    # 1-analyst stale target should not move the score like a 40-analyst
+    # consensus. Scale credit by coverage depth, apply a fixed optimism
+    # haircut, and dampen further when even the most bearish target sits below
+    # the current price (the upside is contested).
     implied_upside = fundamentals.get("implied_upside_pct")
     if isinstance(implied_upside, (int, float)):
-        score += max(-25.0, min(38.0, implied_upside * 0.6))
+        adj = implied_upside * 0.85 * _analyst_coverage_factor(fundamentals)
+        if fundamentals.get("target_low_below_price"):
+            adj *= 0.85
+        score += max(-25.0, min(34.0, adj))
 
     # P/E as a valuation anchor — a smaller, always-available signal so names
-    # without analyst coverage still differentiate on how expensive they are
-    # (deliberately mild; the analyst-upside term above dominates when present).
-    pe = fundamentals.get("pe_trailing")
+    # without analyst coverage still differentiate on how expensive they are.
+    # Blend forward P/E (lower for growers) with trailing so peak-cycle names on
+    # a low *trailing* multiple don't look artificially cheap.
+    pe = _blended_pe(fundamentals)
     if isinstance(pe, (int, float)) and pe > 0:
         if pe < 15:
             score += 7
@@ -249,20 +290,28 @@ def explain_valuation_factors(fundamentals: dict[str, Any]) -> list[str]:
     factors: list[str] = []
     iu = fundamentals.get("implied_upside_pct")
     if isinstance(iu, (int, float)):
-        pts = max(-25.0, min(38.0, iu * 0.6))
+        cov = _analyst_coverage_factor(fundamentals)
+        adj = iu * 0.85 * cov
+        if fundamentals.get("target_low_below_price"):
+            adj *= 0.85
+        pts = max(-25.0, min(34.0, adj))
         sign = "+" if pts >= 0 else ""
-        factors.append(f"{sign}{pts:.0f} analyst implied upside {iu:.0f}%")
+        analysts = fundamentals.get("num_analyst_opinions")
+        cov_note = f", {int(analysts)} analysts" if isinstance(analysts, (int, float)) and analysts else ""
+        low_note = ", low target < price" if fundamentals.get("target_low_below_price") else ""
+        factors.append(f"{sign}{pts:.0f} analyst upside {iu:.0f}% (coverage-gated{cov_note}{low_note})")
 
-    pe = fundamentals.get("pe_trailing")
+    pe = _blended_pe(fundamentals)
     if isinstance(pe, (int, float)) and pe > 0:
+        label = "blended P/E" if fundamentals.get("pe_forward") and fundamentals.get("pe_trailing") else "P/E"
         if pe < 15:
-            factors.append(f"+7 P/E {pe:.0f} (inexpensive)")
+            factors.append(f"+7 {label} {pe:.0f} (inexpensive)")
         elif pe <= 25:
-            factors.append(f"+3 P/E {pe:.0f} (fair)")
+            factors.append(f"+3 {label} {pe:.0f} (fair)")
         elif pe <= 40:
-            factors.append(f"-3 P/E {pe:.0f} (pricey)")
+            factors.append(f"-3 {label} {pe:.0f} (pricey)")
         else:
-            factors.append(f"-9 P/E {pe:.0f} (expensive)")
+            factors.append(f"-9 {label} {pe:.0f} (expensive)")
 
     ev = fundamentals.get("ev_to_ebitda")
     if isinstance(ev, (int, float)) and ev > 0:
@@ -289,15 +338,47 @@ def explain_valuation_factors(fundamentals: dict[str, Any]) -> list[str]:
     return factors or ["No valuation factors triggered"]
 
 
-def score_sentiment(candidate: dict[str, Any]) -> int:
-    """Score a candidate on sentiment from agent bus signals (0-100).
+def score_social_sentiment(social: dict[str, Any] | None) -> int | None:
+    """Map a cross-platform social snapshot (LunarCrush) to 0-100, or None if
+    there's no usable data. ``bull_pct`` is a 0-100 bullish share averaged across
+    platforms; we tilt off the 50 midpoint but *dampen toward neutral when
+    engagement is thin* so a handful of posts can't swing the score — a bullish
+    tilt only counts when enough people are actually talking about the name.
+    """
+    if not isinstance(social, dict):
+        return None
+    bull = social.get("bull_pct")
+    if not isinstance(bull, (int, float)):
+        return None
+    contributors = social.get("num_contributors")
+    interactions = social.get("interactions_24h")
+    # Engagement confidence 0.3-1.0: thin chatter is pulled toward neutral.
+    if isinstance(contributors, (int, float)) and contributors > 0:
+        conf = max(0.3, min(1.0, contributors / 500.0))
+    elif isinstance(interactions, (int, float)) and interactions > 0:
+        conf = max(0.3, min(1.0, interactions / 250_000.0))
+    else:
+        conf = 0.3
+    return int(max(0, min(100, round(50 + (bull - 50) * conf))))
 
-    Rubric:
+
+def score_sentiment(candidate: dict[str, Any]) -> int:
+    """Score a candidate on sentiment (0-100).
+
+    Prefers a real cross-platform social snapshot (``candidate['social']`` from
+    LunarCrush, populated by the pipeline's enrichment step) when available;
+    otherwise falls back to agent-bus signals, then a neutral 50.
+
+    Bus rubric:
         Positive Reddit sentiment (>0.5): +25 | Very positive (>1.0): +15 bonus
         Multiple Reddit mentions: +15 | Multi-sub convergence: +15
         Positive news sentiment: +20 | Negative (<-0.5): -15
         No data: 50 (neutral baseline)
     """
+    social_score = score_social_sentiment(candidate.get("social"))
+    if social_score is not None:
+        return social_score
+
     signal_data = candidate.get("signal_data", {})
     signal_type = candidate.get("signal_type", "")
     source = candidate.get("source", "")
@@ -424,6 +505,7 @@ def score_evidence_quality(candidate: dict[str, Any], fundamentals: dict[str, An
     cross) is capped well below a name confirmed across channels, so it cannot
     outrank core holdings on data breadth alone.
     """
+    # Data-completeness base (max ~60).
     score = 25
     if fundamentals:
         score += 15
@@ -435,12 +517,42 @@ def score_evidence_quality(candidate: dict[str, Any], fundamentals: dict[str, An
         score += 5
 
     corroboration = int(candidate.get("corroboration_count", 1) or 1)
-    if _is_existing_candidate(candidate):
-        score += 40  # in the portfolio/watchlist already = validated
+    channels = candidate.get("corroborating_sources")
+    n_channels = len(channels) if isinstance(channels, list) else corroboration
+
+    # Analyst coverage depth: a name followed by 30+ sell-side analysts is far
+    # better-evidenced than one with 3, so grade it rather than handing every
+    # tracked name a flat pedestal (the old +40 pinned every leader to 100 and
+    # made 17% of the composite inert — no differentiation among elite names).
+    analysts = fundamentals.get("num_analyst_opinions") if fundamentals else None
+    if isinstance(analysts, (int, float)) and analysts > 0:
+        if analysts >= 25:
+            coverage = 15
+        elif analysts >= 15:
+            coverage = 12
+        elif analysts >= 8:
+            coverage = 9
+        elif analysts >= 4:
+            coverage = 6
+        else:
+            coverage = 3
     else:
-        # +18 per additional independent source, capped: a single-source
-        # discovery gets no breadth credit and lands ~60.
+        coverage = 0
+
+    if _is_existing_candidate(candidate):
+        # Being tracked is real validation, but graded: base credit + analyst
+        # depth + multi-source corroboration, so a widely-covered core holding
+        # scores above a thinly-covered one instead of both saturating at 100.
+        score += 18
+        score += coverage
+        score += min(12, max(0, corroboration - 1) * 6)
+        score += min(6, max(0, n_channels - 1) * 3)
+    else:
+        # Discovery: corroboration is the main breadth signal; a lone single-
+        # source discovery gets no breadth credit and lands ~60. Well-followed
+        # names get a little analyst-coverage credit too.
         score += min(40, max(0, corroboration - 1) * 18)
+        score += min(8, coverage)
 
     return max(0, min(100, score))
 
@@ -529,7 +641,11 @@ def _top_buy_quality_floor(
     """
     if not _is_existing_candidate(candidate):
         return None
-    if dimension_scores["fundamental"] < 85 or dimension_scores["evidence_quality"] < 75:
+    # Evidence gate recalibrated for the graded evidence_quality: a tracked
+    # full-data name with no analyst coverage now scores ~73 (was a flat 100),
+    # so a 75 gate would wrongly exclude legitimate holdings. 65 still requires
+    # real data breadth while admitting well-fundamented tracked names.
+    if dimension_scores["fundamental"] < 85 or dimension_scores["evidence_quality"] < 65:
         return None
 
     floor = 72.0
